@@ -11,6 +11,8 @@ const {
   externalImageServices,
   planPublish,
   aliasFlipActions,
+  stageActions,
+  supersededCandidates,
 } = require("../publish");
 
 const BASE = "https://stack-iiif.s3.us-east-1.amazonaws.com";
@@ -170,9 +172,8 @@ test("the alias flip is one atomic batch, and deletes nothing", () => {
     {add: {index: "s.eis._pub.r2", alias: "s.eis"}},
     {remove: {index: "s.eis._pub.r2", alias: "s.eis._staged"}},
   ]);
-  // GC happens at the start of the next run, never here: a flip must be safe
-  // to retry, and must not be able to drop an index a concurrent run is
-  // writing into.
+  // Nothing is deleted inside the batch: a flip must be safe to retry. The
+  // route deletes the index that stopped being live only once this succeeds.
   assert.equal(actions.some((a) => a.remove_index), false);
 });
 
@@ -185,4 +186,155 @@ test("the first flip for a collection has no previous alias to remove", () => {
   });
   assert.deepEqual(actions[0], {add: {index: "s.eis._pub.r1", alias: "s.eis"}});
   assert.equal(actions.length, 2);
+});
+
+// --- staging a run's candidate ------------------------------------------------
+
+test("staging takes the alias off every earlier candidate, in the same batch", () => {
+  // The bug: a bare `add` left all four earlier runs behind the alias, so the
+  // panel could never clear and each flip moved live search backwards.
+  const actions = stageActions({
+    index: "s.eis._pub.r5",
+    stagedAlias: "s.eis._staged",
+    previouslyStaged: ["s.eis._pub.r1", "s.eis._pub.r2", "s.eis._pub.r4"],
+  });
+  assert.deepEqual(actions, [
+    {remove: {index: "s.eis._pub.r1", alias: "s.eis._staged"}},
+    {remove: {index: "s.eis._pub.r2", alias: "s.eis._staged"}},
+    {remove: {index: "s.eis._pub.r4", alias: "s.eis._staged"}},
+    {add: {index: "s.eis._pub.r5", alias: "s.eis._staged"}},
+  ]);
+  const staged = actions.filter((a) => a.add).map((a) => a.add.index);
+  assert.deepEqual(staged, ["s.eis._pub.r5"]);
+});
+
+test("staging with nothing staged before is a single add", () => {
+  assert.deepEqual(
+    stageActions({index: "s.eis._pub.r1", stagedAlias: "s.eis._staged", previouslyStaged: []}),
+    [{add: {index: "s.eis._pub.r1", alias: "s.eis._staged"}}],
+  );
+});
+
+test("a retried Finalize never unstages its own candidate", () => {
+  // The first attempt already moved the alias; the retry reads it back.
+  assert.deepEqual(
+    stageActions({
+      index: "s.eis._pub.r5",
+      stagedAlias: "s.eis._staged",
+      previouslyStaged: ["s.eis._pub.r5"],
+    }),
+    [{add: {index: "s.eis._pub.r5", alias: "s.eis._staged"}}],
+  );
+});
+
+test("only candidates that lost the staged alias are deleted, never a live one", () => {
+  assert.deepEqual(
+    supersededCandidates({
+      index: "s.eis._pub.r5",
+      previouslyStaged: ["s.eis._pub.r1", "s.eis._pub.r3", "s.eis._pub.r5"],
+      // r3 carrying both aliases is a race with a flip; it must survive it.
+      live: ["s.eis._pub.r3"],
+    }),
+    ["s.eis._pub.r1"],
+  );
+  assert.deepEqual(supersededCandidates({index: "s.eis._pub.r1"}), []);
+});
+
+// --- published documents must describe the published space -----------------
+//
+// Regression: the published collection and root were built by
+// buildCollectionDocument / buildRootCollectionDocument, whose `space`
+// defaulted to WORKING. Their `items` were right (built from already-published
+// manifest URLs) while their own `id` and `partOf` pointed back into
+// `working/`, so a consumer walking the published root left the space on its
+// first link. Nothing caught it because publishDocument was never involved.
+
+const {
+  WORKING,
+  PUBLISHED,
+} = require("../space");
+const {
+  MANAGED_KEY,
+  buildCollectionDocument,
+  buildRootCollectionDocument,
+  createRootCollectionTemplate,
+} = require("../collection");
+
+const member = {
+  manifestId: `${TO}/presentation/manifest/w1/manifest.json`,
+  label: "A work",
+  thumbnail: null,
+};
+
+test("a published leaf collection describes itself in the published space", () => {
+  const doc = buildCollectionDocument({
+    baseUrl: BASE, space: PUBLISHED, slug: "fava", label: "Fava masks", members: [member],
+  });
+  assert.equal(doc.id, `${TO}/presentation/collection/fava/collection.json`);
+  assert.equal(doc.partOf[0].id, `${TO}/presentation/collection/index/collection.json`);
+  assert.equal(doc.items[0].id, member.manifestId);
+  for (const url of [doc.id, doc.partOf[0].id, doc.items[0].id]) {
+    assert.ok(!url.includes("/working/"), `leaked into working: ${url}`);
+  }
+});
+
+test("a published root collection describes itself in the published space", () => {
+  const doc = buildRootCollectionDocument({
+    baseUrl: BASE, space: PUBLISHED,
+    collections: [{slug: "fava", label: "Fava masks", itemCount: 1, thumbnail: null}],
+  });
+  assert.equal(doc.id, `${TO}/presentation/collection/index/collection.json`);
+  assert.equal(doc.items[0].id, `${TO}/presentation/collection/fava/collection.json`);
+  assert.ok(!JSON.stringify(doc).includes("/working/"), "no working URL anywhere in the root");
+});
+
+test("an empty published root template stays in the published space", () => {
+  const doc = createRootCollectionTemplate({baseUrl: BASE, space: PUBLISHED});
+  assert.equal(doc.id, `${TO}/presentation/collection/index/collection.json`);
+  assert.deepEqual(doc.items, []);
+});
+
+test("the working space is still the default, and is unchanged", () => {
+  const doc = buildCollectionDocument({baseUrl: BASE, slug: "fava", label: "F", members: []});
+  assert.equal(doc.id, `${FROM}/presentation/collection/fava/collection.json`);
+  assert.equal(
+    doc.id,
+    buildCollectionDocument({baseUrl: BASE, space: WORKING, slug: "fava", label: "F", members: []}).id,
+  );
+});
+
+// --- bookkeeping terms do not belong in the published artifact -------------
+
+test("publishDocument strips the keys it is told to, at any depth", () => {
+  const working = {
+    id: `${FROM}/presentation/manifest/w1/manifest.json`,
+    partOf: [
+      {id: "https://example.org/their/collection.json", type: "Collection"},
+      {id: `${FROM}/presentation/collection/fava/collection.json`, type: "Collection", [MANAGED_KEY]: true},
+    ],
+  };
+  const {document} = publishDocument(working, {from: FROM, to: TO, strip: [MANAGED_KEY]});
+
+  assert.equal(document.id, `${TO}/presentation/manifest/w1/manifest.json`);
+  assert.equal(document.partOf[1].id, `${TO}/presentation/collection/fava/collection.json`);
+  assert.ok(!(MANAGED_KEY in document.partOf[1]), "our marker is gone");
+  // Third-party provenance is untouched — different host, and no marker to lose.
+  assert.equal(document.partOf[0].id, "https://example.org/their/collection.json");
+  assert.ok(!JSON.stringify(document).includes(MANAGED_KEY));
+});
+
+// CONTENT_HASH_KEY must survive: planPublish compares against exactly that, so
+// stripping every extension term would silently disable change detection.
+test("stripping is opt-in per key, so the content hash survives", () => {
+  const doc = {id: `${FROM}/a`, items: [{id: `${FROM}/b`, [CONTENT_HASH_KEY]: "abc", [MANAGED_KEY]: true}]};
+  const {document} = publishDocument(doc, {from: FROM, to: TO, strip: [MANAGED_KEY]});
+  assert.equal(document.items[0][CONTENT_HASH_KEY], "abc");
+  assert.ok(!(MANAGED_KEY in document.items[0]));
+});
+
+test("publishDocument with no strip list behaves exactly as before", () => {
+  const doc = {id: `${FROM}/a`, [MANAGED_KEY]: true};
+  const {document, replacements} = publishDocument(doc, {from: FROM, to: TO});
+  assert.equal(document[MANAGED_KEY], true);
+  assert.equal(replacements, 1);
 });

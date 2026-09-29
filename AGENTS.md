@@ -181,6 +181,26 @@ marking one.
 
 Adding a section means one entry in `SECTIONS`, its `match`, and one `<Route>`.
 
+**Every page renders inside `PageReady`** (`ui/src/components/PageReady.jsx`),
+which holds the page body hidden until everything on it has loaded, then shows
+it in one piece. Without it each panel drew itself as its own request landed —
+a blank heading, "0 works", the publish panel's green "Everything is
+published" before its status was known. The header and nav never wait; only
+the body does, and a spinner appears only past 400ms.
+
+- The page passes its own first load as `ready`. Anything nested that fetches
+  on mount calls `useReportReady(settled)` (`ui/src/lib/pageReady.js`) —
+  `PublishPanel`, `CollectionImportBanner` and `AssetDropzone` do today.
+- Report the **first** load settling, success *or* failure: an error is
+  content. The gate opens once and never closes, so refreshes after that must
+  keep the old content up until the new arrives rather than flipping back to
+  "Loading…" — the works list and the work page both do.
+- Content is mounted while hidden, not deferred, so the wait is the slowest
+  request, not the sum. A participant that never reports is revealed anyway
+  after 10s, so a bug cannot become a blank page.
+- Images are deliberately not waited on: thumbnails and Clover tiles fill in
+  after the page appears, inside fixed-size boxes, so nothing shifts.
+
 `ui/src/lib/api.js` holds the Amplify configuration, the deployed endpoint bases,
 `apiFetch` and `manifestApiUrl`. Importing it is what configures Amplify, so
 every `apiFetch` caller is configured by construction.
@@ -247,7 +267,8 @@ Load-bearing, not incidental:
 - **Each published member carries `staticiiif:contentHash`** — the hash of the working bytes it was made from. That is the record of what is live, and it is why a work edited mid-run correctly shows as changed again afterwards. **The run therefore needs no lock**, and edits are not blocked while it runs.
 - A diff journal written on every save was considered and rejected: a journal drifts the moment a write half-fails or a run dies, and nothing repairs it. Comparing durable artifacts cannot drift.
 - The candidate index is created with a must-fail-if-exists PUT, so two runs starting in the same instant cannot both believe they own it.
-- **Garbage collection only ever deletes the index that just stopped being live**, at flip time, and never one carrying an alias — so a concurrent run's candidate is safe and a flip is safe to retry.
+- **Garbage collection only ever deletes an index nothing points at any more**, and never one carrying an alias — so a concurrent run's candidate is safe and a flip is safe to retry. That happens in exactly two places: the flip route deletes the index that just stopped being live, and `Finalize` deletes the candidates its own is replacing (best effort, after the status write).
+- **`_staged` names one index, never several.** `Finalize` moves it with `stageActions` — off every earlier candidate and onto the new one in a single atomic call. It used to be a bare `add`, and an alias may name any number of indexes, so every IIIF publish not followed by a flip stacked another candidate behind it. The status route reported whichever OpenSearch listed last, the panel read "IIIF assets published…" after every flip, and each flip moved live search *backwards* onto an older run. Stacks deployed before the fix heal on their next IIIF publish; **do not flip one before that**, or it may go backwards once more.
 - A conditional S3 write on `internal/publish/{slug}/status.json` is the run mutex.
 - Alias state is read through `/_alias`, never `/_cat/indices`: the latter is a cluster-monitor API a scoped resource policy can deny.
 
@@ -1140,6 +1161,19 @@ Pair them with `transition: background-color 0.15s ease, color 0.15s ease`. A su
 
 The same gray-to-accent idea applies to **editable text** (`.canvas-label-editable`), which has no resting background and only lights up on hover. Use the *alpha* step `--accent-a3` there rather than the solid `--accent-3`: that highlight sits over cards, table rows and the page background, so it has to blend with whatever is behind it.
 
+**HTML in values.** A work's summary and its metadata *values* may be IIIF
+HTML (Presentation 3.0 §4.5); labels may not. `InlineTextEditor`'s `html`
+prop renders a valid value as HTML at rest and shows its raw markup once
+clicked into. Validity is the spec's, not a browser's: first character `<`,
+last `>`, well-formed XML — so a bare `&` or `&nbsp;` keeps a value as plain
+text. **One deliberate exception:** an `<a>` with an unquoted `href` (which
+NUL publishes, and every imported Fava work carries) is read as if quoted,
+with the URL's `&` escaped — at parse time only; the stored value is never
+rewritten. Rendering goes through `ui/src/lib/iiifHtml.js`,
+which builds React elements from the spec's whitelist (`a b br i img p small
+span sub sup`; `href` on `a` limited to http/https/mailto, `src`/`alt` on
+`img`) and never uses `innerHTML`.
+
 **Metadata field spacing.** Field groups in the Metadata and Layout panels — Description, Additional fields, Display — are separated by **2rem**, via the shared `.metadata-fields` class in `ui/src/App.css`. Add new fields as children of that container rather than giving them a `gap` prop of their own, and the spacing comes for free. The fields are visually distinct blocks with their own small label-to-control spacing (`mb="1"`), so they need noticeably more room between groups than a default Radix gap provides.
 
 **Comboboxes and popups.** Radix Themes has no combobox, and neither `DropdownMenu`
@@ -1221,7 +1255,7 @@ zooming shrinks the CSS viewport and pushes the unit toward its floor.
 for body copy; `--heading-font-family` is **Google Sans Flex Variable**, used for
 headings only. The reason is the weight axis — the static face ships 400/500/600/700
 and stops there, so a heading could not sit heavier than bold. The variable cut
-runs 1–1000, which is what `.app-wordmark` (`font-weight: 800`) depends on.
+runs 1–1000, which is what the 800-weight page headings (`.page-heading`) depend on.
 
 Import the **`wght`** entrypoint, not `full`: the weight-axis file is ~50KB, while
 the all-axes build (which would additionally bring the optical-size axis) is 1.4MB.

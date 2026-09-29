@@ -34,6 +34,7 @@ export default function MetadataPanel({manifest, onSaveSummary, onSaveMetadata})
             allowEmpty
             ariaLabel="Save description"
             placeholder="No description"
+            html
             textProps={{size: "3"}}
             fieldSize="2"
           />
@@ -72,42 +73,45 @@ export default function MetadataPanel({manifest, onSaveSummary, onSaveMetadata})
                       <Table.Cell>
                         <Flex direction="column" gap="2">
                           {values.map((value, valueIndex) => (
-                            <Flex key={valueIndex} align="center" gap="2">
-                              <Box style={{flex: 1, minWidth: 0}}>
-                                <InlineTextEditor
-                                  value={value}
-                                  onSave={(next) =>
-                                    updateEntry(index, (e) => ({
-                                      ...e,
-                                      value: toLanguageMap(
-                                        values.map((v, i) => (i === valueIndex ? next : v)),
-                                      ),
-                                    }))
-                                  }
-                                  ariaLabel="Save value"
-                                  textProps={{size: "3"}}
-                                  fieldSize="2"
-                                />
-                              </Box>
-                              <Tooltip content="Remove value">
-                                <IconButton
-                                  type="button"
-                                  variant="soft"
-                                  color="red"
-                                  size="1"
-                                  aria-label="Remove value"
-                                  disabled={values.length <= 1}
-                                  onClick={() =>
-                                    updateEntry(index, (e) => ({
-                                      ...e,
-                                      value: toLanguageMap(values.filter((_, i) => i !== valueIndex)),
-                                    }))
-                                  }
-                                >
-                                  <TrashIcon />
-                                </IconButton>
-                              </Tooltip>
-                            </Flex>
+                            /* Keyed on the value as well as its position: removing
+                               one shifts every value after it up an index, and an
+                               index-only key would hand the open editor — still in
+                               edit mode — to the value that moved into its place. */
+                            <Box key={`${valueIndex}:${value}`} className="metadata-value">
+                              <InlineTextEditor
+                                value={value}
+                                onSave={(next) =>
+                                  updateEntry(index, (e) => ({
+                                    ...e,
+                                    value: toLanguageMap(
+                                      values.map((v, i) => (i === valueIndex ? next : v)),
+                                    ),
+                                  }))
+                                }
+                                ariaLabel="Save value"
+                                // Values may be HTML; field names (labels) may not.
+                                html
+                                textProps={{size: "3"}}
+                                fieldSize="2"
+                                // Removal lives in the value's own editor, shown
+                                // only once it is open: a trash can on every value
+                                // line read as a second delete for the whole field.
+                                // A field's last value has none — removing that is
+                                // removing the field, which is the row's trash.
+                                onRemove={
+                                  values.length > 1
+                                    ? () =>
+                                        updateEntry(index, (e) => ({
+                                          ...e,
+                                          value: toLanguageMap(
+                                            values.filter((_, i) => i !== valueIndex),
+                                          ),
+                                        }))
+                                    : undefined
+                                }
+                                removeLabel="Remove value"
+                              />
+                            </Box>
                           ))}
                           <Box>
                             <Button

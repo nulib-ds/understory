@@ -138,10 +138,36 @@ html {
   letter-spacing: -0.02em;
 }
 
-/* The wordmark, in the header and on the sign-in pane. Heavier than bold, which
-   is only possible because the heading face is the variable cut. */
+/* The wordmark, in the header and on the sign-in pane. 700, a step lighter
+   than the 800 it used to be: beside the mark, a black-weight word read as
+   heavier than the mark itself. The heading face is the variable cut, so this
+   is a real weight rather than a synthesized one. */
 .app-wordmark {
-  font-weight: 800;
+  font-weight: 700;
+}
+
+/* Home link, but still reads as the wordmark: black and no underline, even
+   on hover. It is the app's name first, and a purple wordmark would compete
+   with the section links beside it. */
+.app-wordmark a {
+  color: inherit;
+  text-decoration: none;
+}
+
+/* Mark and word side by side (components/Wordmark.jsx). Sized in em so the
+   mark follows the heading's fluid size wherever the lockup is used. A touch
+   taller than the capitals, which is where a mark beside a word reads as the
+   same weight rather than as a small badge. */
+.app-lockup {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3em;
+}
+
+.app-lockup__mark {
+  height: 1.2em;
+  width: auto;
+  flex-shrink: 0;
 }
 
 :root {
@@ -335,28 +361,117 @@ main.layout {
   background-color: var(--gray-a3);
 }
 
+/* A column of counts. Tabular figures so the digits line up down the column
+   rather than drifting with each number's natural width. */
 .assets-cell {
-  position: relative;
+  font-variant-numeric: tabular-nums;
 }
 
-.assets-cell .asset-thumbnails-group {
-  position: absolute;
-  top: 50%;
-  transform: translateY(-50%);
-  z-index: 1;
+/* The row's representative image. Narrow, and never wider than its thumbnail,
+   so the title column starts in the same place on every row. */
+.work-thumb-cell {
+  width: calc(32 * var(--px));
+  padding-right: 0;
 }
 
-.manifest-list-row:hover .assets-cell .asset-thumbnails__item:not(:first-child) {
-  transform: translateX(var(--stack-collapse-x, 0));
-  opacity: 0;
-  pointer-events: none;
+/* Radix hangs cell content from the top. Every row is a single line now, so
+   centre them instead — otherwise the 32px thumbnail and the 19px title sit on
+   different centres and the image reads as hanging low. */
+.manifest-list .rt-TableCell {
+  vertical-align: middle;
 }
 
-.manifest-list-row:hover .assets-cell .asset-thumbnails__item:first-child {
-  box-shadow:
-    0 0 0 2px var(--color-panel-solid, #fff),
-    4px 0 0 2px var(--color-panel-solid, #fff),
-    4px 0 0 3px var(--gray-4);
+/* What a downstream site consumes. It used to be a bare stack of lines with no
+   container, which read as floating under the buttons rather than belonging to
+   them. A tinted inset tied to the card's inner width groups it with the alert
+   and the buttons above as one panel. */
+/* The collection screen: publish controls and the works table in the main
+   column, the consuming-site reference alongside. Wraps rather than squeezing —
+   below roughly a tablet the aside drops beneath the table at full width, which
+   beats a 200px column of broken URLs.
+
+   align-items: flex-start is load-bearing for the sticky aside below: the
+   default `stretch` would make the aside as tall as the table, leaving it no
+   room to move within its parent. */
+.collection-layout {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-5);
+  flex-wrap: wrap;
+}
+
+/* min-width: 0 so the table can shrink instead of forcing the aside off the
+   row — the usual flex-item overflow default. */
+.collection-main {
+  flex: 1 1 calc(560 * var(--px));
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+/* The aside now carries the publish controls as well as the reference block,
+   so it is a plain column — only the reference block inside it is a tinted
+   box. */
+.collection-aside {
+  flex: 0 1 calc(360 * var(--px));
+  min-width: calc(280 * var(--px));
+  position: sticky;
+  top: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.collection-aside__panel {
+  display: flex;
+  flex-direction: column;
+  /* Roomier than the old --space-2: three wrapped URLs stacked tightly read as
+     one block of text rather than three separate values. */
+  gap: var(--space-4);
+  padding: var(--space-4);
+  border: 1px solid var(--gray-a5);
+  border-radius: var(--radius-3);
+  background-color: var(--gray-2);
+}
+
+/* Stacked, not a label/value grid. In a column this narrow a value column
+   would leave a long endpoint URL breaking across four ragged lines; giving it
+   the aside's full width costs a line per row and reads far better. */
+.collection-aside__row {
+  display: flex;
+  flex-direction: column;
+  gap: calc(2 * var(--px));
+}
+
+/* Value and its copy button. align-items: start so the button sits level with
+   the URL's first line rather than centring against three wrapped ones. */
+.collection-aside__value {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-1);
+}
+
+/* min-width: 0 so the code block can shrink inside the flex row; break-all
+   because an OpenSearch endpoint has no spaces to wrap at. */
+.collection-aside__value code {
+  flex: 1;
+  min-width: 0;
+  word-break: break-all;
+}
+
+/* The title absorbs the leftover width and ellipsizes rather than wrapping.
+   Both declarations are load-bearing under `table-layout: auto`: `width: 100%`
+   claims the slack so the other columns stay at their content width, and
+   `max-width: 0` is what stops a long title widening the column instead of
+   being clipped — without it the table just grows and the ellipsis never
+   appears. */
+.work-title-cell {
+  width: 100%;
+  max-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .manifest-row-actions {
@@ -623,6 +738,55 @@ main.layout {
   vertical-align: top;
 }
 
+/* A field name or value's edit field, sized to its text and set in its type,
+   like the work title and canvas labels. Content-sized matters more here than
+   anywhere: the check and remove buttons sit at the end of the field, and a
+   field stretched across the whole cell put them a table's width away from
+   the value they act on.
+
+   fit-content on the value wrapper is what stops the stretch — the editor's
+   field is flex: 1 inline, so it fills whatever its row is given. */
+.metadata-value {
+  width: fit-content;
+  max-width: 100%;
+}
+
+.metadata-table .rt-TextFieldInput {
+  font-size: var(--font-size-3);
+  field-sizing: content;
+  min-width: 12ch;
+  padding-inline-end: var(--text-field-padding);
+}
+
+/* A value rendered from IIIF HTML (lib/iiifHtml.js). The paragraphs lose their
+   UA margins, which would otherwise pad a one-line value into three, and keep
+   a small gap between them when there are several. Links take the accent like
+   every other link, underlined because they sit inside running text. */
+.iiif-html p {
+  margin: 0;
+}
+
+.iiif-html p + p {
+  margin-top: var(--space-2);
+}
+
+.iiif-html a {
+  color: var(--accent-11);
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+}
+
+.iiif-html img {
+  max-width: 100%;
+  height: auto;
+  vertical-align: middle;
+}
+
+/* Field names are bold at rest, so they are bold while being edited too. */
+.metadata-table th .rt-TextFieldInput {
+  font-weight: var(--font-weight-bold);
+}
+
 .canvas-label-editable {
   display: inline-block;
   align-self: flex-start;
@@ -645,6 +809,59 @@ main.layout {
    .canvas-label-editable's align-self: flex-start regardless of order. */
 .canvas-list-info > .canvas-label-editable {
   align-self: center;
+}
+
+/* PageReady: a page's body stays hidden until everything on it has loaded
+   (components/PageReady.jsx). Hidden rather than unmounted, so every panel's
+   request runs meanwhile, and so the content cannot be focused or clicked
+   before it is shown. */
+.page-ready {
+  position: relative;
+}
+
+.page-ready__content {
+  visibility: hidden;
+}
+
+.page-ready[data-revealed] > .page-ready__content {
+  visibility: visible;
+  animation: page-ready-in 0.15s ease-out;
+}
+
+/* Absolute, so it takes no room from the hidden page and nothing shifts when
+   it goes. Level with where a page heading starts. */
+.page-ready__spinner {
+  position: absolute;
+  top: var(--space-9);
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: center;
+}
+
+@keyframes page-ready-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .page-ready[data-revealed] > .page-ready__content {
+    animation: none;
+  }
+}
+
+/* A canvas label's edit field, in the label's own type — the same treatment
+   as the work title's (see .work-breadcrumb below): clicking to edit should
+   not drop a bold size-3 label to size-2 regular. The field keeps its size-2
+   height, which fits the row, so the card does not grow while you type. */
+.canvas-list-info .rt-TextFieldInput {
+  font-size: var(--font-size-3);
+  font-weight: var(--font-weight-bold);
+  field-sizing: content;
+  min-width: 8ch;
+  /* Radix pads only the start (text-indent), so a content-sized field would
+     put the last letter on the border. */
+  padding-inline-end: var(--text-field-padding);
 }
 
 /* Every section's page heading, and a work's title on its own page. The size
@@ -679,6 +896,86 @@ main.layout {
 .work-title-editable {
   padding: calc(2 * var(--px)) calc(6 * var(--px));
   margin: calc(-2 * var(--px)) calc(-6 * var(--px));
+}
+
+/* "<collection> / <work>" on a work's page. Flex rather than inline flow so
+   the title's edit field, which is a block-level Flex, stays on the same line
+   as the crumb instead of dropping below it. Wraps as whole items: a long
+   title moves under the crumb rather than breaking beside it. Gaps are in em
+   so they follow the heading's fluid size. */
+.work-breadcrumb {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: baseline;
+  column-gap: 0.3em;
+}
+
+/* The parent crumb is accent-coloured because it is a link — the same
+   purple as a collection's name in the collections list. It keeps the
+   heading's weight (inherited from .page-heading) so the two halves read as
+   one heading; the colour alone says which half you can follow.
+   Hover steps one shade darker rather than underlining: at this size an
+   underline is a heavy bar under the whole name. */
+.work-breadcrumb__collection {
+  color: var(--accent-11);
+  text-decoration: none;
+  transition: color 0.15s ease;
+}
+
+.work-breadcrumb__collection:hover,
+.work-breadcrumb__collection:focus-visible {
+  color: var(--accent-12);
+}
+
+/* Lighter than the crumbs on either side: at a black weight a slash is as
+   heavy as a letter and reads as part of a word. The heading face has a real
+   weight axis, so 300 is not synthesized. */
+.work-breadcrumb__separator {
+  color: var(--gray-8);
+  font-weight: 300;
+}
+
+/* The work title's edit field, set in the title's own type so clicking to
+   edit does not collapse a 42px black heading into 16px body text. Scoped to
+   the breadcrumb: InlineTextEditor is shared with canvas labels and metadata
+   fields, which keep the default field.
+
+   Height follows the heading's line box plus a little room; it is spelt out
+   from the heading's size tokens rather than in em, because the check button
+   beside the field sits at a different font size and has to match it. */
+.work-breadcrumb {
+  --title-field-height: calc(var(--font-size-6) * 1.7 * 1.1 + var(--space-3));
+}
+
+.work-breadcrumb .rt-TextFieldRoot {
+  --text-field-height: var(--title-field-height);
+  font: inherit;
+  letter-spacing: inherit;
+}
+
+/* field-sizing grows the field with what is typed, so it starts the width of
+   the title instead of a fixed 170px that the heading's type overflows. A
+   browser without it falls back to the input's default width, which at this
+   size is still wide enough to edit in. */
+.work-breadcrumb .rt-TextFieldInput {
+  font: inherit;
+  letter-spacing: inherit;
+  field-sizing: content;
+  min-width: 4ch;
+  /* Radix pads the start with text-indent and leaves the end at zero, which
+     a content-sized field makes visible: the last letter sat on the border. */
+  padding-inline-end: var(--text-field-padding);
+}
+
+.work-breadcrumb .rt-IconButton {
+  --base-button-height: var(--title-field-height);
+}
+
+/* The icon keeps Radix's 15px otherwise, a speck in a button this size. */
+.work-breadcrumb .rt-IconButton svg {
+  width: calc(22 * var(--px));
+  height: calc(22 * var(--px));
 }
 
 /* The collections field in the Linking panel. The resting value reuses
@@ -751,7 +1048,8 @@ main.layout {
    ------------------------------------------------------------------------- */
 
 /* Fixed square so a missing or slow thumbnail never reflows the row. */
-.collection-thumb {
+.collection-thumb,
+.work-thumb {
   display: block;
   width: calc(32 * var(--px));
   height: calc(32 * var(--px));
@@ -761,7 +1059,8 @@ main.layout {
   background-color: var(--gray-3);
 }
 
-.collection-thumb img {
+.collection-thumb img,
+.work-thumb img {
   width: 100%;
   height: 100%;
   object-fit: cover;
@@ -770,19 +1069,6 @@ main.layout {
 
 .collection-slug {
   font-family: var(--code-font-family);
-}
-
-/* The collection of collections sits above its members, separated by a heavier
-   rule so the table reads as a parent and a list rather than a flat set. */
-.collection-row--root > * {
-  background-color: var(--gray-2);
-  border-bottom: 1px solid var(--gray-6);
-}
-
-/* The root has no thumbnail of its own. Keep the box so every label lines up,
-   but don't paint an empty tile. */
-.collection-row--root .collection-thumb {
-  background-color: transparent;
 }
 
 /* Users section

@@ -279,9 +279,9 @@ function buildManifestReference({manifestId, label, thumbnail}) {
 // and clients that merge references with the dereferenced document by id would
 // drop it entirely (the leaf carries no metadata). The prefixed term is what our
 // own API reads.
-function buildCollectionReference({baseUrl, slug, label, thumbnail, itemCount}) {
+function buildCollectionReference({baseUrl, slug, label, thumbnail, itemCount, space = WORKING}) {
   const reference = {
-    id: buildCollectionId(baseUrl, slug),
+    id: buildCollectionId(baseUrl, slug, space),
     type: "Collection",
     label: languageMap(label),
   };
@@ -295,14 +295,19 @@ function buildCollectionReference({baseUrl, slug, label, thumbnail, itemCount}) 
   return reference;
 }
 
-function buildCollectionDocument({baseUrl, slug, label, members}) {
+// `space` is not optional in spirit: a document must describe its OWN space, or
+// a consumer walking the published tree is thrown back into `working/` by the
+// first link it follows. The WORKING default exists because the manifest API
+// only ever builds working documents; every publish-side caller must pass
+// PUBLISHED explicitly.
+function buildCollectionDocument({baseUrl, slug, label, members, space = WORKING}) {
   const items = members.map(buildManifestReference);
   const thumbnail = members.find((member) => member.thumbnail?.length)?.thumbnail;
 
   const document = {
     // The leaf carries no prefixed term, so it needs no extension prefix.
     "@context": PRESENTATION_CONTEXT,
-    id: buildCollectionId(baseUrl, slug),
+    id: buildCollectionId(baseUrl, slug, space),
     type: "Collection",
     label: languageMap(label),
   };
@@ -311,7 +316,7 @@ function buildCollectionDocument({baseUrl, slug, label, members}) {
   }
   document.partOf = [
     {
-      id: buildRootCollectionId(baseUrl),
+      id: buildRootCollectionId(baseUrl, space),
       type: "Collection",
       label: languageMap(ROOT_COLLECTION_LABEL),
     },
@@ -322,21 +327,21 @@ function buildCollectionDocument({baseUrl, slug, label, members}) {
 
 // `items: []` is explicitly permitted by the spec ("allowed but discouraged"),
 // which is what lets the root exist before any collection does.
-function buildRootCollectionDocument({baseUrl, collections}) {
+function buildRootCollectionDocument({baseUrl, collections, space = WORKING}) {
   const items = collections.map((collection) =>
-    buildCollectionReference({baseUrl, ...collection}),
+    buildCollectionReference({baseUrl, ...collection, space}),
   );
   return {
     "@context": PRESENTATION_CONTEXT,
-    id: buildRootCollectionId(baseUrl),
+    id: buildRootCollectionId(baseUrl, space),
     type: "Collection",
     label: languageMap(ROOT_COLLECTION_LABEL),
     items,
   };
 }
 
-function createRootCollectionTemplate({baseUrl}) {
-  return buildRootCollectionDocument({baseUrl, collections: []});
+function createRootCollectionTemplate({baseUrl, space = WORKING}) {
+  return buildRootCollectionDocument({baseUrl, collections: [], space});
 }
 
 // Flatten a stored root document into the shape GET /collections returns.

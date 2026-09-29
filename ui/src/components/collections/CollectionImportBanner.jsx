@@ -1,6 +1,7 @@
 import {useEffect, useRef, useState} from "react";
 import {Box, Button, Callout, Flex, Progress, Text} from "@radix-ui/themes";
 import {COLLECTION_API_BASE, apiFetch} from "../../lib/api";
+import {useReportReady} from "../../lib/pageReady";
 
 const POLL_MS = 3000;
 
@@ -17,6 +18,11 @@ export default function CollectionImportBanner({slug, onProgress}) {
   const [status, setStatus] = useState(null);
   const [sawFinish, setSawFinish] = useState(false);
   const [dismissed, setDismissed] = useState(false);
+  // Whether the first check has come back. Until then the page waits: a
+  // running import's banner appearing a beat after the page is exactly the
+  // pop-in the gate exists to stop.
+  const [checked, setChecked] = useState(false);
+  useReportReady(!slug || !COLLECTION_API_BASE || checked);
   const wasRunning = useRef(false);
   const lastDone = useRef(-1);
 
@@ -33,6 +39,7 @@ export default function CollectionImportBanner({slug, onProgress}) {
         );
         if (cancelled) return;
         setStatus(data);
+        setChecked(true);
 
         // Refresh the works list when a batch lands, and once more on the way
         // out — not on every tick, which would re-query for nothing.
@@ -53,7 +60,10 @@ export default function CollectionImportBanner({slug, onProgress}) {
       } catch {
         // A status this page cannot read is not worth an error banner: the works
         // list is the thing that matters and it reports its own failures.
-        if (!cancelled) setStatus(null);
+        if (!cancelled) {
+          setStatus(null);
+          setChecked(true);
+        }
       }
     };
 

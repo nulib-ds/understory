@@ -44,7 +44,16 @@ function isSelfReference(value, from) {
 //   - @context. Safe today because the extension namespace is on a different
 //     host, but a walker that rewrites arbitrary values is one namespace change
 //     away from breaking compact-IRI expansion, so it is skipped explicitly.
-function rewriteUrls(node, {from, to}, state = {replacements: 0}) {
+// `strip` removes keys anywhere in the tree. It exists for our own bookkeeping
+// terms, which are meaningful in `working/` and noise in `published/`:
+// MANAGED_KEY tells the manifest API which partOf entries are its own rather
+// than the source institution's provenance, and nothing reads it back out of a
+// published document.
+//
+// It is passed per-call rather than applied to every extension term, because
+// one of them must survive: the published collection's items carry
+// CONTENT_HASH_KEY, and planPublish compares against exactly that.
+function rewriteUrls(node, {from, to, strip = []}, state = {replacements: 0}) {
   if (typeof node === "string") {
     if (isSelfReference(node, from)) {
       state.replacements += 1;
@@ -53,12 +62,13 @@ function rewriteUrls(node, {from, to}, state = {replacements: 0}) {
     return node;
   }
   if (Array.isArray(node)) {
-    return node.map((entry) => rewriteUrls(entry, {from, to}, state));
+    return node.map((entry) => rewriteUrls(entry, {from, to, strip}, state));
   }
   if (node && typeof node === "object") {
     const out = {};
     for (const [key, value] of Object.entries(node)) {
-      out[key] = key === "@context" ? value : rewriteUrls(value, {from, to}, state);
+      if (strip.includes(key)) continue;
+      out[key] = key === "@context" ? value : rewriteUrls(value, {from, to, strip}, state);
     }
     return out;
   }
@@ -68,9 +78,9 @@ function rewriteUrls(node, {from, to}, state = {replacements: 0}) {
 // Returns the published document and how many URLs moved. Zero is a bug, not a
 // no-op: a manifest whose id does not sit under the working base is a hand
 // edit, a base-URL change, or an already-published document fed back in.
-function publishDocument(document, {from, to}) {
+function publishDocument(document, {from, to, strip = []}) {
   const state = {replacements: 0};
-  const published = rewriteUrls(document, {from, to}, state);
+  const published = rewriteUrls(document, {from, to, strip}, state);
   return {document: published, replacements: state.replacements};
 }
 
@@ -119,9 +129,9 @@ function planPublish({workingMembers = [], publishedMembers = []}) {
 
 // The alias moves in ONE multi-action _aliases call, which is atomic on AWS
 // OpenSearch Service: a reader never sees the alias on neither index or on
-// both. Nothing is deleted here — garbage collection happens at the start of
-// the next run, so a flip is trivially safe to retry and can never remove an
-// index a concurrent run is still writing into.
+// both. Nothing is deleted in the batch itself, so it is trivially safe to
+// retry; the flip route deletes the index that just stopped being live only
+// after the batch has succeeded.
 function aliasFlipActions({index, liveAlias, stagedAlias, previousIndex}) {
   const actions = [];
   if (previousIndex && previousIndex !== index) {
@@ -130,6 +140,36 @@ function aliasFlipActions({index, liveAlias, stagedAlias, previousIndex}) {
   actions.push({add: {index, alias: liveAlias}});
   actions.push({remove: {index, alias: stagedAlias}});
   return actions;
+}
+
+// Point a collection's staged alias at a run's new candidate, and ONLY at it —
+// one atomic _aliases call, like the flip.
+//
+// This used to be a bare `add`. An alias may name any number of indexes, so
+// every run not followed by a flip left its candidate behind the alias as
+// well. The status route then reported whichever one OpenSearch happened to
+// list last, the panel could never clear ("IIIF assets published…" after every
+// flip), and each flip moved the live alias BACKWARDS onto an older run's
+// output. Found on a collection with four candidates stacked on one alias.
+//
+// `index` itself is never removed, so a retried Finalize is a no-op add.
+function stageActions({index, stagedAlias, previouslyStaged = []}) {
+  const actions = previouslyStaged
+    .filter((name) => name !== index)
+    .map((name) => ({remove: {index: name, alias: stagedAlias}}));
+  actions.push({add: {index, alias: stagedAlias}});
+  return actions;
+}
+
+// The candidates a newly staged one replaces, which nothing can reach any
+// more: not staged, never flipped, and so never deleted by the flip route.
+// Left alone they would each hold shards on the shared domain for ever.
+//
+// Never the new candidate and never one the live alias is on. Deleting an
+// index that still carries an alias is the one thing GC must not do.
+function supersededCandidates({index, previouslyStaged = [], live = []}) {
+  const liveIndexes = new Set(live);
+  return previouslyStaged.filter((name) => name !== index && !liveIndexes.has(name));
 }
 
 module.exports = {
@@ -141,4 +181,6 @@ module.exports = {
   externalImageServices,
   planPublish,
   aliasFlipActions,
+  stageActions,
+  supersededCandidates,
 };

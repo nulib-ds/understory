@@ -11,6 +11,7 @@ import {
 } from "../lib/api";
 import {ROLE_ADMIN, useSession} from "../lib/session";
 import PageHeading from "../components/PageHeading";
+import PageReady from "../components/PageReady";
 import AddWorkModal from "../components/works/AddWorkModal";
 import WorksTable from "../components/works/WorksTable";
 import PublishPanel from "../components/works/PublishPanel";
@@ -21,12 +22,12 @@ function WorksListPanel({
   manifestError,
   manifestLoading,
   works,
-  total,
   counts,
   slug,
   canPublish,
   onPublished,
   query,
+  resultsQuery,
   onQueryChange,
   onOpenManifestModal,
   onDeleteManifest,
@@ -39,18 +40,48 @@ function WorksListPanel({
   // admin role nor a single grant gets an empty list. Say why, rather than
   // showing a bare table that looks like the collection is empty.
   const noAccess = !isAdmin && session.collections.length === 0;
+  const collectionSize = counts ? counts.new + counts.changed + counts.published : null;
 
   return (
     <Flex direction="column" gap="5">
       {/* Not editable, unlike every other heading in the app: the slug is the
           collection's identity, so renaming is impossible by construction. */}
-      <PageHeading>{heading}</PageHeading>
-      <PublishPanel
-        slug={slug}
-        counts={counts}
-        canPublish={canPublish}
-        onPublished={onPublished}
-      />
+      <Flex direction="column" align="center" gap="1">
+        <PageHeading>{heading}</PageHeading>
+        {/* Counts are for the whole collection, not the loaded page — a
+            summary computed from the rows on screen would only be right on
+            page one. The unpublished figure rides along because it answers the
+            same question: how much is here, and how much of it is live. The
+            publish aside states it too, but only in some of its states. */}
+        <Flex align="center" gap="2">
+          {/* The collection's size, and nothing else — it does not move when
+              the list is filtered. That is why it comes from the sync counts
+              rather than the works response's `total`, which counts only the
+              rows matching the filter ("0 of 0 works match"). Every indexed
+              work carries a syncState (the document builder defaults it to
+              new), so the three buckets sum to the whole collection. */}
+          {collectionSize !== null && (
+            <Text size="1" color="gray">
+              {collectionSize} work{collectionSize === 1 ? "" : "s"}
+            </Text>
+          )}
+          {counts && counts.new + counts.changed > 0 && (
+            <>
+              <Text size="1" color="gray" aria-hidden>
+                ·
+              </Text>
+              <Text size="1" color="orange">
+                {counts.new + counts.changed} unpublished
+                {counts.new > 0 && counts.changed > 0
+                  ? ` (${counts.new} new, ${counts.changed} changed)`
+                  : ""}
+              </Text>
+            </>
+          )}
+        </Flex>
+      </Flex>
+      <div className="collection-layout">
+        <div className="collection-main">
       <Card size="3" className="panel manifest-panel">
         <Flex justify="between" align="center" gap="3" mb="4">
           <TextField.Root
@@ -85,34 +116,29 @@ function WorksListPanel({
               </Callout.Text>
             </Callout.Root>
           )}
-          <Flex justify="between" align="baseline" mb="2">
-            <Text size="1" color="gray">
-              {query.trim()
-                ? `${works.length} of ${total} works match`
-                : `${total} work${total === 1 ? "" : "s"}`}
-            </Text>
-            {/* Counts are for the whole collection, not the loaded page — a
-                summary computed from the rows on screen would only be right on
-                page one. The publish panel builds on these next. */}
-            {counts && counts.new + counts.changed > 0 && (
-              <Text size="1" color="orange">
-                {counts.new + counts.changed} unpublished
-                {counts.new > 0 && counts.changed > 0
-                  ? ` (${counts.new} new, ${counts.changed} changed)`
-                  : ""}
-              </Text>
-            )}
-          </Flex>
           <WorksTable
             works={works}
             onDelete={onDeleteManifest}
             workPath={workPath}
-            filtered={query.trim().length > 0}
+            filtered={resultsQuery.trim().length > 0}
             loading={manifestLoading}
             error={manifestApiAvailable ? manifestError : null}
           />
         </Box>
       </Card>
+        </div>
+        {/* Publishing is about the collection as a whole, not about any one
+            row, so it reads as a sidebar to the works list rather than as a
+            banner above it. */}
+        <aside className="collection-aside">
+          <PublishPanel
+            slug={slug}
+            counts={counts}
+            canPublish={canPublish}
+            onPublished={onPublished}
+          />
+        </aside>
+      </div>
     </Flex>
   );
 }
@@ -140,10 +166,18 @@ export default function CollectionWorksPage() {
 
   const manifestApiAvailable = Boolean(MANIFEST_API_BASE);
   const [works, setWorks] = useState([]);
-  const [total, setTotal] = useState(0);
   const [counts, setCounts] = useState(null);
   const [collectionLabel, setCollectionLabel] = useState("");
-  const [worksLoading, setWorksLoading] = useState(true);
+  // Whether the first load has settled. Deliberately not a "loading" flag
+  // that goes true on every refresh: that swapped the whole table for
+  // "Loading works…" on each keystroke of the filter, after every delete and
+  // when a publish finished. Later refreshes keep the rows on screen and
+  // replace them when the answer arrives.
+  const [worksLoaded, setWorksLoaded] = useState(false);
+  // The filter the rows on screen were fetched with, which lags `query` by a
+  // round trip. It decides whether an empty table means "no works match" —
+  // the rows describe the filter as sent, not the keystroke still in flight.
+  const [resultsQuery, setResultsQuery] = useState("");
   const [worksError, setWorksError] = useState(null);
 
   // Cosmetic only: canPublish in app/shared/access.js is what actually decides,
@@ -168,25 +202,25 @@ export default function CollectionWorksPage() {
   // riding along. Replaces the corpus listing plus a separate search call.
   const refreshWorks = useCallback(async () => {
     if (!slug) return;
-    const endpoint = collectionWorksUrl(slug, {q: queryRef.current});
+    const q = queryRef.current;
+    const endpoint = collectionWorksUrl(slug, {q});
     if (!endpoint) {
       setWorksError("Collection API URL is not configured. Set VITE_COLLECTION_API_URL and redeploy.");
-      setWorksLoading(false);
+      setWorksLoaded(true);
       return;
     }
-    setWorksLoading(true);
-    setWorksError(null);
     try {
       const data = await apiFetch(endpoint, {errorMessage: "Unable to load works"});
       setWorks(Array.isArray(data.works) ? data.works : []);
-      setTotal(data.total ?? 0);
       setCounts(data.counts || null);
       setCollectionLabel(data.collection?.label || slug);
+      setResultsQuery(q);
+      setWorksError(null);
     } catch (err) {
       setWorks([]);
       setWorksError(err.message);
     } finally {
-      setWorksLoading(false);
+      setWorksLoaded(true);
     }
   }, [slug]);
 
@@ -356,21 +390,21 @@ export default function CollectionWorksPage() {
   }, [slug, query, refreshWorks]);
 
   return (
-    <>
+    <PageReady ready={worksLoaded}>
       {/* Only renders while a collection import is running, or afterwards if
           it hit trouble or dropped something. Silent the rest of the time. */}
       <CollectionImportBanner slug={slug} onProgress={refreshWorks} />
       <WorksListPanel
         manifestApiAvailable={manifestApiAvailable}
         manifestError={worksError}
-        manifestLoading={worksLoading}
+        manifestLoading={!worksLoaded}
         works={works}
-        total={total}
         counts={counts}
         slug={slug}
         canPublish={canPublish}
         onPublished={refreshWorks}
         query={query}
+        resultsQuery={resultsQuery}
         onQueryChange={setQuery}
         onOpenManifestModal={handleOpenManifestModal}
         onDeleteManifest={handleDeleteManifest}
@@ -397,6 +431,6 @@ export default function CollectionWorksPage() {
         onImportConfirm={handleImportConfirm}
         importConfirming={importConfirming}
       />
-    </>
+    </PageReady>
   );
 }

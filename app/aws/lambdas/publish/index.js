@@ -25,6 +25,7 @@ const {
   canvasThumbnailService,
 } = require("../../../shared/manifest");
 const {
+  MANAGED_KEY,
   collectionObjectKey,
   rootCollectionKey,
   buildCollectionDocument,
@@ -40,9 +41,12 @@ const {
   publishDocument,
   externalImageServices,
   planPublish,
+  stageActions,
+  supersededCandidates,
 } = require("../../../shared/publish");
 const {
   publishedIndexName,
+  liveAliasName,
   stagedAliasName,
   workingIndexName,
   SYNC_PUBLISHED,
@@ -54,6 +58,8 @@ const {
   bulkUpsert,
   bulkScriptedUpdate,
   updateAliases,
+  getAliases,
+  deleteIndex,
 } = require("../../../shared/opensearch");
 const {readJson, putJson, listKeys} = require("./s3io");
 
@@ -177,6 +183,7 @@ async function batch({slug, runId, indexName, batchIndex}) {
       const {document, replacements} = publishDocument(stored.document, {
         from: WORKING_BASE,
         to: PUBLISHED_BASE,
+        strip: [MANAGED_KEY],
       });
       if (replacements === 0) {
         throw new Error("No self-referential URLs found — is this manifest under the working base?");
@@ -242,6 +249,7 @@ async function writeCollection({slug, runId}) {
   // than a URL-transformed copy of the working document.
   const leaf = buildCollectionDocument({
     baseUrl: PUBLISHED_BASE_ROOT,
+    space: PUBLISHED,
     slug,
     label,
     members: published.map((result) => ({
@@ -261,12 +269,15 @@ async function writeCollection({slug, runId}) {
   // Leaf first, then the root — the published root must never advertise a
   // collection whose document is not there yet.
   const existingRoot = await readJson(rootCollectionKey(PUBLISHED));
-  const rootDoc = existingRoot?.document || createRootCollectionTemplate({baseUrl: PUBLISHED_BASE_ROOT});
+  const rootDoc =
+    existingRoot?.document ||
+    createRootCollectionTemplate({baseUrl: PUBLISHED_BASE_ROOT, space: PUBLISHED});
   const others = rootCollectionSummaries(rootDoc).filter((entry) => entry.slug !== slug);
   await putJson(
     rootCollectionKey(PUBLISHED),
     buildRootCollectionDocument({
       baseUrl: PUBLISHED_BASE_ROOT,
+      space: PUBLISHED,
       collections: [...others, {slug, label, itemCount: leaf.items.length, thumbnail: leaf.thumbnail}].sort(
         (a, b) => a.label.localeCompare(b.label),
       ),
@@ -307,9 +318,15 @@ async function writeCollection({slug, runId}) {
 // --- finalize --------------------------------------------------------------
 
 async function finalize({slug, runId, indexName, result}) {
-  // Point the staged alias at the candidate. The live alias does not move —
-  // that is the second button.
-  await updateAliases([{add: {index: indexName, alias: stagedAliasName(prefix, slug)}}]);
+  // Point the staged alias at the candidate, and take it off whatever run it
+  // was on before (see stageActions). The live alias does not move — that is
+  // the second button.
+  const stagedAlias = stagedAliasName(prefix, slug);
+  const [previouslyStaged, live] = await Promise.all([
+    getAliases(stagedAlias).then(Object.keys),
+    getAliases(liveAliasName(prefix, slug)).then(Object.keys),
+  ]);
+  await updateAliases(stageActions({index: indexName, stagedAlias, previouslyStaged}));
   await writeStatus(slug, {
     runId,
     status: result?.failed ? "partial" : "succeeded",
@@ -319,7 +336,22 @@ async function finalize({slug, runId, indexName, result}) {
     stagedIndex: indexName,
     finishedAt: new Date().toISOString(),
   });
+  await dropSuperseded(supersededCandidates({index: indexName, previouslyStaged, live}));
   return {slug, runId, ...result};
+}
+
+// Best effort, like the CDN invalidation: the run is complete and correct
+// once the alias has moved, and a leftover index costs shards, not
+// correctness. After the status write, so a failure here cannot mark a
+// finished run failed.
+async function dropSuperseded(indexNames) {
+  for (const name of indexNames) {
+    try {
+      await deleteIndex(name);
+    } catch (error) {
+      console.error(`Unable to delete superseded candidate ${name}`, error);
+    }
+  }
 }
 
 async function recordFailure({slug, runId, indexName, error}) {
