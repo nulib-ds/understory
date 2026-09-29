@@ -1,8 +1,9 @@
 import {useCallback, useEffect, useRef, useState} from "react";
 import {Button, Callout, Card, Flex, Progress, Text} from "@radix-ui/themes";
-import {CheckCircledIcon, ExclamationTriangleIcon} from "@radix-ui/react-icons";
+import {CheckCircledIcon, ExclamationTriangleIcon, InfoCircledIcon} from "@radix-ui/react-icons";
 import {COLLECTION_API_BASE, apiFetch} from "../../lib/api";
 import ConsumesAside from "./ConsumesAside";
+import {useReportReady} from "../../lib/pageReady";
 
 // Publishing is two deliberate steps, and the panel's whole job is to make the
 // order obvious: publish the IIIF assets, go and rebuild your static site,
@@ -23,6 +24,8 @@ export default function PublishPanel({slug, counts, canPublish, onPublished}) {
   const [flipping, setFlipping] = useState(false);
   const [flipped, setFlipped] = useState(null);
   const sawRunningRef = useRef(false);
+  // Settled either way: a status it could not read shows as an error.
+  useReportReady(!COLLECTION_API_BASE || status !== null || error !== null);
 
   const load = useCallback(async () => {
     const url = publishUrl(slug);
@@ -103,9 +106,21 @@ export default function PublishPanel({slug, counts, canPublish, onPublished}) {
 
   return (
     <Card size="2" className="panel">
-      <Flex direction="column" gap="3">
-          {running ? (
-          <>
+      {/* gap 5 between sections: the addresses, the status and the buttons
+          are three different kinds of thing, and at the old 3 they ran
+          together into one column. Anything that belongs to one section is
+          grouped in its own Flex so it keeps a tight gap inside. */}
+      <Flex direction="column" gap="5">
+        {/* First: what a site is pointed at is what someone opening this
+            panel most often came for. The status and the actions that change
+            it follow. */}
+        <ConsumesAside status={status} />
+
+        {/* Nothing until the status is known. Falling through the chain
+            with no status lands on the green "Everything is published",
+            which is a claim, not a placeholder. */}
+        {!status ? null : running ? (
+          <Flex direction="column" gap="2">
             <Text size="2" weight="bold">{status.phase || "Publishing…"}</Text>
             {status.batches ? (
               <Progress value={status.batchesDone || 0} max={status.batches} />
@@ -117,7 +132,7 @@ export default function PublishPanel({slug, counts, canPublish, onPublished}) {
             <Text size="1" color="gray">
               Edits made now will show as unpublished when this finishes.
             </Text>
-          </>
+          </Flex>
         ) : status?.status === "failed" ? (
           <Callout.Root color="red" size="1">
             <Callout.Icon><ExclamationTriangleIcon /></Callout.Icon>
@@ -138,8 +153,25 @@ export default function PublishPanel({slug, counts, canPublish, onPublished}) {
               Published {status.published ?? 0}, {status.failed} failed.
             </Callout.Text>
           </Callout.Root>
-        ) : staged ? null : neverPublished ? (
-          <Text size="2" color="gray">Not published yet.</Text>
+        ) : staged ? (
+          /* Every state gets a line here, this one most of all: it is the
+             "go and rebuild your site" step, and with the value rows already
+             filled in from an earlier flip, the panel otherwise looks done.
+             Orange like unpublished changes, because it is the same kind of
+             news: the live search index is behind what has been published. */
+          <Callout.Root color="orange" size="1">
+            <Callout.Icon><ExclamationTriangleIcon /></Callout.Icon>
+            <Callout.Text>
+              IIIF assets published. Rebuild your site from them, then publish the search index.
+            </Callout.Text>
+          </Callout.Root>
+        ) : neverPublished ? (
+          /* Gray, not orange: an unpublished collection is a starting
+             point, not something that has gone wrong. */
+          <Callout.Root color="gray" size="1">
+            <Callout.Icon><InfoCircledIcon /></Callout.Icon>
+            <Callout.Text>Not published yet.</Callout.Text>
+          </Callout.Root>
         ) : unpublished > 0 ? (
           <Callout.Root color="orange" size="1">
             <Callout.Icon><ExclamationTriangleIcon /></Callout.Icon>
@@ -148,7 +180,7 @@ export default function PublishPanel({slug, counts, canPublish, onPublished}) {
             </Callout.Text>
           </Callout.Root>
         ) : (
-          <Callout.Root color="gray" size="1" variant="surface">
+          <Callout.Root color="green" size="1">
             <Callout.Icon><CheckCircledIcon /></Callout.Icon>
             <Callout.Text>Everything in this collection is published.</Callout.Text>
           </Callout.Root>
@@ -165,53 +197,38 @@ export default function PublishPanel({slug, counts, canPublish, onPublished}) {
           </Callout.Root>
         )}
 
-        <ConsumesAside status={status}>
-          {canPublish && (
-            /* Deliberately the same label-above-content shape as the three
-               value rows: "Publish" labels the pair the way "IIIF Collection"
-               labels its URL, so the buttons read as the two things that verb
-               applies to rather than as two unrelated actions. Their labels
-               carry no verb of their own for the same reason. */
-            <div className="collection-aside__row collection-aside__publish">
-              <Text size="1" color="gray" weight="bold" className="collection-aside__publish-label">
-                Publish
-              </Text>
-              {/* Decorative: a bracket from the label down to each button's
-                  centre. aria-hidden because the relationship it draws is
-                  already carried by the DOM order and the labels. */}
-              <div className="collection-aside__connector" aria-hidden />
-              <div className="collection-aside__actions">
-                {/* Both solid, like every other button in the app. The
-                    variants used to swap to show which step was next; the
-                    second button's disabled state already says that, and the
-                    swap only made these two look unlike the rest. */}
-                <Button
-                  size="2"
-                  onClick={startRun}
-                  disabled={running || starting}
-                  loading={starting}
-                >
-                  IIIF Assets
-                </Button>
-                <Button
-                  size="2"
-                  onClick={flipIndex}
-                  disabled={!staged || running || flipping}
-                  loading={flipping}
-                >
-                  Search Index
-                </Button>
-              </div>
-              {/* A Tooltip on a disabled Radix Button never fires — the button
-                  has pointer-events: none — so the reason is plain text. */}
-              {!staged && !running && (
-                <Text size="1" color="gray" mt="1">
-                  Publish the IIIF assets first; the search index is built from them.
-                </Text>
-              )}
-            </div>
-          )}
-        </ConsumesAside>
+        {canPublish && (
+          /* Directly under the status line: the status says what state the
+             collection is in, and these are what change it. No container of
+             their own: the buttons are already solid shapes, and a gray box
+             around them was a second frame saying the same thing. Stacked in
+             the order they are done, so the list itself reads as the
+             sequence.
+
+             Both solid, like every other button in the app. The variants used
+             to swap to show which step was next; the second button's disabled
+             state already says that, and the swap only made these two look
+             unlike the rest. A column Flex stretches them to the aside's
+             width. */
+          <Flex direction="column" gap="2">
+            <Button
+              size="2"
+              onClick={startRun}
+              disabled={running || starting}
+              loading={starting}
+            >
+              Publish IIIF Assets
+            </Button>
+            <Button
+              size="2"
+              onClick={flipIndex}
+              disabled={!staged || running || flipping}
+              loading={flipping}
+            >
+              Publish Search Index
+            </Button>
+          </Flex>
+        )}
 
       </Flex>
     </Card>

@@ -1,12 +1,11 @@
 import {useCallback, useEffect, useMemo, useState} from "react";
 import {Link as RouterLink, useNavigate, useParams} from "react-router-dom";
 import {Box, Button, Callout, Card, Flex, SegmentedControl, Text} from "@radix-ui/themes";
-import {ArrowUpIcon} from "@radix-ui/react-icons";
 import CloverViewer from "@samvera/clover-iiif/viewer";
 import {arrayMove} from "@dnd-kit/sortable";
 import {COLLECTION_API_BASE, MANIFEST_API_BASE, apiFetch, manifestApiUrl} from "../lib/api";
 import {CLOVER_OPTIONS, CLOVER_THEME} from "../cloverTheme";
-import PageHeading from "../components/PageHeading";
+import PageReady from "../components/PageReady";
 import InlineTextEditor from "../components/InlineTextEditor";
 import CanvasList from "../components/work/CanvasList";
 import MetadataPanel from "../components/work/MetadataPanel";
@@ -75,25 +74,40 @@ function WorkDetailPanel({
   return (
     <Flex direction="column" gap="5">
       {manifestDetail && (
-        <Flex direction="column" align="center" gap="7" pt="8">
-          <Button asChild size="3">
-            <RouterLink to={collectionPath}>
-              <ArrowUpIcon /> Back to {collectionLabel}
-            </RouterLink>
-          </Button>
-          {/* The work title is edited here rather than in the Metadata tab —
+        <Flex direction="column" align="center" pt="8">
+          {/* A breadcrumb, because a work is only ever reached through its
+              collection: the heading names which one and links back to it.
+              That link is the way back; a separate "Back to …" button above
+              it only said the same thing twice.
+
+              A real <h2> via asChild, like PageHeading. This used to pass
+              as="h1" to the editor's Text, which accepts only
+              span/div/p/label and silently rendered a <span> — so the title
+              was never a heading at all.
+
+              The work title is edited here rather than in the Metadata tab —
               it is the page's own heading, and shares .page-heading with every
-              section heading so the two treatments cannot drift. */}
-          <InlineTextEditor
-            as="h1"
-            value={manifestDetail.label || ""}
-            onSave={onSaveTitle}
-            placeholder={manifestDetail.identifier}
-            ariaLabel="Save title"
-            textProps={{weight: "bold"}}
-            fieldSize="3"
-            className="page-heading work-title-editable"
-          />
+              section heading so the two treatments cannot drift. It carries
+              .page-heading itself, not just by inheritance: the editor's
+              weight="bold" would otherwise pull it back to 700. */}
+          <Text asChild weight="bold">
+            <h2 className="page-heading work-breadcrumb">
+              <RouterLink to={collectionPath} className="work-breadcrumb__collection">
+                {collectionLabel}
+              </RouterLink>
+              <span className="work-breadcrumb__separator" aria-hidden="true">/</span>
+              <InlineTextEditor
+                as="span"
+                value={manifestDetail.label || ""}
+                onSave={onSaveTitle}
+                placeholder={manifestDetail.identifier}
+                ariaLabel="Save title"
+                textProps={{weight: "bold"}}
+                fieldSize="3"
+                className="page-heading work-title-editable"
+              />
+            </h2>
+          </Text>
         </Flex>
       )}
       {(isFailed || isStale) && (
@@ -111,9 +125,10 @@ function WorkDetailPanel({
         </Callout.Root>
       )}
       <Card size="3" className="panel viewer-panel">
-        {manifestDetailLoading ? (
-          <Text as="p" color="gray" className="viewer-placeholder">Loading work…</Text>
-        ) : manifestDetail ? (
+        {/* The work first, loading second: fetchManifestDetail runs again
+            when an import finishes, and checking loading first blanked the
+            viewer for that whole round trip. */}
+        {manifestDetail ? (
           <Flex direction="column" gap="3" className="viewer">
             <Box
               className="viewer-stage"
@@ -127,6 +142,8 @@ function WorkDetailPanel({
               />
             </Box>
           </Flex>
+        ) : manifestDetailLoading ? (
+          <Text as="p" color="gray" className="viewer-placeholder">Loading work…</Text>
         ) : (
           <Text as="p" color="gray" className="viewer-placeholder">
             Select a work above to preview it here.
@@ -152,7 +169,7 @@ function WorkDetailPanel({
           {section === "assets" ? (
             <CanvasList
               detail={manifestDetail}
-              loading={manifestDetailLoading}
+              loading={manifestDetailLoading && !manifestDetail}
               error={manifestDetailError}
               onAttachAssets={onAttachAssets}
               canAddCanvas={canAddCanvas}
@@ -213,6 +230,12 @@ export default function WorkPage() {
   const [importPollGeneration, setImportPollGeneration] = useState(0);
   const [canvasSaving, setCanvasSaving] = useState(false);
   const [canvasActionError, setCanvasActionError] = useState(null);
+  // Which work's first load has settled, for the page gate — keyed by id
+  // rather than a boolean so it describes the work in the URL. A plain
+  // `loading` flag cannot serve: it starts false, so the first render would
+  // read as "done" before the fetch had even begun.
+  const [detailSettledId, setDetailSettledId] = useState(null);
+  const [importCheckedId, setImportCheckedId] = useState(null);
 
   const handleResumeImport = useCallback(
     async (identifier) => {
@@ -247,6 +270,7 @@ export default function WorkPage() {
       setManifestDetailError(err.message);
     } finally {
       setManifestDetailLoading(false);
+      setDetailSettledId(identifier);
     }
   }, [manifestApiAvailable]);
 
@@ -452,6 +476,7 @@ export default function WorkPage() {
         }
         previousStatus = data.status;
         setImportStatus(data);
+        setImportCheckedId(selectedManifestId);
         setImportStale(
           data.status === "in-progress" &&
             Boolean(data.updatedAt) &&
@@ -462,7 +487,9 @@ export default function WorkPage() {
           intervalId = null;
         }
       } catch {
-        // ignore transient polling errors
+        // ignore transient polling errors — but the first one still counts as
+        // an answer, or the page would wait on a status it cannot read.
+        if (!cancelled) setImportCheckedId(selectedManifestId);
       }
     };
 
@@ -491,31 +518,41 @@ export default function WorkPage() {
     return null;
   })();
 
+  // Waits for the work AND its first import-status poll: a failed or stalled
+  // import's callout arriving a beat after the page is one of the pop-ins
+  // this is here to stop. The dropzone's recovery check reports for itself.
+  const pageReady =
+    !manifestApiAvailable ||
+    !selectedManifestId ||
+    (detailSettledId === selectedManifestId && importCheckedId === selectedManifestId);
+
   return (
-    <WorkDetailPanel
-      manifestDetail={manifestDetail}
-      manifestDetailLoading={manifestDetailLoading}
-      manifestDetailError={manifestDetailError}
-      viewerRevision={viewerRevision}
-      importStatus={importStatus}
-      importStale={importStale}
-      onResumeImport={handleResumeImport}
-      onAttachAssets={handleAttachAssets}
-      canAddCanvas={canAddCanvas}
-      onMoveCanvas={handleMoveCanvas}
-      onRemoveCanvas={handleRemoveCanvas}
-      onRenameCanvas={handleRenameCanvas}
-      onSaveTitle={handleSaveTitle}
-      onSaveSummary={handleSaveSummary}
-      onSaveMetadata={handleSaveMetadata}
-      onSaveBehavior={handleSaveBehavior}
-      workCollection={manifestDetail?.collection || null}
-      onMoveWork={moveWork}
-      canvasSaving={canvasSaving}
-      canvasActionError={canvasActionError}
-      disableAddReason={disableAddReason}
-      collectionPath={collectionPath}
-      collectionLabel={collectionLabel}
-    />
+    <PageReady ready={pageReady}>
+      <WorkDetailPanel
+        manifestDetail={manifestDetail}
+        manifestDetailLoading={manifestDetailLoading}
+        manifestDetailError={manifestDetailError}
+        viewerRevision={viewerRevision}
+        importStatus={importStatus}
+        importStale={importStale}
+        onResumeImport={handleResumeImport}
+        onAttachAssets={handleAttachAssets}
+        canAddCanvas={canAddCanvas}
+        onMoveCanvas={handleMoveCanvas}
+        onRemoveCanvas={handleRemoveCanvas}
+        onRenameCanvas={handleRenameCanvas}
+        onSaveTitle={handleSaveTitle}
+        onSaveSummary={handleSaveSummary}
+        onSaveMetadata={handleSaveMetadata}
+        onSaveBehavior={handleSaveBehavior}
+        workCollection={manifestDetail?.collection || null}
+        onMoveWork={moveWork}
+        canvasSaving={canvasSaving}
+        canvasActionError={canvasActionError}
+        disableAddReason={disableAddReason}
+        collectionPath={collectionPath}
+        collectionLabel={collectionLabel}
+      />
+    </PageReady>
   );
 }

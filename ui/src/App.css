@@ -144,6 +144,14 @@ html {
   font-weight: 800;
 }
 
+/* Home link, but still reads as the wordmark: black and no underline, even
+   on hover. It is the app's name first, and a purple wordmark would compete
+   with the section links beside it. */
+.app-wordmark a {
+  color: inherit;
+  text-decoration: none;
+}
+
 :root {
   font-family: var(--default-font-family);
   line-height: 1.5;
@@ -424,63 +432,6 @@ main.layout {
   display: flex;
   align-items: flex-start;
   gap: var(--space-1);
-}
-
-/* The label is centred over the pair, and a bracket drops from it to each
-   button's centre — so "Publish" visibly governs both rather than just sitting
-   above the first one. */
-.collection-aside__publish {
-  --publish-gap: var(--space-2);
-  align-items: center;
-  /* On top of the panel's own row gap: the actions are a different kind of
-     thing from the three values above them, so they get a wider break than the
-     values get from each other. */
-  margin-top: var(--space-5);
-}
-
-/* Uppercased in CSS, not in the string: the accessible name and anything that
-   ever needs translating stay sentence case. The extra tracking is the usual
-   correction — caps set at a label's size read cramped at normal spacing. */
-.collection-aside__publish-label {
-  text-transform: uppercase;
-  letter-spacing: 0.07em;
-}
-
-.collection-aside__connector {
-  align-self: stretch;
-  position: relative;
-  height: calc(14 * var(--px));
-}
-
-/* One element draws the whole bracket: a box with its bottom edge removed is a
-   horizontal bar with a right-angled drop at each end. Those ends sit at the
-   button centres — with two equal buttons of width (W - gap) / 2, a centre is
-   (W - gap) / 4 in from its side, whatever W turns out to be.
-
-   Hairline, so 1px and not scaled, like every other rule in the app. */
-.collection-aside__connector::before {
-  content: "";
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: calc((100% - var(--publish-gap)) / 4);
-  right: calc((100% - var(--publish-gap)) / 4);
-  border: 1px solid var(--gray-a6);
-  border-bottom: 0;
-}
-
-/* Side by side and equal width: with the verb hoisted into the label the two
-   names are short enough to share a line, and equal halves read as a pair of
-   steps rather than one button and an afterthought. */
-.collection-aside__actions {
-  align-self: stretch;
-  display: flex;
-  gap: var(--publish-gap, var(--space-2));
-}
-
-.collection-aside__actions > button {
-  flex: 1;
-  min-width: 0;
 }
 
 /* min-width: 0 so the code block can shrink inside the flex row; break-all
@@ -793,6 +744,45 @@ main.layout {
   align-self: center;
 }
 
+/* PageReady: a page's body stays hidden until everything on it has loaded
+   (components/PageReady.jsx). Hidden rather than unmounted, so every panel's
+   request runs meanwhile, and so the content cannot be focused or clicked
+   before it is shown. */
+.page-ready {
+  position: relative;
+}
+
+.page-ready__content {
+  visibility: hidden;
+}
+
+.page-ready[data-revealed] > .page-ready__content {
+  visibility: visible;
+  animation: page-ready-in 0.15s ease-out;
+}
+
+/* Absolute, so it takes no room from the hidden page and nothing shifts when
+   it goes. Level with where a page heading starts. */
+.page-ready__spinner {
+  position: absolute;
+  top: var(--space-9);
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: center;
+}
+
+@keyframes page-ready-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .page-ready[data-revealed] > .page-ready__content {
+    animation: none;
+  }
+}
+
 /* Every section's page heading, and a work's title on its own page. The size
    lives here rather than in a `size` prop because the wanted step falls between
    Radix's.
@@ -825,6 +815,44 @@ main.layout {
 .work-title-editable {
   padding: calc(2 * var(--px)) calc(6 * var(--px));
   margin: calc(-2 * var(--px)) calc(-6 * var(--px));
+}
+
+/* "<collection> / <work>" on a work's page. Flex rather than inline flow so
+   the title's edit field, which is a block-level Flex, stays on the same line
+   as the crumb instead of dropping below it. Wraps as whole items: a long
+   title moves under the crumb rather than breaking beside it. Gaps are in em
+   so they follow the heading's fluid size. */
+.work-breadcrumb {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: baseline;
+  column-gap: 0.3em;
+}
+
+/* The parent crumb is accent-coloured because it is a link — the same
+   purple as a collection's name in the collections list. It keeps the
+   heading's weight (inherited from .page-heading) so the two halves read as
+   one heading; the colour alone says which half you can follow.
+   Hover steps one shade darker rather than underlining: at this size an
+   underline is a heavy bar under the whole name. */
+.work-breadcrumb__collection {
+  color: var(--accent-11);
+  text-decoration: none;
+  transition: color 0.15s ease;
+}
+
+.work-breadcrumb__collection:hover,
+.work-breadcrumb__collection:focus-visible {
+  color: var(--accent-12);
+}
+
+/* Lighter than the crumbs on either side: at a black weight a slash is as
+   heavy as a letter and reads as part of a word. The heading face has a real
+   weight axis, so 300 is not synthesized. */
+.work-breadcrumb__separator {
+  color: var(--gray-8);
+  font-weight: 300;
 }
 
 /* The collections field in the Linking panel. The resting value reuses
@@ -918,19 +946,6 @@ main.layout {
 
 .collection-slug {
   font-family: var(--code-font-family);
-}
-
-/* The collection of collections sits above its members, separated by a heavier
-   rule so the table reads as a parent and a list rather than a flat set. */
-.collection-row--root > * {
-  background-color: var(--gray-2);
-  border-bottom: 1px solid var(--gray-6);
-}
-
-/* The root has no thumbnail of its own. Keep the box so every label lines up,
-   but don't paint an empty tile. */
-.collection-row--root .collection-thumb {
-  background-color: transparent;
 }
 
 /* Users section

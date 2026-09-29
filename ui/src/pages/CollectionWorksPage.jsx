@@ -11,6 +11,7 @@ import {
 } from "../lib/api";
 import {ROLE_ADMIN, useSession} from "../lib/session";
 import PageHeading from "../components/PageHeading";
+import PageReady from "../components/PageReady";
 import AddWorkModal from "../components/works/AddWorkModal";
 import WorksTable from "../components/works/WorksTable";
 import PublishPanel from "../components/works/PublishPanel";
@@ -27,6 +28,7 @@ function WorksListPanel({
   canPublish,
   onPublished,
   query,
+  resultsQuery,
   onQueryChange,
   onOpenManifestModal,
   onDeleteManifest,
@@ -52,8 +54,11 @@ function WorksListPanel({
             same question: how much is here, and how much of it is live. The
             publish aside states it too, but only in some of its states. */}
         <Flex align="center" gap="2">
+          {/* resultsQuery, not query: the rows on screen answer the filter
+              as it was when they were fetched, and the count has to describe
+              those rows, not the keystroke that has not been sent yet. */}
           <Text size="1" color="gray">
-            {query.trim()
+            {resultsQuery.trim()
               ? `${works.length} of ${total} works match`
               : `${total} work${total === 1 ? "" : "s"}`}
           </Text>
@@ -112,7 +117,7 @@ function WorksListPanel({
             works={works}
             onDelete={onDeleteManifest}
             workPath={workPath}
-            filtered={query.trim().length > 0}
+            filtered={resultsQuery.trim().length > 0}
             loading={manifestLoading}
             error={manifestApiAvailable ? manifestError : null}
           />
@@ -161,7 +166,15 @@ export default function CollectionWorksPage() {
   const [total, setTotal] = useState(0);
   const [counts, setCounts] = useState(null);
   const [collectionLabel, setCollectionLabel] = useState("");
-  const [worksLoading, setWorksLoading] = useState(true);
+  // Whether the first load has settled. Deliberately not a "loading" flag
+  // that goes true on every refresh: that swapped the whole table for
+  // "Loading works…" on each keystroke of the filter, after every delete and
+  // when a publish finished. Later refreshes keep the rows on screen and
+  // replace them when the answer arrives.
+  const [worksLoaded, setWorksLoaded] = useState(false);
+  // The filter the rows on screen were fetched with, which lags `query` by a
+  // round trip. See the count in WorksListPanel.
+  const [resultsQuery, setResultsQuery] = useState("");
   const [worksError, setWorksError] = useState(null);
 
   // Cosmetic only: canPublish in app/shared/access.js is what actually decides,
@@ -186,25 +199,26 @@ export default function CollectionWorksPage() {
   // riding along. Replaces the corpus listing plus a separate search call.
   const refreshWorks = useCallback(async () => {
     if (!slug) return;
-    const endpoint = collectionWorksUrl(slug, {q: queryRef.current});
+    const q = queryRef.current;
+    const endpoint = collectionWorksUrl(slug, {q});
     if (!endpoint) {
       setWorksError("Collection API URL is not configured. Set VITE_COLLECTION_API_URL and redeploy.");
-      setWorksLoading(false);
+      setWorksLoaded(true);
       return;
     }
-    setWorksLoading(true);
-    setWorksError(null);
     try {
       const data = await apiFetch(endpoint, {errorMessage: "Unable to load works"});
       setWorks(Array.isArray(data.works) ? data.works : []);
       setTotal(data.total ?? 0);
       setCounts(data.counts || null);
       setCollectionLabel(data.collection?.label || slug);
+      setResultsQuery(q);
+      setWorksError(null);
     } catch (err) {
       setWorks([]);
       setWorksError(err.message);
     } finally {
-      setWorksLoading(false);
+      setWorksLoaded(true);
     }
   }, [slug]);
 
@@ -374,14 +388,14 @@ export default function CollectionWorksPage() {
   }, [slug, query, refreshWorks]);
 
   return (
-    <>
+    <PageReady ready={worksLoaded}>
       {/* Only renders while a collection import is running, or afterwards if
           it hit trouble or dropped something. Silent the rest of the time. */}
       <CollectionImportBanner slug={slug} onProgress={refreshWorks} />
       <WorksListPanel
         manifestApiAvailable={manifestApiAvailable}
         manifestError={worksError}
-        manifestLoading={worksLoading}
+        manifestLoading={!worksLoaded}
         works={works}
         total={total}
         counts={counts}
@@ -389,6 +403,7 @@ export default function CollectionWorksPage() {
         canPublish={canPublish}
         onPublished={refreshWorks}
         query={query}
+        resultsQuery={resultsQuery}
         onQueryChange={setQuery}
         onOpenManifestModal={handleOpenManifestModal}
         onDeleteManifest={handleDeleteManifest}
@@ -415,6 +430,6 @@ export default function CollectionWorksPage() {
         onImportConfirm={handleImportConfirm}
         importConfirming={importConfirming}
       />
-    </>
+    </PageReady>
   );
 }

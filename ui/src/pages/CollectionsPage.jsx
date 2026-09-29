@@ -18,6 +18,7 @@ import {COLLECTION_API_BASE, apiFetch} from "../lib/api";
 import {suggestCollectionSlug, collectionSlugError} from "../lib/collectionSlug";
 import {ROLE_ADMIN, useSession} from "../lib/session";
 import PageHeading from "../components/PageHeading";
+import PageReady from "../components/PageReady";
 import AddCollectionModal from "../components/collections/AddCollectionModal";
 
 const EMPTY_FORM = {label: "", slug: "", slugEdited: false};
@@ -36,42 +37,27 @@ function collectionThumbnailUrl(thumbnail, size = 48) {
   return first.id || null;
 }
 
-// .../presentation/collection/{slug}/collection.json
-function slugFromCollectionId(id) {
-  const match = /\/collection\/([^/]+)\/collection\.json$/.exec(id || "");
-  return match ? match[1] : null;
-}
-
 function hideOnError(event) {
   event.currentTarget.style.visibility = "hidden";
 }
 
-function CollectionRow({collection, isRoot = false, canDelete = false, onDelete}) {
+function CollectionRow({collection, canDelete = false, onDelete}) {
   const thumbnail = collectionThumbnailUrl(collection.thumbnail);
   return (
-    <Table.Row className={isRoot ? "collection-row--root" : undefined}>
+    <Table.Row className="manifest-list-row">
       <Table.RowHeaderCell>
         <Flex align="center" gap="3">
           <span className="collection-thumb">
             {thumbnail && <img src={thumbnail} alt="" loading="lazy" onError={hideOnError} />}
           </span>
-          {isRoot ? (
-            <Text weight="bold">{collection.label}</Text>
-          ) : (
-            /* Link, not Text: Text carries no link styling, so the anchor
-               fell back to the UA default — browser blue and underlined —
-               instead of the accent every other link in the app uses. */
-            <Link asChild weight="medium">
-              <RouterLink to={`/collection/${encodeURIComponent(collection.slug)}`}>
-                {collection.label}
-              </RouterLink>
-            </Link>
-          )}
-          {isRoot && (
-            <Badge size="1" variant="soft" color="gray" radius="full">
-              Root
-            </Badge>
-          )}
+          {/* Link, not Text: Text carries no link styling, so the anchor
+              fell back to the UA default — browser blue and underlined —
+              instead of the accent every other link in the app uses. */}
+          <Link asChild size="2" weight="bold">
+            <RouterLink to={`/collection/${encodeURIComponent(collection.slug)}`}>
+              {collection.label}
+            </RouterLink>
+          </Link>
         </Flex>
       </Table.RowHeaderCell>
       <Table.Cell>
@@ -129,7 +115,6 @@ export default function CollectionsPage() {
   const noAccess = session.role !== ROLE_ADMIN && session.collections.length === 0;
   const available = Boolean(COLLECTION_API_BASE);
   const [collections, setCollections] = useState([]);
-  const [root, setRoot] = useState(null);
   const [loading, setLoading] = useState(available);
   const [error, setError] = useState(null);
   const [adding, setAdding] = useState(false);
@@ -159,7 +144,6 @@ export default function CollectionsPage() {
         const data = await apiFetch(COLLECTION_API_BASE, {errorMessage: "Unable to load collections"});
         if (cancelled) return;
         setCollections(Array.isArray(data.collections) ? data.collections : []);
-        setRoot(data.root || null);
         setError(null);
       } catch (err) {
         if (!cancelled) setError(err.message);
@@ -308,118 +292,111 @@ export default function CollectionsPage() {
     }
   };
 
-  // The collection of collections. The column counts WORKS, so the root's
-  // figure is the total across every collection rather than the number of
-  // collections — which is what its own `items` array holds.
-  //
-  // Summing is safe now: a work belongs to exactly one collection, so no work
-  // is counted twice. It would not have been under the old many-to-many model.
-  const rootRow = root?.id
-    ? {
-        label: root.label || "All Collections",
-        slug: slugFromCollectionId(root.id) || "index",
-        id: root.id,
-        itemCount: collections.reduce((total, entry) => total + (entry.itemCount || 0), 0),
-        thumbnail: null,
-      }
-    : null;
+  // There used to be a row for the root collection above the members, with the
+  // works total across every collection. Removed: it was not a collection
+  // anyone could open, publish or put a work in, so it read as a stray row.
+  // The root document itself is unchanged — it is still the register of which
+  // collections exist (see "Collections" in AGENTS.md).
 
   return (
-    <Flex direction="column" gap="5">
-      <PageHeading>Collections</PageHeading>
-      <Card size="3" className="panel">
-        {isAdmin && (
-          <Flex justify="end" align="center" gap="3" mb="4">
-            <Button type="button" size="3" onClick={openModal} disabled={!available}>
-              <PlusIcon /> Add
-            </Button>
-          </Flex>
-        )}
-        <Box className="panel-body">
-          {!available && (
-            <Callout.Root color="red" size="1" mb="3">
-              <Callout.Text>
-                Collection API URL is not configured. Update VITE_COLLECTION_API_URL to point at the
-                deployed endpoint.
-              </Callout.Text>
-            </Callout.Root>
+    <PageReady ready={!loading}>
+      <Flex direction="column" gap="5">
+        <PageHeading>Collections</PageHeading>
+        <Card size="3" className="panel">
+          {isAdmin && (
+            <Flex justify="end" align="center" gap="3" mb="4">
+              <Button type="button" size="3" onClick={openModal} disabled={!available}>
+                <PlusIcon /> Add
+              </Button>
+            </Flex>
           )}
-          {error && available && (
-            <Callout.Root color="red" size="1" mb="3">
-              <Callout.Text>{error}</Callout.Text>
-            </Callout.Root>
-          )}
-          {loading ? (
-            <Text as="p" size="2" color="gray">
-              Loading collections…
-            </Text>
-          ) : !rootRow ? (
-            <Text as="p" size="2" color="gray">
-              No collections to show.
-            </Text>
-          ) : (
-            <Table.Root size="2" variant="surface" className="manifest-list">
-              <Table.Header>
-                <Table.Row>
-                  <Table.ColumnHeaderCell>Collection</Table.ColumnHeaderCell>
-                  <Table.ColumnHeaderCell>Slug</Table.ColumnHeaderCell>
-                  {/* "Items", not "Works": the root's members are collections. */}
-                  <Table.ColumnHeaderCell>Works</Table.ColumnHeaderCell>
-                  <Table.ColumnHeaderCell />
-                </Table.Row>
-              </Table.Header>
-              <Table.Body>
-                <CollectionRow collection={rootRow} isRoot />
-                {collections.map((collection) => (
-                  <CollectionRow
-                    key={collection.slug}
-                    collection={collection}
-                    // Only an empty collection can be deleted; the API refuses
-                    // the rest rather than cascading over every member.
-                    canDelete={isAdmin && !collection.itemCount}
-                    onDelete={handleDelete}
-                  />
-                ))}
-                {collections.length === 0 && (
+          <Box className="panel-body">
+            {!available && (
+              <Callout.Root color="red" size="1" mb="3">
+                <Callout.Text>
+                  Collection API URL is not configured. Update VITE_COLLECTION_API_URL to point at the
+                  deployed endpoint.
+                </Callout.Text>
+              </Callout.Root>
+            )}
+            {error && available && (
+              <Callout.Root color="red" size="1" mb="3">
+                <Callout.Text>{error}</Callout.Text>
+              </Callout.Root>
+            )}
+            {loading ? (
+              <Text as="p" size="2" color="gray">
+                Loading collections…
+              </Text>
+            ) : error && collections.length === 0 ? (
+              /* A failed load shows only its error: an empty table under it
+                 would add "No collections yet", which is not what happened. */
+              null
+            ) : (
+              /* Ghost, like the works table on a collection's page: no frame and
+                 no tinted header, rows ruled and lit on hover. The card is
+                 already the container. */
+              <Table.Root variant="ghost" className="manifest-list">
+                <Table.Header>
                   <Table.Row>
-                    <Table.Cell colSpan={4}>
-                      <Text as="p" size="2" color="gray">
-                        {noAccess
-                          ? "You haven't been granted access to any collections. An administrator can grant you access from the Users section."
-                          : isAdmin
-                            ? "No collections yet. Use Add to create one."
-                            : "No collections yet."}
-                      </Text>
-                    </Table.Cell>
+                    <Table.ColumnHeaderCell>Collection</Table.ColumnHeaderCell>
+                    <Table.ColumnHeaderCell>Slug</Table.ColumnHeaderCell>
+                    <Table.ColumnHeaderCell>Works</Table.ColumnHeaderCell>
+                    <Table.ColumnHeaderCell />
                   </Table.Row>
-                )}
-              </Table.Body>
-            </Table.Root>
-          )}
-        </Box>
-      </Card>
-      <AddCollectionModal
-        open={adding}
-        onClose={() => setAdding(false)}
-        step={step}
-        onSelectStep={setStep}
-        onBack={handleModalBack}
-        createForm={createForm}
-        onCreateChange={(patch) => setCreateForm((prev) => ({...prev, ...patch}))}
-        onCreateSubmit={handleCreateSubmit}
-        createSubmitting={createSubmitting}
-        createError={createError}
-        importUrl={importUrl}
-        onImportUrlChange={setImportUrl}
-        onImportFetch={handleImportFetch}
-        importFetching={importFetching}
-        importError={importError}
-        importPreview={importPreview}
-        importForm={importForm}
-        onImportFormChange={(patch) => setImportForm((prev) => ({...prev, ...patch}))}
-        onImportConfirm={handleImportConfirm}
-        importConfirming={importConfirming}
-      />
-    </Flex>
+                </Table.Header>
+                <Table.Body>
+                  {collections.map((collection) => (
+                    <CollectionRow
+                      key={collection.slug}
+                      collection={collection}
+                      // Only an empty collection can be deleted; the API refuses
+                      // the rest rather than cascading over every member.
+                      canDelete={isAdmin && !collection.itemCount}
+                      onDelete={handleDelete}
+                    />
+                  ))}
+                  {collections.length === 0 && (
+                    <Table.Row>
+                      <Table.Cell colSpan={4}>
+                        <Text as="p" size="2" color="gray">
+                          {noAccess
+                            ? "You haven't been granted access to any collections. An administrator can grant you access from the Users section."
+                            : isAdmin
+                              ? "No collections yet. Use Add to create one."
+                              : "No collections yet."}
+                        </Text>
+                      </Table.Cell>
+                    </Table.Row>
+                  )}
+                </Table.Body>
+              </Table.Root>
+            )}
+          </Box>
+        </Card>
+        <AddCollectionModal
+          open={adding}
+          onClose={() => setAdding(false)}
+          step={step}
+          onSelectStep={setStep}
+          onBack={handleModalBack}
+          createForm={createForm}
+          onCreateChange={(patch) => setCreateForm((prev) => ({...prev, ...patch}))}
+          onCreateSubmit={handleCreateSubmit}
+          createSubmitting={createSubmitting}
+          createError={createError}
+          importUrl={importUrl}
+          onImportUrlChange={setImportUrl}
+          onImportFetch={handleImportFetch}
+          importFetching={importFetching}
+          importError={importError}
+          importPreview={importPreview}
+          importForm={importForm}
+          onImportFormChange={(patch) => setImportForm((prev) => ({...prev, ...patch}))}
+          onImportConfirm={handleImportConfirm}
+          importConfirming={importConfirming}
+        />
+      </Flex>
+    </PageReady>
   );
 }

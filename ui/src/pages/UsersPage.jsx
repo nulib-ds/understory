@@ -14,6 +14,7 @@ import {
 import {COLLECTION_API_BASE, USER_API_BASE, apiFetch} from "../lib/api";
 import {ROLE_ADMIN, ROLE_EDITOR, useSession} from "../lib/session";
 import PageHeading from "../components/PageHeading";
+import PageReady from "../components/PageReady";
 
 // A Drupal-style matrix: one column, one checkbox per role, every row showing
 // the same three so the grid can be read down as well as across.
@@ -90,10 +91,10 @@ function GrantsMenu({granted, options, disabled, onToggle}) {
 function UserRow({user, collections, saving, isSelf, onToggleRole, onSave}) {
   const isAdminRow = user.roles.includes(ROLE_ADMIN);
   return (
-    <Table.Row>
+    <Table.Row className="manifest-list-row">
       <Table.RowHeaderCell>
         <Flex align="center" gap="2">
-          <Text weight="medium">{user.email || user.username}</Text>
+          <Text weight="bold">{user.email || user.username}</Text>
           {isSelf && (
             <Badge size="1" variant="soft" color="gray" radius="full">
               You
@@ -238,71 +239,76 @@ export default function UsersPage() {
 
   if (!isAdmin) {
     return (
-      <Flex direction="column" gap="5">
-        <PageHeading>Users</PageHeading>
-        <Card size="3" className="panel">
-          <Box className="panel-body">
-            <Callout.Root color="gray" size="1">
-              <Callout.Text>Only an administrator can manage users.</Callout.Text>
-            </Callout.Root>
-          </Box>
-        </Card>
-      </Flex>
+      <PageReady>
+        <Flex direction="column" gap="5">
+          <PageHeading>Users</PageHeading>
+          <Card size="3" className="panel">
+            <Box className="panel-body">
+              <Callout.Root color="gray" size="1">
+                <Callout.Text>Only an administrator can manage users.</Callout.Text>
+              </Callout.Root>
+            </Box>
+          </Card>
+        </Flex>
+      </PageReady>
     );
   }
 
   return (
-    <Flex direction="column" gap="5">
-      <PageHeading>Users</PageHeading>
-      <Card size="3" className="panel">
-        <Box className="panel-body">
-          {error && (
-            <Callout.Root color="red" size="1" mb="3">
-              <Callout.Text>{error}</Callout.Text>
-            </Callout.Root>
-          )}
-          {notice && !error && (
-            <Callout.Root color="green" size="1" mb="3">
-              <Callout.Text>{notice}</Callout.Text>
-            </Callout.Root>
-          )}
-          {loading ? (
-            <Text as="p" size="2" color="gray">
-              Loading users…
-            </Text>
-          ) : (
-            <>
-              <Table.Root size="2" variant="surface" className="manifest-list">
-                <Table.Header>
-                  <Table.Row>
-                    <Table.ColumnHeaderCell>User</Table.ColumnHeaderCell>
-                    <Table.ColumnHeaderCell>Status</Table.ColumnHeaderCell>
-                    <Table.ColumnHeaderCell>Role</Table.ColumnHeaderCell>
-                    <Table.ColumnHeaderCell>Collections</Table.ColumnHeaderCell>
-                  </Table.Row>
-                </Table.Header>
-                <Table.Body>
-                  {users.map((user) => (
-                    <UserRow
-                      key={user.username}
-                      user={user}
-                      collections={sortedCollections}
-                      saving={savingUser === user.username}
-                      isSelf={user.email === session.username}
-                      onToggleRole={handleToggleRole}
-                      onSave={handleSave}
-                    />
-                  ))}
-                </Table.Body>
-              </Table.Root>
-              <Text as="p" size="1" color="gray" mt="3">
-                Accounts are created in Cognito, not here — this pool is invite-only. A user with no
-                role can sign in and browse, but cannot change anything.
+    <PageReady ready={!loading}>
+      <Flex direction="column" gap="5">
+        <PageHeading>Users</PageHeading>
+        <Card size="3" className="panel">
+          <Box className="panel-body">
+            {error && (
+              <Callout.Root color="red" size="1" mb="3">
+                <Callout.Text>{error}</Callout.Text>
+              </Callout.Root>
+            )}
+            {notice && !error && (
+              <Callout.Root color="green" size="1" mb="3">
+                <Callout.Text>{notice}</Callout.Text>
+              </Callout.Root>
+            )}
+            {loading ? (
+              <Text as="p" size="2" color="gray">
+                Loading users…
               </Text>
-            </>
-          )}
-        </Box>
-      </Card>
-    </Flex>
+            ) : (
+              <>
+                {/* Ghost, like the works table on a collection's page. */}
+                <Table.Root variant="ghost" className="manifest-list">
+                  <Table.Header>
+                    <Table.Row>
+                      <Table.ColumnHeaderCell>User</Table.ColumnHeaderCell>
+                      <Table.ColumnHeaderCell>Status</Table.ColumnHeaderCell>
+                      <Table.ColumnHeaderCell>Role</Table.ColumnHeaderCell>
+                      <Table.ColumnHeaderCell>Collections</Table.ColumnHeaderCell>
+                    </Table.Row>
+                  </Table.Header>
+                  <Table.Body>
+                    {users.map((user) => (
+                      <UserRow
+                        key={user.username}
+                        user={user}
+                        collections={sortedCollections}
+                        saving={savingUser === user.username}
+                        isSelf={user.email === session.username}
+                        onToggleRole={handleToggleRole}
+                        onSave={handleSave}
+                      />
+                    ))}
+                  </Table.Body>
+                </Table.Root>
+                <Text as="p" size="1" color="gray" mt="3">
+                  Accounts are created in Cognito, not here — this pool is invite-only. A user with no
+                  role can sign in and browse, but cannot change anything.
+                </Text>
+              </>
+            )}
+          </Box>
+        </Card>
+      </Flex>
+    </PageReady>
   );
 }

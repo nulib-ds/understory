@@ -67,14 +67,14 @@ function ConsumesRow({label, value, placeholder = "—"}) {
   );
 }
 
-// The collection's public face: the addresses a site is pointed at, and the
-// actions that put them there.
+// The collection's public face: the addresses a site is pointed at. The
+// actions that put them there are PublishPanel's buttons, below this one.
 //
 // The two steps light up independently because they are independent: a
 // completed run leaves a candidate index (staged, or live once flipped), and
 // only the flip makes the alias resolvable. Showing the alias before then
 // hands a curator a name that 404s.
-export default function ConsumesAside({status, children}) {
+export default function ConsumesAside({status}) {
   const iiifPublished = Boolean(status?.stagedIndex || status?.liveIndex);
   const indexLive = Boolean(status?.liveIndex);
 
@@ -102,9 +102,6 @@ export default function ConsumesAside({status, children}) {
         label="Search Index ID"
         value={indexLive ? status?.consumes?.searchAlias : null}
       />
-      {/* The actions live inside this box, not beneath it: they are what
-          produces the three values above, so the panel is one unit. */}
-      {children}
     </div>
   );
 }

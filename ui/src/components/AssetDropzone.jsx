@@ -2,7 +2,8 @@ import {useCallback, useEffect, useRef, useState} from "react";
 import {uploadData} from "aws-amplify/storage";
 import {ImageIcon, SpeakerLoudIcon, TrashIcon, UploadIcon, VideoIcon} from "@radix-ui/react-icons";
 import {AlertDialog, Box, Button, Callout, Em, Flex, IconButton, Progress, Text, TextField} from "@radix-ui/themes";
-import {apiFetch, manifestApiUrl} from "../lib/api";
+import {MANIFEST_API_BASE, apiFetch, manifestApiUrl} from "../lib/api";
+import {useReportReady} from "../lib/pageReady";
 import {
   assetLabelFromKey,
   buildAvCanvasResource,
@@ -141,6 +142,10 @@ export default function AssetDropzone({workId, manifest, disabled, disabledReaso
   const [attachError, setAttachError] = useState(null);
   const [discardError, setDiscardError] = useState(null);
   const [recoveryError, setRecoveryError] = useState(null);
+  const [recoveryChecked, setRecoveryChecked] = useState(false);
+  // Recovered uploads are part of what this work looks like, so the page
+  // waits for the check rather than letting them appear a moment late.
+  useReportReady(disabled || !workId || !MANIFEST_API_BASE || recoveryChecked);
   const fileInputRef = useRef(null);
   const pendingRef = useRef(pending);
   pendingRef.current = pending;
@@ -243,6 +248,9 @@ export default function AssetDropzone({workId, manifest, disabled, disabledReaso
       })
       .catch((err) => {
         if (!cancelled) setRecoveryError(err.message);
+      })
+      .finally(() => {
+        if (!cancelled) setRecoveryChecked(true);
       });
     return () => {
       cancelled = true;

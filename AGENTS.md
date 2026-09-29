@@ -181,6 +181,26 @@ marking one.
 
 Adding a section means one entry in `SECTIONS`, its `match`, and one `<Route>`.
 
+**Every page renders inside `PageReady`** (`ui/src/components/PageReady.jsx`),
+which holds the page body hidden until everything on it has loaded, then shows
+it in one piece. Without it each panel drew itself as its own request landed —
+a blank heading, "0 works", the publish panel's green "Everything is
+published" before its status was known. The header and nav never wait; only
+the body does, and a spinner appears only past 400ms.
+
+- The page passes its own first load as `ready`. Anything nested that fetches
+  on mount calls `useReportReady(settled)` (`ui/src/lib/pageReady.js`) —
+  `PublishPanel`, `CollectionImportBanner` and `AssetDropzone` do today.
+- Report the **first** load settling, success *or* failure: an error is
+  content. The gate opens once and never closes, so refreshes after that must
+  keep the old content up until the new arrives rather than flipping back to
+  "Loading…" — the works list and the work page both do.
+- Content is mounted while hidden, not deferred, so the wait is the slowest
+  request, not the sum. A participant that never reports is revealed anyway
+  after 10s, so a bug cannot become a blank page.
+- Images are deliberately not waited on: thumbnails and Clover tiles fill in
+  after the page appears, inside fixed-size boxes, so nothing shifts.
+
 `ui/src/lib/api.js` holds the Amplify configuration, the deployed endpoint bases,
 `apiFetch` and `manifestApiUrl`. Importing it is what configures Amplify, so
 every `apiFetch` caller is configured by construction.
