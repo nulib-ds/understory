@@ -1,7 +1,8 @@
 import {useCallback, useEffect, useRef, useState} from "react";
-import {Button, Callout, Card, Code, Flex, Progress, Text} from "@radix-ui/themes";
+import {Button, Callout, Card, Flex, Progress, Text} from "@radix-ui/themes";
 import {CheckCircledIcon, ExclamationTriangleIcon} from "@radix-ui/react-icons";
 import {COLLECTION_API_BASE, apiFetch} from "../../lib/api";
+import ConsumesAside from "./ConsumesAside";
 
 // Publishing is two deliberate steps, and the panel's whole job is to make the
 // order obvious: publish the IIIF assets, go and rebuild your static site,
@@ -103,7 +104,7 @@ export default function PublishPanel({slug, counts, canPublish, onPublished}) {
   return (
     <Card size="2" className="panel">
       <Flex direction="column" gap="3">
-        {running ? (
+          {running ? (
           <>
             <Text size="2" weight="bold">{status.phase || "Publishing…"}</Text>
             {status.batches ? (
@@ -137,13 +138,7 @@ export default function PublishPanel({slug, counts, canPublish, onPublished}) {
               Published {status.published ?? 0}, {status.failed} failed.
             </Callout.Text>
           </Callout.Root>
-        ) : staged ? (
-          <Callout.Root color="iris" size="1">
-            <Callout.Text>
-              IIIF assets published. Build your site from them, then publish the search index.
-            </Callout.Text>
-          </Callout.Root>
-        ) : neverPublished ? (
+        ) : staged ? null : neverPublished ? (
           <Text size="2" color="gray">Not published yet.</Text>
         ) : unpublished > 0 ? (
           <Callout.Root color="orange" size="1">
@@ -170,52 +165,54 @@ export default function PublishPanel({slug, counts, canPublish, onPublished}) {
           </Callout.Root>
         )}
 
-        {canPublish && (
-          <Flex gap="3" align="center">
-            <Button
-              size="2"
-              variant={staged ? "soft" : "solid"}
-              onClick={startRun}
-              disabled={running || starting}
-              loading={starting}
-            >
-              Publish IIIF assets
-            </Button>
-            <Button
-              size="2"
-              variant={staged ? "solid" : "soft"}
-              onClick={flipIndex}
-              disabled={!staged || running || flipping}
-              loading={flipping}
-            >
-              Publish search index
-            </Button>
-            {/* A Tooltip on a disabled Radix Button never fires — the button
-                has pointer-events: none — so the reason is plain text. */}
-            {!staged && !running && (
-              <Text size="1" color="gray">
-                Publish the IIIF assets first; the search index is built from them.
+        <ConsumesAside status={status}>
+          {canPublish && (
+            /* Deliberately the same label-above-content shape as the three
+               value rows: "Publish" labels the pair the way "IIIF Collection"
+               labels its URL, so the buttons read as the two things that verb
+               applies to rather than as two unrelated actions. Their labels
+               carry no verb of their own for the same reason. */
+            <div className="collection-aside__row collection-aside__publish">
+              <Text size="1" color="gray" weight="bold" className="collection-aside__publish-label">
+                Publish
               </Text>
-            )}
-          </Flex>
-        )}
+              {/* Decorative: a bracket from the label down to each button's
+                  centre. aria-hidden because the relationship it draws is
+                  already carried by the DOM order and the labels. */}
+              <div className="collection-aside__connector" aria-hidden />
+              <div className="collection-aside__actions">
+                {/* Both solid, like every other button in the app. The
+                    variants used to swap to show which step was next; the
+                    second button's disabled state already says that, and the
+                    swap only made these two look unlike the rest. */}
+                <Button
+                  size="2"
+                  onClick={startRun}
+                  disabled={running || starting}
+                  loading={starting}
+                >
+                  IIIF Assets
+                </Button>
+                <Button
+                  size="2"
+                  onClick={flipIndex}
+                  disabled={!staged || running || flipping}
+                  loading={flipping}
+                >
+                  Search Index
+                </Button>
+              </div>
+              {/* A Tooltip on a disabled Radix Button never fires — the button
+                  has pointer-events: none — so the reason is plain text. */}
+              {!staged && !running && (
+                <Text size="1" color="gray" mt="1">
+                  Publish the IIIF assets first; the search index is built from them.
+                </Text>
+              )}
+            </div>
+          )}
+        </ConsumesAside>
 
-        {status?.liveIndex && status?.consumes && (
-          <Flex direction="column" gap="1" mt="1">
-            <Text size="1" color="gray" weight="bold">
-              A consuming site needs
-            </Text>
-            <Text size="1" color="gray">
-              IIIF collection: <Code size="1">{status.consumes.collection}</Code>
-            </Text>
-            <Text size="1" color="gray">
-              Search endpoint: <Code size="1">{status.consumes.searchEndpoint || "not configured"}</Code>
-            </Text>
-            <Text size="1" color="gray">
-              Search alias: <Code size="1">{status.consumes.searchAlias}</Code>
-            </Text>
-          </Flex>
-        )}
       </Flex>
     </Card>
   );

@@ -58,11 +58,14 @@ function CollectionRow({collection, isRoot = false, canDelete = false, onDelete}
           {isRoot ? (
             <Text weight="bold">{collection.label}</Text>
           ) : (
-            <Text weight="medium" asChild>
+            /* Link, not Text: Text carries no link styling, so the anchor
+               fell back to the UA default — browser blue and underlined —
+               instead of the accent every other link in the app uses. */
+            <Link asChild weight="medium">
               <RouterLink to={`/collection/${encodeURIComponent(collection.slug)}`}>
                 {collection.label}
               </RouterLink>
-            </Text>
+            </Link>
           )}
           {isRoot && (
             <Badge size="1" variant="soft" color="gray" radius="full">
@@ -79,11 +82,10 @@ function CollectionRow({collection, isRoot = false, canDelete = false, onDelete}
       <Table.Cell>
         <Text size="2">{collection.itemCount ?? "—"}</Text>
       </Table.Cell>
+      {/* Unlabelled, like the works table's actions cell: it holds a control,
+          not a value, so a heading over it would name nothing. */}
       <Table.Cell>
-        <Flex align="center" justify="between" gap="3">
-          <Link href={collection.id} target="_blank" rel="noreferrer" size="2">
-            collection.json
-          </Link>
+        <Flex align="center" justify="end" gap="3">
           {canDelete && (
             <AlertDialog.Root>
               <AlertDialog.Trigger>
@@ -306,15 +308,18 @@ export default function CollectionsPage() {
     }
   };
 
-  // The collection of collections. Its members are the collections below it, so
-  // its count is their number — not a sum of theirs, which would double-count a
-  // work that belongs to two.
+  // The collection of collections. The column counts WORKS, so the root's
+  // figure is the total across every collection rather than the number of
+  // collections — which is what its own `items` array holds.
+  //
+  // Summing is safe now: a work belongs to exactly one collection, so no work
+  // is counted twice. It would not have been under the old many-to-many model.
   const rootRow = root?.id
     ? {
         label: root.label || "All Collections",
         slug: slugFromCollectionId(root.id) || "index",
         id: root.id,
-        itemCount: collections.length,
+        itemCount: collections.reduce((total, entry) => total + (entry.itemCount || 0), 0),
         thumbnail: null,
       }
     : null;
@@ -359,8 +364,8 @@ export default function CollectionsPage() {
                   <Table.ColumnHeaderCell>Collection</Table.ColumnHeaderCell>
                   <Table.ColumnHeaderCell>Slug</Table.ColumnHeaderCell>
                   {/* "Items", not "Works": the root's members are collections. */}
-                  <Table.ColumnHeaderCell>Items</Table.ColumnHeaderCell>
-                  <Table.ColumnHeaderCell>IIIF</Table.ColumnHeaderCell>
+                  <Table.ColumnHeaderCell>Works</Table.ColumnHeaderCell>
+                  <Table.ColumnHeaderCell />
                 </Table.Row>
               </Table.Header>
               <Table.Body>

@@ -25,6 +25,7 @@ const {
   canvasThumbnailService,
 } = require("../../../shared/manifest");
 const {
+  MANAGED_KEY,
   collectionObjectKey,
   rootCollectionKey,
   buildCollectionDocument,
@@ -177,6 +178,7 @@ async function batch({slug, runId, indexName, batchIndex}) {
       const {document, replacements} = publishDocument(stored.document, {
         from: WORKING_BASE,
         to: PUBLISHED_BASE,
+        strip: [MANAGED_KEY],
       });
       if (replacements === 0) {
         throw new Error("No self-referential URLs found — is this manifest under the working base?");
@@ -242,6 +244,7 @@ async function writeCollection({slug, runId}) {
   // than a URL-transformed copy of the working document.
   const leaf = buildCollectionDocument({
     baseUrl: PUBLISHED_BASE_ROOT,
+    space: PUBLISHED,
     slug,
     label,
     members: published.map((result) => ({
@@ -261,12 +264,15 @@ async function writeCollection({slug, runId}) {
   // Leaf first, then the root — the published root must never advertise a
   // collection whose document is not there yet.
   const existingRoot = await readJson(rootCollectionKey(PUBLISHED));
-  const rootDoc = existingRoot?.document || createRootCollectionTemplate({baseUrl: PUBLISHED_BASE_ROOT});
+  const rootDoc =
+    existingRoot?.document ||
+    createRootCollectionTemplate({baseUrl: PUBLISHED_BASE_ROOT, space: PUBLISHED});
   const others = rootCollectionSummaries(rootDoc).filter((entry) => entry.slug !== slug);
   await putJson(
     rootCollectionKey(PUBLISHED),
     buildRootCollectionDocument({
       baseUrl: PUBLISHED_BASE_ROOT,
+      space: PUBLISHED,
       collections: [...others, {slug, label, itemCount: leaf.items.length, thumbnail: leaf.thumbnail}].sort(
         (a, b) => a.label.localeCompare(b.label),
       ),

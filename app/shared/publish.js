@@ -44,7 +44,16 @@ function isSelfReference(value, from) {
 //   - @context. Safe today because the extension namespace is on a different
 //     host, but a walker that rewrites arbitrary values is one namespace change
 //     away from breaking compact-IRI expansion, so it is skipped explicitly.
-function rewriteUrls(node, {from, to}, state = {replacements: 0}) {
+// `strip` removes keys anywhere in the tree. It exists for our own bookkeeping
+// terms, which are meaningful in `working/` and noise in `published/`:
+// MANAGED_KEY tells the manifest API which partOf entries are its own rather
+// than the source institution's provenance, and nothing reads it back out of a
+// published document.
+//
+// It is passed per-call rather than applied to every extension term, because
+// one of them must survive: the published collection's items carry
+// CONTENT_HASH_KEY, and planPublish compares against exactly that.
+function rewriteUrls(node, {from, to, strip = []}, state = {replacements: 0}) {
   if (typeof node === "string") {
     if (isSelfReference(node, from)) {
       state.replacements += 1;
@@ -53,12 +62,13 @@ function rewriteUrls(node, {from, to}, state = {replacements: 0}) {
     return node;
   }
   if (Array.isArray(node)) {
-    return node.map((entry) => rewriteUrls(entry, {from, to}, state));
+    return node.map((entry) => rewriteUrls(entry, {from, to, strip}, state));
   }
   if (node && typeof node === "object") {
     const out = {};
     for (const [key, value] of Object.entries(node)) {
-      out[key] = key === "@context" ? value : rewriteUrls(value, {from, to}, state);
+      if (strip.includes(key)) continue;
+      out[key] = key === "@context" ? value : rewriteUrls(value, {from, to, strip}, state);
     }
     return out;
   }
@@ -68,9 +78,9 @@ function rewriteUrls(node, {from, to}, state = {replacements: 0}) {
 // Returns the published document and how many URLs moved. Zero is a bug, not a
 // no-op: a manifest whose id does not sit under the working base is a hand
 // edit, a base-URL change, or an already-published document fed back in.
-function publishDocument(document, {from, to}) {
+function publishDocument(document, {from, to, strip = []}) {
   const state = {replacements: 0};
-  const published = rewriteUrls(document, {from, to}, state);
+  const published = rewriteUrls(document, {from, to, strip}, state);
   return {document: published, replacements: state.replacements};
 }
 

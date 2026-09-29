@@ -44,13 +44,36 @@ function WorksListPanel({
     <Flex direction="column" gap="5">
       {/* Not editable, unlike every other heading in the app: the slug is the
           collection's identity, so renaming is impossible by construction. */}
-      <PageHeading>{heading}</PageHeading>
-      <PublishPanel
-        slug={slug}
-        counts={counts}
-        canPublish={canPublish}
-        onPublished={onPublished}
-      />
+      <Flex direction="column" align="center" gap="1">
+        <PageHeading>{heading}</PageHeading>
+        {/* Counts are for the whole collection, not the loaded page — a
+            summary computed from the rows on screen would only be right on
+            page one. The unpublished figure rides along because it answers the
+            same question: how much is here, and how much of it is live. The
+            publish aside states it too, but only in some of its states. */}
+        <Flex align="center" gap="2">
+          <Text size="1" color="gray">
+            {query.trim()
+              ? `${works.length} of ${total} works match`
+              : `${total} work${total === 1 ? "" : "s"}`}
+          </Text>
+          {counts && counts.new + counts.changed > 0 && (
+            <>
+              <Text size="1" color="gray" aria-hidden>
+                ·
+              </Text>
+              <Text size="1" color="orange">
+                {counts.new + counts.changed} unpublished
+                {counts.new > 0 && counts.changed > 0
+                  ? ` (${counts.new} new, ${counts.changed} changed)`
+                  : ""}
+              </Text>
+            </>
+          )}
+        </Flex>
+      </Flex>
+      <div className="collection-layout">
+        <div className="collection-main">
       <Card size="3" className="panel manifest-panel">
         <Flex justify="between" align="center" gap="3" mb="4">
           <TextField.Root
@@ -85,24 +108,6 @@ function WorksListPanel({
               </Callout.Text>
             </Callout.Root>
           )}
-          <Flex justify="between" align="baseline" mb="2">
-            <Text size="1" color="gray">
-              {query.trim()
-                ? `${works.length} of ${total} works match`
-                : `${total} work${total === 1 ? "" : "s"}`}
-            </Text>
-            {/* Counts are for the whole collection, not the loaded page — a
-                summary computed from the rows on screen would only be right on
-                page one. The publish panel builds on these next. */}
-            {counts && counts.new + counts.changed > 0 && (
-              <Text size="1" color="orange">
-                {counts.new + counts.changed} unpublished
-                {counts.new > 0 && counts.changed > 0
-                  ? ` (${counts.new} new, ${counts.changed} changed)`
-                  : ""}
-              </Text>
-            )}
-          </Flex>
           <WorksTable
             works={works}
             onDelete={onDeleteManifest}
@@ -113,6 +118,19 @@ function WorksListPanel({
           />
         </Box>
       </Card>
+        </div>
+        {/* Publishing is about the collection as a whole, not about any one
+            row, so it reads as a sidebar to the works list rather than as a
+            banner above it. */}
+        <aside className="collection-aside">
+          <PublishPanel
+            slug={slug}
+            counts={counts}
+            canPublish={canPublish}
+            onPublished={onPublished}
+          />
+        </aside>
+      </div>
     </Flex>
   );
 }
