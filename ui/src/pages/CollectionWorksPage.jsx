@@ -22,7 +22,6 @@ function WorksListPanel({
   manifestError,
   manifestLoading,
   works,
-  total,
   counts,
   slug,
   canPublish,
@@ -41,6 +40,7 @@ function WorksListPanel({
   // admin role nor a single grant gets an empty list. Say why, rather than
   // showing a bare table that looks like the collection is empty.
   const noAccess = !isAdmin && session.collections.length === 0;
+  const collectionSize = counts ? counts.new + counts.changed + counts.published : null;
 
   return (
     <Flex direction="column" gap="5">
@@ -54,14 +54,17 @@ function WorksListPanel({
             same question: how much is here, and how much of it is live. The
             publish aside states it too, but only in some of its states. */}
         <Flex align="center" gap="2">
-          {/* resultsQuery, not query: the rows on screen answer the filter
-              as it was when they were fetched, and the count has to describe
-              those rows, not the keystroke that has not been sent yet. */}
-          <Text size="1" color="gray">
-            {resultsQuery.trim()
-              ? `${works.length} of ${total} works match`
-              : `${total} work${total === 1 ? "" : "s"}`}
-          </Text>
+          {/* The collection's size, and nothing else — it does not move when
+              the list is filtered. That is why it comes from the sync counts
+              rather than the works response's `total`, which counts only the
+              rows matching the filter ("0 of 0 works match"). Every indexed
+              work carries a syncState (the document builder defaults it to
+              new), so the three buckets sum to the whole collection. */}
+          {collectionSize !== null && (
+            <Text size="1" color="gray">
+              {collectionSize} work{collectionSize === 1 ? "" : "s"}
+            </Text>
+          )}
           {counts && counts.new + counts.changed > 0 && (
             <>
               <Text size="1" color="gray" aria-hidden>
@@ -163,7 +166,6 @@ export default function CollectionWorksPage() {
 
   const manifestApiAvailable = Boolean(MANIFEST_API_BASE);
   const [works, setWorks] = useState([]);
-  const [total, setTotal] = useState(0);
   const [counts, setCounts] = useState(null);
   const [collectionLabel, setCollectionLabel] = useState("");
   // Whether the first load has settled. Deliberately not a "loading" flag
@@ -173,7 +175,8 @@ export default function CollectionWorksPage() {
   // replace them when the answer arrives.
   const [worksLoaded, setWorksLoaded] = useState(false);
   // The filter the rows on screen were fetched with, which lags `query` by a
-  // round trip. See the count in WorksListPanel.
+  // round trip. It decides whether an empty table means "no works match" —
+  // the rows describe the filter as sent, not the keystroke still in flight.
   const [resultsQuery, setResultsQuery] = useState("");
   const [worksError, setWorksError] = useState(null);
 
@@ -209,7 +212,6 @@ export default function CollectionWorksPage() {
     try {
       const data = await apiFetch(endpoint, {errorMessage: "Unable to load works"});
       setWorks(Array.isArray(data.works) ? data.works : []);
-      setTotal(data.total ?? 0);
       setCounts(data.counts || null);
       setCollectionLabel(data.collection?.label || slug);
       setResultsQuery(q);
@@ -397,7 +399,6 @@ export default function CollectionWorksPage() {
         manifestError={worksError}
         manifestLoading={!worksLoaded}
         works={works}
-        total={total}
         counts={counts}
         slug={slug}
         canPublish={canPublish}

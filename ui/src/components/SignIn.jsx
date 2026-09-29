@@ -6,6 +6,7 @@ import {
   signIn,
 } from "aws-amplify/auth";
 import {Box, Button, Callout, Flex, Heading, Text, TextField} from "@radix-ui/themes";
+import Wordmark from "./Wordmark";
 import "./SignIn.css";
 
 // Mirrors the pool's password policy (template.yml CognitoUserPool): 8+ chars,
@@ -292,7 +293,9 @@ export default function SignIn({onSignedIn}) {
           </Flex>
         )}
         <Flex direction="column" gap="1" mb="5">
-          <Heading as="h1" size="6" className="app-wordmark">Understory</Heading>
+          <Heading as="h1" size="6" className="app-wordmark">
+            <Wordmark />
+          </Heading>
           <Text as="p" size="2" color="gray">{form.description || "Sign in to manage your works."}</Text>
         </Flex>
 

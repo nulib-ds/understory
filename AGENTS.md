@@ -1255,7 +1255,7 @@ zooming shrinks the CSS viewport and pushes the unit toward its floor.
 for body copy; `--heading-font-family` is **Google Sans Flex Variable**, used for
 headings only. The reason is the weight axis — the static face ships 400/500/600/700
 and stops there, so a heading could not sit heavier than bold. The variable cut
-runs 1–1000, which is what `.app-wordmark` (`font-weight: 800`) depends on.
+runs 1–1000, which is what the 800-weight page headings (`.page-heading`) depend on.
 
 Import the **`wght`** entrypoint, not `full`: the weight-axis file is ~50KB, while
 the all-axes build (which would additionally bring the optical-size axis) is 1.4MB.

@@ -1,6 +1,7 @@
 import {Link, Outlet, useLocation} from "react-router-dom";
 import {Box, Heading} from "@radix-ui/themes";
 import {ROLE_ADMIN, useSession} from "../lib/session";
+import Wordmark from "./Wordmark";
 import "../App.css";
 
 // The app's top-level sections. Order here is the order on the page.
@@ -90,7 +91,9 @@ export default function AppShell({signOut, username}) {
             {/* The link goes inside the h1, not around it: the heading stays
                 the page's h1 and the link is its content. */}
             <Heading as="h1" size="6" className="app-wordmark">
-              <Link to="/">Understory</Link>
+              <Link to="/">
+                <Wordmark />
+              </Link>
             </Heading>
             <SectionNav />
           </div>

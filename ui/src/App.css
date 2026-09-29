@@ -138,10 +138,12 @@ html {
   letter-spacing: -0.02em;
 }
 
-/* The wordmark, in the header and on the sign-in pane. Heavier than bold, which
-   is only possible because the heading face is the variable cut. */
+/* The wordmark, in the header and on the sign-in pane. 700, a step lighter
+   than the 800 it used to be: beside the mark, a black-weight word read as
+   heavier than the mark itself. The heading face is the variable cut, so this
+   is a real weight rather than a synthesized one. */
 .app-wordmark {
-  font-weight: 800;
+  font-weight: 700;
 }
 
 /* Home link, but still reads as the wordmark: black and no underline, even
@@ -150,6 +152,22 @@ html {
 .app-wordmark a {
   color: inherit;
   text-decoration: none;
+}
+
+/* Mark and word side by side (components/Wordmark.jsx). Sized in em so the
+   mark follows the heading's fluid size wherever the lockup is used. A touch
+   taller than the capitals, which is where a mark beside a word reads as the
+   same weight rather than as a small badge. */
+.app-lockup {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3em;
+}
+
+.app-lockup__mark {
+  height: 1.2em;
+  width: auto;
+  flex-shrink: 0;
 }
 
 :root {
