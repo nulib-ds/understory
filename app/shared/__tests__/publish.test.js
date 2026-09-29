@@ -11,6 +11,8 @@ const {
   externalImageServices,
   planPublish,
   aliasFlipActions,
+  stageActions,
+  supersededCandidates,
 } = require("../publish");
 
 const BASE = "https://stack-iiif.s3.us-east-1.amazonaws.com";
@@ -170,9 +172,8 @@ test("the alias flip is one atomic batch, and deletes nothing", () => {
     {add: {index: "s.eis._pub.r2", alias: "s.eis"}},
     {remove: {index: "s.eis._pub.r2", alias: "s.eis._staged"}},
   ]);
-  // GC happens at the start of the next run, never here: a flip must be safe
-  // to retry, and must not be able to drop an index a concurrent run is
-  // writing into.
+  // Nothing is deleted inside the batch: a flip must be safe to retry. The
+  // route deletes the index that stopped being live only once this succeeds.
   assert.equal(actions.some((a) => a.remove_index), false);
 });
 
@@ -185,6 +186,58 @@ test("the first flip for a collection has no previous alias to remove", () => {
   });
   assert.deepEqual(actions[0], {add: {index: "s.eis._pub.r1", alias: "s.eis"}});
   assert.equal(actions.length, 2);
+});
+
+// --- staging a run's candidate ------------------------------------------------
+
+test("staging takes the alias off every earlier candidate, in the same batch", () => {
+  // The bug: a bare `add` left all four earlier runs behind the alias, so the
+  // panel could never clear and each flip moved live search backwards.
+  const actions = stageActions({
+    index: "s.eis._pub.r5",
+    stagedAlias: "s.eis._staged",
+    previouslyStaged: ["s.eis._pub.r1", "s.eis._pub.r2", "s.eis._pub.r4"],
+  });
+  assert.deepEqual(actions, [
+    {remove: {index: "s.eis._pub.r1", alias: "s.eis._staged"}},
+    {remove: {index: "s.eis._pub.r2", alias: "s.eis._staged"}},
+    {remove: {index: "s.eis._pub.r4", alias: "s.eis._staged"}},
+    {add: {index: "s.eis._pub.r5", alias: "s.eis._staged"}},
+  ]);
+  const staged = actions.filter((a) => a.add).map((a) => a.add.index);
+  assert.deepEqual(staged, ["s.eis._pub.r5"]);
+});
+
+test("staging with nothing staged before is a single add", () => {
+  assert.deepEqual(
+    stageActions({index: "s.eis._pub.r1", stagedAlias: "s.eis._staged", previouslyStaged: []}),
+    [{add: {index: "s.eis._pub.r1", alias: "s.eis._staged"}}],
+  );
+});
+
+test("a retried Finalize never unstages its own candidate", () => {
+  // The first attempt already moved the alias; the retry reads it back.
+  assert.deepEqual(
+    stageActions({
+      index: "s.eis._pub.r5",
+      stagedAlias: "s.eis._staged",
+      previouslyStaged: ["s.eis._pub.r5"],
+    }),
+    [{add: {index: "s.eis._pub.r5", alias: "s.eis._staged"}}],
+  );
+});
+
+test("only candidates that lost the staged alias are deleted, never a live one", () => {
+  assert.deepEqual(
+    supersededCandidates({
+      index: "s.eis._pub.r5",
+      previouslyStaged: ["s.eis._pub.r1", "s.eis._pub.r3", "s.eis._pub.r5"],
+      // r3 carrying both aliases is a race with a flip; it must survive it.
+      live: ["s.eis._pub.r3"],
+    }),
+    ["s.eis._pub.r1"],
+  );
+  assert.deepEqual(supersededCandidates({index: "s.eis._pub.r1"}), []);
 });
 
 // --- published documents must describe the published space -----------------

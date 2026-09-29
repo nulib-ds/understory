@@ -720,6 +720,55 @@ main.layout {
   vertical-align: top;
 }
 
+/* A field name or value's edit field, sized to its text and set in its type,
+   like the work title and canvas labels. Content-sized matters more here than
+   anywhere: the check and remove buttons sit at the end of the field, and a
+   field stretched across the whole cell put them a table's width away from
+   the value they act on.
+
+   fit-content on the value wrapper is what stops the stretch — the editor's
+   field is flex: 1 inline, so it fills whatever its row is given. */
+.metadata-value {
+  width: fit-content;
+  max-width: 100%;
+}
+
+.metadata-table .rt-TextFieldInput {
+  font-size: var(--font-size-3);
+  field-sizing: content;
+  min-width: 12ch;
+  padding-inline-end: var(--text-field-padding);
+}
+
+/* A value rendered from IIIF HTML (lib/iiifHtml.js). The paragraphs lose their
+   UA margins, which would otherwise pad a one-line value into three, and keep
+   a small gap between them when there are several. Links take the accent like
+   every other link, underlined because they sit inside running text. */
+.iiif-html p {
+  margin: 0;
+}
+
+.iiif-html p + p {
+  margin-top: var(--space-2);
+}
+
+.iiif-html a {
+  color: var(--accent-11);
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+}
+
+.iiif-html img {
+  max-width: 100%;
+  height: auto;
+  vertical-align: middle;
+}
+
+/* Field names are bold at rest, so they are bold while being edited too. */
+.metadata-table th .rt-TextFieldInput {
+  font-weight: var(--font-weight-bold);
+}
+
 .canvas-label-editable {
   display: inline-block;
   align-self: flex-start;
@@ -781,6 +830,20 @@ main.layout {
   .page-ready[data-revealed] > .page-ready__content {
     animation: none;
   }
+}
+
+/* A canvas label's edit field, in the label's own type — the same treatment
+   as the work title's (see .work-breadcrumb below): clicking to edit should
+   not drop a bold size-3 label to size-2 regular. The field keeps its size-2
+   height, which fits the row, so the card does not grow while you type. */
+.canvas-list-info .rt-TextFieldInput {
+  font-size: var(--font-size-3);
+  font-weight: var(--font-weight-bold);
+  field-sizing: content;
+  min-width: 8ch;
+  /* Radix pads only the start (text-indent), so a content-sized field would
+     put the last letter on the border. */
+  padding-inline-end: var(--text-field-padding);
 }
 
 /* Every section's page heading, and a work's title on its own page. The size
@@ -853,6 +916,48 @@ main.layout {
 .work-breadcrumb__separator {
   color: var(--gray-8);
   font-weight: 300;
+}
+
+/* The work title's edit field, set in the title's own type so clicking to
+   edit does not collapse a 42px black heading into 16px body text. Scoped to
+   the breadcrumb: InlineTextEditor is shared with canvas labels and metadata
+   fields, which keep the default field.
+
+   Height follows the heading's line box plus a little room; it is spelt out
+   from the heading's size tokens rather than in em, because the check button
+   beside the field sits at a different font size and has to match it. */
+.work-breadcrumb {
+  --title-field-height: calc(var(--font-size-6) * 1.7 * 1.1 + var(--space-3));
+}
+
+.work-breadcrumb .rt-TextFieldRoot {
+  --text-field-height: var(--title-field-height);
+  font: inherit;
+  letter-spacing: inherit;
+}
+
+/* field-sizing grows the field with what is typed, so it starts the width of
+   the title instead of a fixed 170px that the heading's type overflows. A
+   browser without it falls back to the input's default width, which at this
+   size is still wide enough to edit in. */
+.work-breadcrumb .rt-TextFieldInput {
+  font: inherit;
+  letter-spacing: inherit;
+  field-sizing: content;
+  min-width: 4ch;
+  /* Radix pads the start with text-indent and leaves the end at zero, which
+     a content-sized field makes visible: the last letter sat on the border. */
+  padding-inline-end: var(--text-field-padding);
+}
+
+.work-breadcrumb .rt-IconButton {
+  --base-button-height: var(--title-field-height);
+}
+
+/* The icon keeps Radix's 15px otherwise, a speck in a button this size. */
+.work-breadcrumb .rt-IconButton svg {
+  width: calc(22 * var(--px));
+  height: calc(22 * var(--px));
 }
 
 /* The collections field in the Linking panel. The resting value reuses

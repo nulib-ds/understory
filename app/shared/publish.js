@@ -129,9 +129,9 @@ function planPublish({workingMembers = [], publishedMembers = []}) {
 
 // The alias moves in ONE multi-action _aliases call, which is atomic on AWS
 // OpenSearch Service: a reader never sees the alias on neither index or on
-// both. Nothing is deleted here — garbage collection happens at the start of
-// the next run, so a flip is trivially safe to retry and can never remove an
-// index a concurrent run is still writing into.
+// both. Nothing is deleted in the batch itself, so it is trivially safe to
+// retry; the flip route deletes the index that just stopped being live only
+// after the batch has succeeded.
 function aliasFlipActions({index, liveAlias, stagedAlias, previousIndex}) {
   const actions = [];
   if (previousIndex && previousIndex !== index) {
@@ -140,6 +140,36 @@ function aliasFlipActions({index, liveAlias, stagedAlias, previousIndex}) {
   actions.push({add: {index, alias: liveAlias}});
   actions.push({remove: {index, alias: stagedAlias}});
   return actions;
+}
+
+// Point a collection's staged alias at a run's new candidate, and ONLY at it —
+// one atomic _aliases call, like the flip.
+//
+// This used to be a bare `add`. An alias may name any number of indexes, so
+// every run not followed by a flip left its candidate behind the alias as
+// well. The status route then reported whichever one OpenSearch happened to
+// list last, the panel could never clear ("IIIF assets published…" after every
+// flip), and each flip moved the live alias BACKWARDS onto an older run's
+// output. Found on a collection with four candidates stacked on one alias.
+//
+// `index` itself is never removed, so a retried Finalize is a no-op add.
+function stageActions({index, stagedAlias, previouslyStaged = []}) {
+  const actions = previouslyStaged
+    .filter((name) => name !== index)
+    .map((name) => ({remove: {index: name, alias: stagedAlias}}));
+  actions.push({add: {index, alias: stagedAlias}});
+  return actions;
+}
+
+// The candidates a newly staged one replaces, which nothing can reach any
+// more: not staged, never flipped, and so never deleted by the flip route.
+// Left alone they would each hold shards on the shared domain for ever.
+//
+// Never the new candidate and never one the live alias is on. Deleting an
+// index that still carries an alias is the one thing GC must not do.
+function supersededCandidates({index, previouslyStaged = [], live = []}) {
+  const liveIndexes = new Set(live);
+  return previouslyStaged.filter((name) => name !== index && !liveIndexes.has(name));
 }
 
 module.exports = {
@@ -151,4 +181,6 @@ module.exports = {
   externalImageServices,
   planPublish,
   aliasFlipActions,
+  stageActions,
+  supersededCandidates,
 };
