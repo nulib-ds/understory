@@ -91,3 +91,97 @@ export function buildCanvasResource(manifest, imageInfo, label) {
   }
   return canvas;
 }
+
+// --- Audio and video --------------------------------------------------------
+//
+// An A/V upload lands at av/{workId}/{assetId}.{ext} in the source bucket, and
+// the av-transcode Lambda reports on it in {documents base}/av/{workId}/{assetId}/media.json
+// (app/shared/av.js). That base is IIIF_BASE_URL on the backend, which the UI
+// has no variable for — VITE_IIIF_BASE_URL is the Image API — but every
+// manifest id already starts with it, so it is read from there rather than
+// adding a setting that could drift.
+
+export function mediaKindFromFile(file) {
+  const type = file?.type || "";
+  if (type.startsWith("video/")) return "video";
+  if (type.startsWith("audio/")) return "audio";
+  if (type.startsWith("image/")) return "image";
+  return null;
+}
+
+function documentsBaseFromManifestId(manifestId) {
+  const match = /^(.*)\/(?:working|published)\/presentation\/manifest\//.exec(manifestId || "");
+  return match ? match[1] : "";
+}
+
+export function buildMediaStatusUrl(manifest, key) {
+  const base = documentsBaseFromManifestId(manifest?.id);
+  if (!base || !key) return "";
+  return `${base}/${key.replace(/\.[^./]+$/, "")}/media.json`;
+}
+
+// `media` is a ready media.json: {kind, format, streamUrl, duration, width?,
+// height?, poster?}. Id shape matches buildCanvasResource so uploaded canvases
+// of every kind agree.
+export function buildAvCanvasResource(manifest, media, label) {
+  if (!manifest?.id) {
+    throw new Error("Work is missing an id");
+  }
+  if (media?.status !== "ready" || !media.streamUrl) {
+    throw new Error("Media is not ready yet");
+  }
+  const isVideo = media.kind === "video";
+  const manifestBase = manifest.id.replace(/\/manifest\.json$/i, "");
+  const normalizedLabel = label?.trim() || (isVideo ? "Video" : "Audio");
+  const slugBase = slugifyManifestId(normalizedLabel);
+  const uniqueSlug = slugBase ? `${slugBase}-${Date.now().toString(36)}` : Date.now().toString(36);
+  const canvasId = `${manifestBase}/canvas/${uniqueSlug}`;
+  const hasSize = isVideo && media.width && media.height;
+
+  const body = {
+    id: media.streamUrl,
+    type: isVideo ? "Video" : "Sound",
+    format: media.format,
+    duration: media.duration,
+  };
+  if (hasSize) {
+    body.width = media.width;
+    body.height = media.height;
+  }
+
+  const canvas = {
+    id: canvasId,
+    type: "Canvas",
+    duration: media.duration,
+    ...(hasSize ? {width: media.width, height: media.height} : {}),
+    items: [
+      {
+        id: `${canvasId}/page/1`,
+        type: "AnnotationPage",
+        items: [
+          {
+            id: `${canvasId}/annotation/1`,
+            type: "Annotation",
+            motivation: "painting",
+            target: canvasId,
+            body,
+          },
+        ],
+      },
+    ],
+  };
+  if (media.poster?.url) {
+    canvas.thumbnail = [
+      {
+        id: media.poster.url,
+        type: "Image",
+        format: "image/jpeg",
+        ...(media.poster.width && media.poster.height
+          ? {width: media.poster.width, height: media.poster.height}
+          : {}),
+      },
+    ];
+  }
+  canvas.label = {none: [normalizedLabel]};
+  return canvas;
+}

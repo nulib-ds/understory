@@ -21,6 +21,7 @@ const {
 } = require("../../../shared/collection");
 const {jsonResponse, parseBody, isNotFound} = require("./http");
 const {INTERNAL_PREFIX} = require("../../../shared/space");
+const {AV_PREFIX} = require("../../../shared/av");
 const {readManifest, writeManifest} = require("./store");
 const {
   upsertQuietly,
@@ -37,6 +38,7 @@ const {
   canViewWork,
 } = require("../../../shared/access");
 const {handleUsersRoute} = require("./users");
+const {handleMediaRoute} = require("./mediaRoutes");
 const {
   handleCollectionsRoute,
   handleManifestCollectionRoute,
@@ -103,7 +105,14 @@ async function deleteByPrefix(targetBucket, prefix) {
 
 async function deleteManifestAssets(identifier, manifest) {
   const assetPrefix = `image/${identifier}/`;
-  await Promise.all([deleteByPrefix(sourceBucket, assetPrefix), deleteByPrefix(bucket, assetPrefix)]);
+  // Audio/video: the upload in source, and the renditions + media.json in iiif.
+  const avPrefix = `${AV_PREFIX}/${identifier}/`;
+  await Promise.all([
+    deleteByPrefix(sourceBucket, assetPrefix),
+    deleteByPrefix(bucket, assetPrefix),
+    deleteByPrefix(sourceBucket, avPrefix),
+    deleteByPrefix(bucket, avPrefix),
+  ]);
 
   const items = Array.isArray(manifest?.items) ? manifest.items : [];
   const extraSourceKeys = [];
@@ -457,6 +466,17 @@ exports.handler = async (event) => {
       principal,
       readManifest,
       writeManifest,
+    });
+  }
+
+  if ((segments.length === 3 || segments.length === 4) && segments[2] === "media") {
+    return handleMediaRoute({
+      method,
+      identifier,
+      assetId: segments[3] === undefined ? undefined : decodeURIComponent(segments[3]),
+      principal,
+      readManifest,
+      canEdit: (who, manifest) => canEditWork(who, workCollections(manifest)),
     });
   }
 

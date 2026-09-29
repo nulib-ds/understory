@@ -1,7 +1,7 @@
 import {useSortable} from "@dnd-kit/sortable";
 import {CSS} from "@dnd-kit/utilities";
 import {Card, Flex, IconButton, Progress, Text, Tooltip} from "@radix-ui/themes";
-import {TrashIcon} from "@radix-ui/react-icons";
+import {SpeakerLoudIcon, TrashIcon, VideoIcon} from "@radix-ui/react-icons";
 import InlineTextEditor from "../InlineTextEditor";
 import {buildThumbnailUrlFromInfo} from "../../lib/canvasAssets";
 
@@ -45,8 +45,14 @@ export default function SortableCanvasCard({
     transition,
   };
 
-  const serviceId = canvas.items?.[0]?.items?.[0]?.body?.service?.[0]?.id;
-  const thumbnailUrl = serviceId ? buildThumbnailUrlFromInfo({id: serviceId}) : null;
+  const body = canvas.items?.[0]?.items?.[0]?.body;
+  const serviceId = body?.service?.[0]?.id;
+  // An image canvas thumbnails off its Image API service; a video canvas has
+  // no service, only the poster frame the transcode wrote; audio has neither.
+  const thumbnailUrl = serviceId
+    ? buildThumbnailUrlFromInfo({id: serviceId})
+    : canvas.thumbnail?.[0]?.id || null;
+  const MediaIcon = body?.type === "Video" ? VideoIcon : body?.type === "Sound" ? SpeakerLoudIcon : null;
 
   return (
     <Card
@@ -87,6 +93,10 @@ export default function SortableCanvasCard({
               width="40"
               height="40"
             />
+          ) : MediaIcon ? (
+            <span className="asset-dropzone-preview asset-dropzone-preview--fallback" aria-hidden="true">
+              <MediaIcon className="asset-dropzone-icon" />
+            </span>
           ) : null}
           {isImported ? (
             <InlineTextEditor

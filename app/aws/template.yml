@@ -94,9 +94,21 @@ Resources:
     Type: AWS::S3::Bucket
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
-    DependsOn: IIIFImageFunctionS3Permission
+    DependsOn:
+      - IIIFImageFunctionS3Permission
+      - AVTranscodeFunctionS3Permission
     Properties:
       BucketName: !Sub "${AWS::StackName}-source"
+      # A browser upload of a large file is a multipart upload, and closing the
+      # tab midway leaves its parts behind: invisible in a listing, billed as
+      # storage, and never cleaned up by anything else. Nothing legitimate
+      # takes three days to finish.
+      LifecycleConfiguration:
+        Rules:
+          - Id: AbortIncompleteMultipartUploads
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 3
       NotificationConfiguration:
         LambdaConfigurations:
           - Event: s3:ObjectCreated:*
@@ -106,6 +118,13 @@ Resources:
                   - Name: prefix
                     Value: image/
             Function: !GetAtt IIIFImageFunction.Arn
+          - Event: s3:ObjectCreated:*
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: prefix
+                    Value: av/
+            Function: !GetAtt AVTranscodeFunction.Arn
       CorsConfiguration:
         CorsRules:
           - AllowedHeaders:
@@ -125,6 +144,14 @@ Resources:
     UpdateReplacePolicy: Retain
     Properties:
       BucketName: !Sub "${AWS::StackName}-iiif"
+      # The same rule as the source bucket, for the multipart writes that land
+      # here: lib-storage uploads during import, and MediaConvert's own.
+      LifecycleConfiguration:
+        Rules:
+          - Id: AbortIncompleteMultipartUploads
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 3
       # Nothing reaches this bucket directly any more: every IIIF document is
       # served through IIIFDistribution, which reads via OAC. The website
       # endpoint went with it — it was already unused, because IIIF_BASE_URL has
@@ -161,6 +188,14 @@ Resources:
           # part of either space. Pyramid TIFFs under image/* are read by
           # serverless-iiif through its own role, never fetched directly.
           #
+          # av/* is transcoded audio/video — HLS playlists, segments, posters
+          # and each asset's media.json — and IS fetched directly, by the
+          # player. It sits outside both spaces on purpose: publishing rewrites
+          # only {base}/working/…, so a published canvas points at the same
+          # stream as its draft and media is never copied, just as a TIFF is
+          # never copied. It rides the default (cached) behaviour; segments
+          # are immutable, and media.json is written no-cache.
+          #
           # The principal is now CloudFront rather than "*": anonymous reads
           # still work, but only through the distribution, so the cache and the
           # CORS response headers cannot be bypassed. SourceArn is what stops
@@ -172,6 +207,7 @@ Resources:
             Resource:
               - !Sub "arn:aws:s3:::${AWS::StackName}-iiif/working/*"
               - !Sub "arn:aws:s3:::${AWS::StackName}-iiif/published/*"
+              - !Sub "arn:aws:s3:::${AWS::StackName}-iiif/av/*"
             Condition:
               StringEquals:
                 "AWS:SourceArn": !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${IIIFDistribution}"
@@ -426,7 +462,9 @@ Resources:
                 Action:
                   - s3:GetObject
                   - s3:PutObject
-                Resource: !Sub "arn:aws:s3:::${AWS::StackName}-source/image/*"
+                Resource:
+                  - !Sub "arn:aws:s3:::${AWS::StackName}-source/image/*"
+                  - !Sub "arn:aws:s3:::${AWS::StackName}-source/av/*"
               - Effect: Allow
                 Action: s3:ListBucket
                 Resource: !Sub "arn:aws:s3:::${AWS::StackName}-source"
@@ -434,6 +472,7 @@ Resources:
                   StringLike:
                     s3:prefix:
                       - "image/*"
+                      - "av/*"
 
   CognitoIdentityPoolRoleAttachment:
     Type: AWS::Cognito::IdentityPoolRoleAttachment
@@ -650,6 +689,18 @@ Resources:
             ApiId: !Ref ManifestHttpApi
             Path: /manifests/{id}/items
             Method: PUT
+        ListUnattachedMedia:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ManifestHttpApi
+            Path: /manifests/{id}/media
+            Method: GET
+        DiscardMedia:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ManifestHttpApi
+            Path: /manifests/{id}/media/{assetId}
+            Method: DELETE
         UpdateManifestCollection:
           Type: HttpApi
           Properties:
@@ -1076,6 +1127,118 @@ Resources:
       FunctionName: !Ref IIIFImageFunction
       Principal: s3.amazonaws.com
       SourceArn: !Sub "arn:aws:s3:::${AWS::StackName}-source"
+
+  # Audio/video. The same shape as IIIFImageFunction — an S3 upload under av/
+  # in the source bucket starts the work — except the work is a MediaConvert
+  # job rather than something done in-process: a Lambda's 15-minute limit and
+  # 10GB of /tmp are not enough for a long video. The job's completion comes
+  # back through EventBridge to the same function, which writes media.json.
+  AVTranscodeFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Minify: false
+        Target: "node22"
+        Sourcemap: false
+        EntryPoints:
+          - aws/lambdas/av-transcode/index.js
+        External:
+          - "@aws-sdk/*"
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-av-transcode"
+      CodeUri: ../
+      Handler: index.handler
+      # Submitting a job and writing a small JSON object; the transcode itself
+      # runs in MediaConvert.
+      Timeout: 60
+      MemorySize: 256
+      Environment:
+        Variables:
+          MEDIACONVERT_ROLE_ARN: !GetAtt MediaConvertRole.Arn
+          STACK_NAME: !Ref "AWS::StackName"
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: mediaconvert:CreateJob
+              Resource: "*"
+            - Effect: Allow
+              Action: iam:PassRole
+              Resource: !GetAtt MediaConvertRole.Arn
+              Condition:
+                StringEquals:
+                  "iam:PassedToService": mediaconvert.amazonaws.com
+            # Read/replace/remove media.json and renditions. Delete and List are
+            # for one case: an asset discarded while its job was still running,
+            # whose late-arriving outputs are removed when the job completes.
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+                - s3:DeleteObject
+              Resource: !Sub "arn:aws:s3:::${AWS::StackName}-iiif/av/*"
+            - Effect: Allow
+              Action: s3:ListBucket
+              Resource: !Sub "arn:aws:s3:::${AWS::StackName}-iiif"
+              Condition:
+                StringLike:
+                  s3:prefix:
+                    - "av/*"
+            # HeadObject on the upload: its original filename, and whether it
+            # still exists when the job completes.
+            - Effect: Allow
+              Action: s3:GetObject
+              Resource: !Sub "arn:aws:s3:::${AWS::StackName}-source/av/*"
+      Events:
+        # The account's default bus carries every personal stack's jobs, so the
+        # rule matches only jobs this stack tagged as its own.
+        JobStateChange:
+          Type: EventBridgeRule
+          Properties:
+            Pattern:
+              source:
+                - aws.mediaconvert
+              detail-type:
+                - MediaConvert Job State Change
+              detail:
+                status:
+                  - COMPLETE
+                  - ERROR
+                userMetadata:
+                  stack:
+                    - !Ref "AWS::StackName"
+
+  AVTranscodeFunctionS3Permission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref AVTranscodeFunction
+      Principal: s3.amazonaws.com
+      SourceArn: !Sub "arn:aws:s3:::${AWS::StackName}-source"
+
+  # What MediaConvert itself runs as: read the upload, write the renditions.
+  # Scoped to av/ on both sides so a job can never touch images or documents.
+  MediaConvertRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: mediaconvert.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: AVTranscodeIO
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub "arn:aws:s3:::${AWS::StackName}-source/av/*"
+              - Effect: Allow
+                Action: s3:PutObject
+                Resource: !Sub "arn:aws:s3:::${AWS::StackName}-iiif/av/*"
 
   AmplifyApp:
     Type: AWS::Amplify::App
