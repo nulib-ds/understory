@@ -4,6 +4,7 @@ import {Button, Callout, Flex, Link, Table, Text} from "@radix-ui/themes";
 import PreviewDialog from "./PreviewDialog";
 import DeleteWorkDialog from "./DeleteWorkDialog";
 import SyncStateBadge from "./SyncStateBadge";
+import {imageRequestUrl} from "../../lib/canvasAssets";
 
 // When the filter hides every row the table must still render its header, or
 // the control disappears along with the rows and there is no way to undo it.
@@ -39,7 +40,7 @@ function WorkThumbnail({work}) {
     <span className="work-thumb">
       {service && (
         <img
-          src={`${service.replace(/\/$/, "")}/square/64,64/0/default.jpg`}
+          src={imageRequestUrl(service, {region: "square", size: "64,64"})}
           alt=""
           loading="lazy"
           onError={hideOnError}

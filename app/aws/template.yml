@@ -52,7 +52,7 @@ Parameters:
   ImageApiForceHost:
     Type: String
     Default: ""
-    Description: "Bare hostname info.json should advertise, overriding the derived one. Only needed on a stack with NO custom domain: deploy once, copy the ImagesDistributionHost output (a bare host - no https://, no /iiif/2), set this, deploy again. Without it a dev stack serves tiles straight from the Lambda and the CDN never sees them."
+    Description: "Bare hostname info.json should advertise, overriding the derived one. Only needed on a stack with NO custom domain: deploy once, copy the ImagesDistributionHost output (a bare host - no https://, no /iiif/3), set this, deploy again. Without it a dev stack serves tiles straight from the Lambda and the CDN never sees them."
 
 Globals:
   Function:
@@ -75,8 +75,8 @@ Globals:
           - !Sub "https://${IIIFDistribution.DomainName}"
         IMAGE_API_BASE_URL: !If
           - HasCustomDomain
-          - !Sub "https://images-${ProjectName}.${BaseDomainName}/iiif/2"
-          - !Sub "https://${ImagesDistribution.DomainName}/iiif/2"
+          - !Sub "https://images-${ProjectName}.${BaseDomainName}/iiif/3"
+          - !Sub "https://${ImagesDistribution.DomainName}/iiif/3"
 
 Conditions:
   SearchIndexPrefixProvided: !Not [!Equals [!Ref SearchIndexPrefix, ""]]
@@ -1276,8 +1276,8 @@ Resources:
         - Name: VITE_IIIF_BASE_URL
           Value: !If
             - HasCustomDomain
-            - !Sub "https://images-${ProjectName}.${BaseDomainName}/iiif/2"
-            - !Sub "https://${ImagesDistribution.DomainName}/iiif/2"
+            - !Sub "https://images-${ProjectName}.${BaseDomainName}/iiif/3"
+            - !Sub "https://${ImagesDistribution.DomainName}/iiif/3"
         - Name: VITE_MANIFEST_API_URL
           Value: !Sub "https://${ManifestHttpApi}.execute-api.${AWS::Region}.amazonaws.com/manifests"
         - Name: VITE_COLLECTION_API_URL
@@ -1370,7 +1370,7 @@ Outputs:
     Value: !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-iiif-image"
   IiifEndpoint:
     Description: "The Image API's origin, behind ImagesEndpoint. Useful for debugging; not what anything should be pointed at."
-    Value: !Sub "https://${IiifServer.Outputs.FunctionDomain}/iiif/2"
+    Value: !Sub "https://${IiifServer.Outputs.FunctionDomain}/iiif/3"
   # A dev stack's CloudFront hostnames are generated and opaque (d111111abcdef8
   # shape), so without these there is no way to find them short of the console.
   IIIFEndpoint:
@@ -1383,8 +1383,8 @@ Outputs:
     Description: "Base URL for the IIIF Image API. On a dev stack, info.json will still advertise IiifEndpoint — see ForceHost on IiifServer."
     Value: !If
       - HasCustomDomain
-      - !Sub "https://images-${ProjectName}.${BaseDomainName}/iiif/2"
-      - !Sub "https://${ImagesDistribution.DomainName}/iiif/2"
+      - !Sub "https://images-${ProjectName}.${BaseDomainName}/iiif/3"
+      - !Sub "https://${ImagesDistribution.DomainName}/iiif/3"
   ImagesDistributionHost:
     Description: "Bare hostname of the images distribution - paste into the ImageApiForceHost parameter on a stack with no custom domain."
     Value: !GetAtt ImagesDistribution.DomainName

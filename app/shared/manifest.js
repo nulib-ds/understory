@@ -78,8 +78,14 @@ async function readManifest({s3, bucket, identifier, space = WORKING}) {
   return JSON.parse(payload);
 }
 
+// The painting body's image service, or — for an audio/video canvas, whose
+// body has none — its poster's. An imported A/V poster is copied onto our Image
+// API (avCopy.js), so a video work gets a works-list and search thumbnail like
+// any other. An uploaded video's MediaConvert poster has no service, so that
+// one still has none here.
 function canvasThumbnailService(canvas) {
-  const service = canvas?.items?.[0]?.items?.[0]?.body?.service?.[0];
+  const service =
+    canvas?.items?.[0]?.items?.[0]?.body?.service?.[0] || canvas?.thumbnail?.[0]?.service?.[0];
   return service?.id || null;
 }
 

@@ -114,14 +114,35 @@ function WorkDetailPanel({
         <Callout.Root color={isFailed ? "red" : "orange"} size="1">
           <Callout.Text>
             {isFailed
-              ? `Image import failed${importStatus.error ? `: ${importStatus.error}` : ""}.`
-              : "Image import hasn't made progress in a while — it may have stalled."}
+              ? `Import failed${importStatus.error ? `: ${importStatus.error}` : ""}.`
+              : "Import hasn't made progress in a while — it may have stalled."}
             {" "}
             <Button variant="ghost" size="1" onClick={handleResumeClick}>
               Resume
             </Button>
             {resumeError ? ` — ${resumeError}` : ""}
           </Callout.Text>
+        </Callout.Root>
+      )}
+      {/* What the import left out on purpose: audio/video canvases the
+          source restricts, encrypts, streams live, or would need transcoding
+          for. They were never written into this work, so there is nothing to
+          resume — this only says what did not come across. */}
+      {importStatus?.skipped?.length > 0 && (
+        <Callout.Root color="gray" size="1">
+          <Callout.Text>
+            {importStatus.skipped.length} audio/video canvas
+            {importStatus.skipped.length === 1 ? " was" : "es were"} not imported from the source:
+          </Callout.Text>
+          <ul className="import-skipped-list">
+            {importStatus.skipped.map((entry) => (
+              <li key={entry.index}>
+                <Text size="1">
+                  {entry.label} — {entry.reason}
+                </Text>
+              </li>
+            ))}
+          </ul>
         </Callout.Root>
       )}
       <Card size="3" className="panel viewer-panel">

@@ -37,7 +37,7 @@ const {
   sortMembers,
 } = require("../../../shared/collection");
 const {INTERNAL_PREFIX} = require("../../../shared/space");
-const {copyCanvasAsset, repointManifestThumbnail} = require("../../../shared/assetCopy");
+const {copyCanvasAsset, copyManifestThumbnail} = require("../../../shared/assetCopy");
 const {readJson, putJson, listKeys} = require("../publish/s3io");
 // store.js's readManifest/writeManifest, NOT shared/manifest.js's — the shared
 // one takes its own {s3, bucket}; these are the wired pair, and writeManifest is
@@ -204,7 +204,10 @@ async function importOneWork({slug, collectionLabel, work}) {
   await upsertQuietly(work.workId, manifest, {syncState: SYNC_NEW, importing: true});
 
   const failures = await copyCanvases(work.workId, items);
-  repointManifestThumbnail(manifest);
+  // The source's designated thumbnail, copied as its own image rather than
+  // replaced by a canvas's. Removed if it cannot be copied; see
+  // copyManifestThumbnail.
+  const thumbnailCopy = await copyManifestThumbnail({identifier: work.workId, manifest});
   await writeManifest(work.workId, manifest, {skipIndex: true});
 
   // Re-read rather than trusting the in-memory copy: writeManifest normalizes
@@ -228,6 +231,7 @@ async function importOneWork({slug, collectionLabel, work}) {
     // recorded as imported-with-failures rather than silently "ok".
     status: failures.length ? "partial" : "ok",
     failures,
+    thumbnailCopy: thumbnailCopy.status,
   };
 }
 

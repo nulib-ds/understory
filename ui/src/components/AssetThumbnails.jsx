@@ -1,10 +1,11 @@
+import {imageRequestUrl} from "../lib/canvasAssets";
 import "./AssetThumbnails.css";
 
 const ITEM_REM = 1.5; // matches .asset-thumbnails__item's fixed width/height
 const STACK_OVERLAP_REM = 0.55; // constant overlap between every pair of stacked items
 
 function iiifThumbnailUrl(serviceId, size) {
-  return `${serviceId.replace(/\/$/, "")}/full/,${size}/0/default.jpg`;
+  return imageRequestUrl(serviceId, {size: `,${size}`});
 }
 
 function hideOnError(event) {
