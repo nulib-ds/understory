@@ -71,7 +71,11 @@ async function upsertQuietly(identifier, manifest, options = {}) {
   if (!configured || !prefix) return;
   try {
     await ensure();
-    await bulkUpsert(indexName(), [documentFor(identifier, manifest, options)]);
+    // waitFor: false for a write a later one in the same request supersedes;
+    // only the LAST write a request makes needs to be searchable on return.
+    await bulkUpsert(indexName(), [documentFor(identifier, manifest, options)], undefined, {
+      waitFor: options.waitFor !== false,
+    });
   } catch (error) {
     console.error(`Failed to index work ${identifier}`, error);
   }

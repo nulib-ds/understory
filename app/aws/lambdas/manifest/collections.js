@@ -704,13 +704,13 @@ async function pruneCollections(keep) {
 // Files a freshly created work into collections. Shared by the create and the
 // import route so both apply membership the same way; `previous` is empty by
 // construction, since the work did not exist a moment ago.
-async function fileNewWork({identifier, manifest, slug, writeManifest}) {
+async function fileNewWork({identifier, manifest, slug, writeManifest, waitForIndex = true}) {
   const desired = parseDesiredCollections({collections: slug ? [slug] : []});
   if (!desired.length) return manifest;
   const root = await ensureRoot();
   const canonical = canonicalizeCollectionLabels(desired, root);
   const next = applyCollections(manifest, {baseUrl, collections: canonical});
-  await writeManifest(identifier, next);
+  await writeManifest(identifier, next, {waitForIndex});
   await reconcileQuietly({manifest: next, desired: canonical, previous: [], root});
   return next;
 }

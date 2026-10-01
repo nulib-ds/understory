@@ -56,6 +56,37 @@ compressed.
 > needs a certificate, and it would rewrite `IIIF_BASE_URL` into a hostname that
 > does not exist.
 
+### Image API version: 3
+
+`IMAGE_API_BASE_URL` (and the UI's `VITE_IIIF_BASE_URL`) end in **`/iiif/3`**.
+serverless-iiif serves both `/iiif/2` and `/iiif/3` from the same TIFFs; the
+path chosen is the version every service id, `info.json` and request we write
+carries. It was `/iiif/2` until 2026-09-30, apparently an early default, and
+nothing depended on it: every consumer reads the version from our own
+`info.json` (`detectImageApiVersion`, `canvasAssets.js`). Existing data was
+discarded rather than migrated, and a work written against `/iiif/2` still
+resolves, because the server still answers there.
+
+The Presentation `@context` does not settle this: Presentation 3 can reference
+an `ImageService2`. v3 was chosen to match our manifests and NUL's, and for
+`max` and `^`. Two v3 rules then matter, and both were measured on our server:
+
+- **A size bigger than the region needs `^`**, and v2 has no `^` at all
+  (`^!300,300` on `/iiif/2` is "Invalid size"). Write it as **`%5E`**: our
+  server refuses a bare `^` from a client that does not encode it, such as curl.
+- **serverless-iiif refuses `!w,h` whenever the BOX exceeds the image on either
+  side**, even when the fitted result is a downscale:
+  `!3000,2000` on a 2326×2295 image is a 400 on `/iiif/3` and 2027×2000 on
+  `/iiif/2`. That is also NUL's long-standing poster bug (`!300,300` on a
+  320×240 frame). It looks like a server bug worth reporting upstream.
+
+So nothing we write passes a source's size through. `safeImageRequest`
+(`app/shared/imageRequest.js`) turns any copied request into the exact width it
+would have produced, capped at our image (`{W},`, or `max`). And the UI's
+fixed-size tiles go through `imageRequestUrl` (`ui/src/lib/canvasAssets.js`),
+which adds `^` only to requests for **our** service. A source's service in an
+import preview could be v2, where `^` is invalid.
+
 `IIIFDistribution` fronts the IIIF bucket over OAC. **Both spaces are routed
 through it; only `published/` is cached by it.** They are path segments under
 one `IIIF_BASE_URL`, not separate hosts, so there is one distribution either
@@ -240,6 +271,21 @@ second later, which reads as "the button did nothing". The exception is the
 publish run's writes into its candidate index: nothing reads that until the
 alias flip, so waiting there would only slow the run.
 
+**That makes the refresh interval the latency of every save, so we set it.**
+`ensureIndex` pins the working index to `refresh_interval: 1s`, on creation and
+on an existing index (best effort, since it is a dynamic setting). It was
+inherited before, and on the shared domain that is whatever a template or the
+cluster says. `POST /manifests/import` makes three index writes, and measured
+at ~28–31s it was crossing API Gateway's 30s limit: the browser showed
+"Unable to import that manifest" while the Lambda went on and imported the
+work anyway.
+
+**A request waits only on its last index write.** `writeManifest`,
+`fileNewWork` and `upsertQuietly` take `waitForIndex` / `waitFor: false` for a
+write that a later one in the same request supersedes. The import route uses it
+on its first two. Anything new that makes several index writes in one request
+should do the same.
+
 Bulk writes use `update` + `doc_as_upsert`, never `index`. `index` replaces the whole document, so a save racing the publish run's sync-state write would clobber it rather than merge.
 
 Two document shapes, deliberately different. The working document carries `workId`, `collection`, `contentHash`, `syncState` and `importing`; the **published** document carries only `manifestId`, `title`, `thumbnails` and `itemCount` — nothing about how this app works. `thumbnails` is the one addition over the old shape, because a site rendering a result list otherwise has to fetch every manifest to draw it.
@@ -300,6 +346,10 @@ app/
     language.js            # IIIF language maps
     sourceFetch.js         # fetching someone else's IIIF doc, and dropping A/V
     av.js                  # A/V key layout, MediaConvert job settings, media.json
+    hls.js                 # HLS playlists: every reference, what to refuse, rewriting
+    avImport.js            # which imported A/V canvases we can host, and why not
+    avCopy.js              # copy one A/V canvas's stream into av/ — loads the SDK
+    imageRequest.js        # Image API sizes made safe for our v3 server
     manifest.js            # manifest keys/templates/listing — loads the SDK
     opensearch.js          # signed HTTP to the domain — loads the SDK
     assetCopy.js           # copy one canvas's image onto our Image API — loads the SDK
@@ -431,7 +481,7 @@ aws cognito-idp admin-set-user-password \
 ### UI (`ui/`)
 | Variable | Description |
 |---|---|
-| `VITE_IIIF_BASE_URL` | The **Image API** base, despite the name — e.g. `https://d111111abcdef8.cloudfront.net/iiif/2`. Copy from the `ImagesEndpoint` stack output, not `IiifEndpoint`: the latter is the Lambda Function URL behind the distribution. |
+| `VITE_IIIF_BASE_URL` | The **Image API** base, despite the name — e.g. `https://d111111abcdef8.cloudfront.net/iiif/3`. Copy from the `ImagesEndpoint` stack output, not `IiifEndpoint`: the latter is the Lambda Function URL behind the distribution. |
 | `VITE_MANIFEST_API_URL` | The `ManifestHttpApi` endpoint from stack outputs. |
 | `VITE_COLLECTION_API_URL` | The `ManifestHttpApi` endpoint's `/collections` path. Needed as its own variable because `VITE_MANIFEST_API_URL` already ends in `/manifests`; the UI derives a fallback from it, but set this explicitly. **Every `VITE_*` must also be added to the `define` block in `ui/vite.config.js`** — Amplify injects them as process env vars, which Vite's own `.env` handling never sees, so a missing entry is `undefined` in production and fine in dev. |
 | `VITE_STORAGE_BUCKET` / `VITE_STORAGE_REGION` | The IIIF output S3 bucket and its region. `STORAGE_BUCKET` also configures Amplify's default `Storage.S3` bucket (used for Auth/Storage bootstrap). |
@@ -468,9 +518,10 @@ can call the API. It is refreshed by `POST /collections/reindex`
 (`refreshShowcase`), which has already paid for the corpus read, using
 read-compare-write so an unchanged corpus writes nothing. It used to ride on
 `GET /manifests`, which no longer exists. Tiles are requested as
-`square/400,400` so every one is an identical square regardless of the source
-aspect ratio — `square` region with an explicit `w,h` size is level-2 Image API
-and reads the same in both 2.x and 3.x, so no version branching is needed.
+`square/^400,400` (written `%5E`) so every one is an identical square regardless
+of the source aspect ratio. The `^` matters on Image API 3: the pool can include
+A/V posters, and a 320×240 poster's square is only 240px, which v3 refuses to
+serve at 400 without it. See **Image API version** under CDN.
 
 ## Asset list performance
 
@@ -649,9 +700,11 @@ the in-memory copy would hash something that was never stored.
 
 ### Audio and video are dropped
 
-> **On import only.** A/V uploaded through the UI is supported — see **Audio
-> and video** below. Imports still drop it; `imageCanvasesOnly` is where to
-> start when they should instead copy it into `av/`.
+> **On collection import only.** A/V uploaded through the UI is supported, and
+> so is A/V in a **single-work** import (`POST /manifests/import`), which
+> copies the source's stream — see **Importing a work with audio or video**
+> below. Collection import still drops it with `imageCanvasesOnly`, pending a
+> conversation about cost at collection scale.
 
 `imageCanvasesOnly` (`app/shared/sourceFetch.js`) filters out every canvas whose
 painting body is not `type: "Image"`, **before** the manifest is written, so a
@@ -745,12 +798,15 @@ recognizes HLS by that format or a `.m3u8` extension and lazy-loads hls.js.
 
 Known gaps, all deliberate for a first pass:
 
-- **Imports still drop A/V** (`imageCanvasesOnly`).
+- **Collection import still drops A/V** (`imageCanvasesOnly`). Single-work
+  import copies it; see below.
 - **No captions or transcripts.** WebVTT as a `supplementing` annotation is
   the natural next step.
-- **Works-list thumbnails are image-service ids only** (`canvasThumbnailService`),
-  so a video-only work shows none there. The collection thumbnail does fall back
-  to the poster, via `manifestThumbnail`.
+- **Works-list thumbnails are image-service ids only** (`canvasThumbnailService`).
+  An *imported* A/V canvas has one, because its poster is copied onto our Image
+  API, and it falls back to that. An *uploaded* video's MediaConvert poster is a
+  plain file, so a work made only of uploaded video shows none there. The
+  collection thumbnail does fall back to the poster, via `manifestThumbnail`.
 - **Deleting a work clears `av/{workId}/`** in both buckets. Removing a single
   canvas does not delete its media. The media comes back through recovery
   (below) as "ready to add", and discarding it there is what deletes it.
@@ -805,6 +861,86 @@ for the same key within an hour, and our keys are random per attempt.
 > MediaConvert's validator, and where the managed runtime's
 > `@aws-sdk/client-mediaconvert` is first resolved.
 
+### Importing a work with audio or video
+
+`POST /manifests/import` hosts a source's audio/video by **copying its stream
+verbatim** into `av/{workId}/imported-{canvasIndex}/`. There is no transcode
+and no MediaConvert bill, and nothing is lost to re-encoding. It handles HLS
+(NUL's streams) and a single browser-playable file (MP4, MP3, WebM, AAC).
+
+> **Before this, single-work import did not drop A/V at all.** Only collection
+> import called `imageCanvasesOnly`. On this route the image copy found no image
+> service on a Sound/Video canvas, logged "skipping", and counted the canvas as
+> done, so it kept pointing at the source's streaming server and was published
+> that way. Works imported like that are not migrated; re-import them.
+
+Three stages, and the split is deliberate:
+
+1. **Screening** (`screenAvCanvases`, `app/shared/avImport.js`) runs in the
+   preview **and again** in the import, because the manifest comes back from the
+   browser. It fetches the playlist tree (playlists only, never segments), and
+   removes every A/V canvas we cannot host *before the manifest is written*. That
+   is the same place `imageCanvasesOnly` works, so a foreign stream never reaches
+   S3. What it removed, and why, goes on the import status as `skipped`. The
+   preview lists it before Import is pressed, and the work page lists it after.
+2. **The copy** (`copyAvCanvas`, `app/shared/avCopy.js`), dispatched from
+   `copyCanvasAsset`, so the existing walk (its concurrency, budget, handoff and
+   resume) needed no changes of its own. Playlists are rewritten to point inside
+   the copy. For a normally shaped stream that changes nothing: a test checks it,
+   and a dry run against NUL's live streams produced byte-identical playlists. The
+   canvas body is repointed only after every file is written.
+3. **Derivatives.** The poster (`canvas.thumbnail`) also stands in for
+   `placeholderCanvas`. With an Image API service (NUL's have one) it goes
+   through the **image pipeline** (`copyImageService`, shared with image
+   canvases), landing at `image/{workId}/{n}-poster` on our own service. Its
+   thumbnail asks for an exact `{w},` size (`posterThumbnail`), never `!w,h`.
+   The first version fetched the thumbnail URL the source advertised instead.
+   For NUL's Bienen video that is `!300,300` on a 320×240 frame, which NUL's own
+   server refuses with 400 "requires upscaling". The poster was dropped, and the
+   manifest thumbnail was left on NUL with nothing of ours to replace it. A
+   plain-URL poster is copied as a file beside the stream. With neither, both
+   are removed rather than left pointing at the source. The *work's* thumbnail
+   is separate; see below.
+
+**We only copy what an anonymous stranger could already fetch.** No request
+carries a cookie or token. Never add one "to make it work": that is exactly how
+Institution-only media would leak into a publicly served bucket. Refused, with
+the reason recorded:
+
+| Refused | Why |
+|---|---|
+| HTTP 401/403 | Restricted by the source. NUL's Institution-only streams return 403, verified live. |
+| An advertised IIIF Auth service (v1 or v2) | Checked *before* fetching, and a 200 does not override it: the Auth spec lets a server answer with a degraded substitute at the same URL. |
+| `#EXT-X-KEY` with `METHOD` other than `NONE` | Encrypted; copying the key would copy their protection away. |
+| A media playlist with no `#EXT-X-ENDLIST` | Live or unfinished: nothing finished to copy. |
+| DASH, or a file a browser cannot play | Needs transcoding, which is a separate, costed decision. |
+
+`hls.js` follows every reference, not just bare lines: `#EXT-X-MAP` (an fMP4
+init segment; miss it and nothing plays), `#EXT-X-MEDIA` (a separate audio
+track; miss it and the video is silent) and `#EXT-X-I-FRAME-STREAM-INF`. A file
+under the master's directory keeps its relative path. Anything else is renamed
+under `_ext/` by a hash of its URL:
+
+- another host, or a path above the master
+- any character outside `[A-Za-z0-9._~-/]`, because a key containing `%20` is
+  requested through CloudFront as `%2520`
+
+The hash is stable, so a retry writes the same keys. Query strings are dropped.
+
+Limits, all deliberate for now:
+
+- **One canvas's copy must finish inside one invocation** (15 minutes). The
+  walk hands off between canvases, not within one. At the source's bandwidth
+  that is many GB, but a very long high-bitrate stream could hit it.
+- **Supplementing annotations** (captions, transcripts) on an imported A/V
+  canvas are left as they are, still pointing at the source.
+- **Restricted *images* are not screened yet.** An Institution-only image
+  returns 200 for `info.json` and 403 for every size, so the image copy fails
+  and offers a Resume that can never succeed. Screening images the same way is
+  the follow-up.
+- Screening runs inside the 30s API Gateway limit, before anything is written;
+  a very slow source could 504 there, and retrying is safe.
+
 ## What an imported work keeps, and what it does not
 
 Both import paths — `POST /manifests/import` and the collection state machine —
@@ -843,9 +979,42 @@ reorder does not renumber them: an id records identity, not position.
 What is deliberately **left pointing at the source**, because it is *about* the
 source: `seeAlso` (provenance), the source's own `partOf`, `homepage`,
 `provider`, `logo` and `rights`. On a real NUL manifest this takes the
-source-API references from 18 to 3 — `seeAlso`, their `partOf`, and the
-manifest-level `thumbnail`, which `repointManifestThumbnail` moves onto our
-Image API once the canvases have been copied.
+source-API references from 18 to 2: `seeAlso` and their `partOf`.
+
+### The work's thumbnail is copied, not chosen for it
+
+A manifest's `thumbnail` is the source's choice of image for the whole work.
+At NUL that is a chosen file set for an image work, or a chosen poster or image
+for an A/V work. The spec ties it to no canvas, and elsewhere it need not be one
+of the canvases at all. Both import paths therefore copy **that image** onto our
+Image API as an asset of its own (`copyManifestThumbnail`, `app/shared/assetCopy.js`),
+at `image/{workId}/thumbnail`:
+
+- through its Image service when it has one, which serves its largest size on
+  request,
+- otherwise from its plain URL, which is the NUL case: `…/works/{id}/thumbnail`
+  is a plain JPEG with no service.
+
+It is served at the size the source declared, as an exact `{w},` request.
+
+> **It used to be replaced instead**, by the first canvas thumbnail we had
+> copied. That was a guess made on the curator's behalf, and with several
+> posters on an A/V work it was an arbitrary one. It is also what left the DC
+> API's thumbnail URL in published output: when no canvas thumbnail had been
+> copied, there was nothing to replace it with, so it stayed.
+
+The source having no thumbnail means we have none; nothing is invented (the
+collection list's display still falls back to the first canvas, via
+`manifestThumbnail`). A thumbnail that cannot be copied is **removed** rather
+than left linking to the source, and the outcome is on the import status as
+`thumbnail: {status, error}`. Removed can mean restricted, unreachable, or a
+format the converter cannot read. `writeManifestItems` carries that removal
+through, because it used to copy `thumbnail` across only when present, which
+would have quietly restored the source's link.
+
+NUL serves a work's small thumbnail anonymously even for Institution-only
+works, by design, so that thumbnail *is* copied. The rule is still "only what an
+anonymous stranger could fetch"; the restricted media itself is not.
 
 ## Collections
 
@@ -1278,7 +1447,7 @@ That is the reason for the split in `app/shared/`, and it is worth keeping delib
 
 | SDK-free, unit-tested | Loads the SDK, not testable from the root |
 |---|---|
-| `space.js`, `collection.js`, `publish.js`, `search.js`, `access.js`, `language.js`, `sourceFetch.js`, `av.js` | `manifest.js`, `opensearch.js`, `assetCopy.js` |
+| `space.js`, `collection.js`, `publish.js`, `search.js`, `access.js`, `language.js`, `sourceFetch.js`, `av.js`, `hls.js`, `avImport.js`, `imageRequest.js` | `manifest.js`, `opensearch.js`, `assetCopy.js`, `avCopy.js` |
 
 Keep `collection.js` free of any `manifest.js` import — `manifest.js` loads the SDK, and the reverse direction would also be a require cycle. `node:crypto` is a core module, so hashing in `publish.js` is fine.
 

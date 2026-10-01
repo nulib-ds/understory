@@ -46,7 +46,9 @@ export default function SortableCanvasCard({
   };
 
   const body = canvas.items?.[0]?.items?.[0]?.body;
-  const serviceId = body?.service?.[0]?.id;
+  // An imported A/V canvas's poster has an image service of its own; an
+  // uploaded one's is a plain file, used as-is below.
+  const serviceId = body?.service?.[0]?.id || canvas.thumbnail?.[0]?.service?.[0]?.id;
   // An image canvas thumbnails off its Image API service; a video canvas has
   // no service, only the poster frame the transcode wrote; audio has neither.
   const thumbnailUrl = serviceId

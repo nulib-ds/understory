@@ -20,7 +20,9 @@ async function readManifest(identifier) {
 // `skipIndex` is for the import walk, which rewrites the manifest once per
 // canvas: a 271-canvas import would otherwise be 271 index writes. The import
 // indexes once when it starts and once when it finishes.
-async function writeManifest(identifier, manifest, {skipIndex = false, syncState} = {}) {
+// `waitForIndex: false` indexes without waiting for the refresh. Only for a
+// write that a later one in the same request supersedes — see the import route.
+async function writeManifest(identifier, manifest, {skipIndex = false, syncState, waitForIndex = true} = {}) {
   const key = manifestObjectKey(identifier);
   // Normalized on EVERY write, not just the ones that touch partOf. This is
   // what makes a manifest carrying the old inline `staticiiif` prefix object
@@ -35,7 +37,11 @@ async function writeManifest(identifier, manifest, {skipIndex = false, syncState
   if (!skipIndex) {
     // Hash the bytes actually written, so "changed since it was published?"
     // compares like with like.
-    await upsertQuietly(identifier, next, {bytes: body, syncState: syncState || SYNC_CHANGED});
+    await upsertQuietly(identifier, next, {
+      bytes: body,
+      syncState: syncState || SYNC_CHANGED,
+      waitFor: waitForIndex,
+    });
   }
   return key;
 }

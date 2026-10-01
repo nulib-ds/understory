@@ -119,13 +119,37 @@ function expectOk(response, what) {
 // Idempotent: adding a property to an existing mapping is allowed. Note that
 // existing documents only gain a new field when they are next written, so a
 // mapping change is not live until a reindex.
-async function ensureIndex(name, properties, settings = {number_of_shards: 1, number_of_replicas: 0}) {
+// refresh_interval is set explicitly, not inherited. Every write here waits
+// for the next refresh (WAIT_FOR, above), so the interval IS the latency of
+// every save — and on a shared domain it is whatever an index template or a
+// cluster default says, which this code does not control. An import request,
+// which makes several such writes, went from comfortably fast to ~30s and past
+// API Gateway's limit. 1s is OpenSearch's own default, and this is a tiny
+// index, so pinning it costs the shared cluster nothing it was not already
+// designed for.
+const DEFAULT_INDEX_SETTINGS = {number_of_shards: 1, number_of_replicas: 0, refresh_interval: "1s"};
+
+async function ensureIndex(name, properties, settings = DEFAULT_INDEX_SETTINGS) {
   const head = await osRequest("HEAD", `/${name}`);
   if (head.status === 200) {
     expectOk(
       await osRequest("PUT", `/${name}/_mapping`, JSON.stringify({properties})),
       `Failed to update mapping for ${name}`,
     );
+    // An index created before this, or given another interval by a template,
+    // is brought into line — refresh_interval is a dynamic setting. Best
+    // effort: failing here must not stop the write that called ensure, and a
+    // permission the shared domain withholds would otherwise do exactly that.
+    if (settings.refresh_interval) {
+      const updated = await osRequest(
+        "PUT",
+        `/${name}/_settings`,
+        JSON.stringify({index: {refresh_interval: settings.refresh_interval}}),
+      ).catch((error) => ({status: 0, text: error.message}));
+      if (updated.status >= 300 || updated.status === 0) {
+        console.warn(`Could not set refresh_interval on ${name}: ${updated.status} ${updated.text}`);
+      }
+    }
     return false;
   }
   expectOk(

@@ -196,6 +196,8 @@ export default function AddWorkModal({
                     <Text weight="medium">{importPreview?.label || "(untitled)"}</Text>
                     <Text size="2" color="gray">
                       {importPreview?.itemCount ?? 0} canvas{importPreview?.itemCount === 1 ? "" : "es"}
+                      {importPreview?.av?.copied > 0 &&
+                        ` · ${importPreview.av.copied} audio/video, copied as-is`}
                     </Text>
                     <Text size="1" color="gray" style={{wordBreak: "break-all"}}>
                       {importPreview?.sourceUrl}
@@ -203,6 +205,25 @@ export default function AddWorkModal({
                   </Flex>
                 </Flex>
               </Card>
+              {/* Said before Import is pressed, not discovered afterwards: these
+                  canvases are left out of the work entirely (see avImport.js). */}
+              {importPreview?.skipped?.length > 0 && (
+                <Callout.Root color="amber" size="1">
+                  <Callout.Text>
+                    {importPreview.skipped.length} audio/video canvas
+                    {importPreview.skipped.length === 1 ? " won't" : "es won't"} be imported:
+                  </Callout.Text>
+                  <ul className="import-skipped-list">
+                    {importPreview.skipped.map((entry) => (
+                      <li key={entry.index}>
+                        <Text size="1">
+                          {entry.label} — {entry.reason}
+                        </Text>
+                      </li>
+                    ))}
+                  </ul>
+                </Callout.Root>
+              )}
               {importError && (
                 <Callout.Root color="red" size="1">
                   <Callout.Text>{importError}</Callout.Text>

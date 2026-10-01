@@ -52,6 +52,7 @@ const {
   fetchSourceDocument,
   localizeStructuralIds,
 } = require("../../../shared/sourceFetch");
+const {screenAvCanvases} = require("../../../shared/avImport");
 const {
   triggerAssetImport,
   handleImportAssets,
@@ -279,7 +280,11 @@ exports.handler = async (event) => {
       const label = extractLabel(manifest.label);
       const itemCount = Array.isArray(manifest.items) ? manifest.items.length : 0;
       const thumbnail = itemCount > 0 ? canvasThumbnailService(manifest.items[0]) : null;
-      return jsonResponse(200, { label, itemCount, thumbnail, sourceUrl, manifest });
+      // Said BEFORE the curator commits: which audio/video canvases will be
+      // copied and which cannot be, and why. The import screens again rather
+      // than trusting this — the manifest comes back from the browser.
+      const {av, skipped} = await screenAvCanvases(manifest.items);
+      return jsonResponse(200, { label, itemCount, thumbnail, sourceUrl, manifest, av, skipped });
     } catch (error) {
       if (error.message === "Invalid JSON payload") {
         return jsonResponse(400, { error: error.message });
@@ -305,6 +310,16 @@ exports.handler = async (event) => {
           error: "Choose one collection you have been granted to import this work into",
         });
       }
+      // Audio/video canvases we cannot host — restricted by the source,
+      // encrypted, live, or in a format that would need transcoding — are
+      // removed HERE, before anything is written, so a canvas pointing at the
+      // source's streaming server never reaches S3. What was removed, and why,
+      // rides on the import status for the work page to report.
+      //
+      // Before this, nothing removed them on this route at all: the image copy
+      // found no image service, logged "skipping", and the canvas was counted
+      // as done while still pointing at the source.
+      const {items: screenedItems, skipped} = await screenAvCanvases(manifest.items);
       const identifier = crypto.randomUUID();
       // The source institution's own partOf is kept verbatim as provenance. Only
       // entries claiming to be *ours* while pointing somewhere we don't own are
@@ -317,17 +332,25 @@ exports.handler = async (event) => {
         stripForeignManagedEntries(
           {
             ...manifest,
+            ...(Array.isArray(manifest.items) ? {items: screenedItems} : {}),
             id: buildManifestId(manifestBaseUrl, identifier),
           },
           {baseUrl: manifestBaseUrl},
         ),
       );
-      await writeManifest(identifier, importedManifest, {syncState: SYNC_NEW});
+      // Three index writes happen in this request, and each used to wait for
+      // an OpenSearch refresh. Only the LAST needs to be searchable when the
+      // response lands — the works list re-reads straight after — so the
+      // earlier ones do not wait. That last one is triggerAssetImport's when
+      // there are canvases to copy, and filing's when there are none.
+      const hasCanvases = Array.isArray(importedManifest.items) && importedManifest.items.length > 0;
+      await writeManifest(identifier, importedManifest, {syncState: SYNC_NEW, waitForIndex: false});
       const filedManifest = await fileNewWork({
         identifier,
         manifest: importedManifest,
         slug: body.collection,
         writeManifest,
+        waitForIndex: !hasCanvases,
       });
       try {
         // `items` is optional in the spec, and a Manifest that omits it threw a
@@ -337,6 +360,7 @@ exports.handler = async (event) => {
         await triggerAssetImport({
           identifier,
           total: Array.isArray(importedManifest.items) ? importedManifest.items.length : 0,
+          skipped,
         });
       } catch (error) {
         console.error("Failed to start asset import", error);

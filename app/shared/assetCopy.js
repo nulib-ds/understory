@@ -15,11 +15,19 @@ const {Upload} = require("@aws-sdk/lib-storage");
 // SDK-free and unit-tested, so it lives with the rest of the source-document
 // reshaping rather than here.
 const {paintingBody} = require("./sourceFetch");
+// Audio/video canvases take a different road: their stream is copied verbatim
+// into av/, not converted. Dispatched from here so every caller of
+// copyCanvasAsset — the per-work walk today — handles both kinds with no change
+// of its own.
+const {isAvCanvas, hasAuthService, boxedThumbnail} = require("./avImport");
+const {safeImageRequest} = require("./imageRequest");
+const {copyAvCanvas} = require("./avCopy");
 
 const s3 = new S3Client({});
 const iiifBucket = process.env.IIIF_BUCKET;
 const sourceBucket = process.env.SOURCE_BUCKET;
 const imageApiBase = (process.env.IMAGE_API_BASE_URL || "").replace(/\/$/, "");
+const documentsBase = (process.env.IIIF_BASE_URL || "").replace(/\/$/, "");
 
 const POLL_INTERVAL_MS = 3000;
 const POLL_TIMEOUT_MS = 280000;
@@ -61,34 +69,25 @@ function localService(serviceId, isV3) {
   };
 }
 
-// A IIIF Image API request tail: {region}/{size}/{rotation}/{quality}.{format}.
-// Matched strictly so a plain, non-IIIF image URL (some sources use one for
-// their thumbnails) falls back rather than being mangled into a broken path.
-const IMAGE_REQUEST_PATTERN =
-  /\/(full|square|pct:[\d.,]+|\d+,\d+,\d+,\d+)\/(max|full|pct:[\d.]+|!?\d*,\d*)\/(!?[\d.]+)\/[^/]+$/;
-
-// Rewrites a source Image API URL onto our own service, preserving the region,
-// size and rotation the source asked for (e.g. a "!300,300" thumbnail stays a
-// "!300,300" thumbnail) and translating the v2/v3 full-size keyword.
-function localImageUrl(sourceUrl, serviceId, isV3) {
-  const parts = IMAGE_REQUEST_PATTERN.exec(sourceUrl || "");
-  if (!parts) {
-    return `${serviceId}/full/${isV3 ? "max" : "full"}/0/default.jpg`;
-  }
-  const [, region, rawSize, rotation] = parts;
-  let size = rawSize;
-  if (size === "max" && !isV3) size = "full";
-  if (size === "full" && isV3) size = "max";
-  return `${serviceId}/${region}/${size}/${rotation}/default.jpg`;
-}
-
-// Repoints a IIIF list of Image resources (canvas.thumbnail, manifest.thumbnail…)
-// at our own service.
-function repointImageResources(resources, serviceId, isV3) {
+// Repoints a IIIF list of Image resources (canvas.thumbnail, a placeholder's
+// painting body…) at our own service, keeping each one's region and rotation.
+//
+// The SIZE is not kept verbatim. It used to be — a source's "!300,300" stayed
+// "!300,300" — which was harmless on Image API 2 and is not on 3: our v3 server
+// refuses `!w,h` whenever the box is bigger than the image on either side, and
+// any plain size bigger than the image. safeImageRequest turns it into the
+// exact width it would have produced, capped at the image (see
+// imageRequest.js). `full` is our copy's pixel size, which that needs.
+function repointImageResources(resources, serviceId, isV3, full) {
   if (!Array.isArray(resources)) return;
   for (const resource of resources) {
     if (!resource?.id) continue;
-    resource.id = localImageUrl(resource.id, serviceId, isV3);
+    const request = safeImageRequest(resource.id, {serviceId, full});
+    resource.id = request.url;
+    if (request.width && request.height) {
+      resource.width = request.width;
+      resource.height = request.height;
+    }
     if (Array.isArray(resource.service)) {
       resource.service = [localService(serviceId, isV3)];
     }
@@ -97,27 +96,84 @@ function repointImageResources(resources, serviceId, isV3) {
 
 // A canvas's thumbnail and placeholderCanvas are derivatives of the same source
 // image as its painting body, so they follow it to the service we just created.
-function repointCanvasDerivatives(canvas, serviceId, isV3) {
-  repointImageResources(canvas?.thumbnail, serviceId, isV3);
+function repointCanvasDerivatives(canvas, serviceId, isV3, full) {
+  repointImageResources(canvas?.thumbnail, serviceId, isV3, full);
   for (const page of canvas?.placeholderCanvas?.items || []) {
     for (const annotation of page?.items || []) {
       if (annotation?.body) {
-        repointImageResources([annotation.body], serviceId, isV3);
+        repointImageResources([annotation.body], serviceId, isV3, full);
       }
     }
   }
 }
 
-// Many sources expose a manifest-level thumbnail as a plain URL on their own
-// API with no image service behind it. Rather than copy a second, redundant
-// derivative, point it at the first canvas's freshly migrated thumbnail.
-function repointManifestThumbnail(manifest) {
-  const firstThumbnail = manifest?.items?.[0]?.thumbnail?.[0];
-  const serviceId = firstThumbnail?.service?.[0]?.id;
-  if (!firstThumbnail?.id || !serviceId) return false;
-  if (!imageApiBase || !serviceId.startsWith(imageApiBase)) return false;
-  manifest.thumbnail = [structuredClone(firstThumbnail)];
-  return true;
+// The work's own thumbnail, copied as an image in its own right.
+//
+// It used to be REPLACED instead, by the first canvas thumbnail we had copied.
+// That was a guess on our part, and a wrong one: the manifest thumbnail is the
+// curator's choice of image for the whole work, and the spec does not tie it
+// to any canvas. At NUL it is a chosen file set for an image work, or a chosen
+// poster or image for an A/V work; elsewhere it need not be one of the
+// canvases at all. With several posters, "the first" is arbitrary.
+//
+// So: whatever the source designates is copied onto our Image API at
+// image/{workId}/thumbnail — through its Image service if it has one, from its
+// plain URL if not (NUL's has no service). The source having none means we
+// have none; we do not invent one (the collection list already falls back to
+// the first canvas for display). If the copy fails — restricted, unreachable,
+// a format the converter cannot read — the thumbnail is REMOVED, so a
+// published work never links to the source for it.
+//
+// Returns {status, error?} for the caller to record on the import status.
+function isOwnThumbnail(thumbnail) {
+  if (!thumbnail?.id) return false;
+  const serviceId = thumbnail.service?.[0]?.id || thumbnail.service?.[0]?.["@id"];
+  if (serviceId) return Boolean(imageApiBase) && serviceId.startsWith(imageApiBase);
+  return Boolean(documentsBase) && thumbnail.id.startsWith(`${documentsBase}/`);
+}
+
+async function copyManifestThumbnail({identifier, manifest, onPhase}) {
+  const reportPhase = async (phase) => {
+    if (onPhase) await onPhase(`Work thumbnail: ${phase.charAt(0).toLowerCase()}${phase.slice(1)}`);
+  };
+  const source = Array.isArray(manifest?.thumbnail) ? manifest.thumbnail[0] : null;
+  if (!source?.id) return {status: "none"};
+  if (isOwnThumbnail(source)) return {status: "copied"}; // a resumed import
+
+  const drop = (error) => {
+    console.warn(`Import-assets: thumbnail for ${identifier} not copied, removing it (${error})`);
+    delete manifest.thumbnail;
+    return {status: "removed", error};
+  };
+  if (hasAuthService(source)) return drop("restricted by the source (IIIF Auth)");
+
+  const baseKey = `image/${identifier}/thumbnail`;
+  const serviceId = source.service?.[0]?.id || source.service?.[0]?.["@id"];
+  let local = null;
+  let lastError = null;
+  // The service first: it serves its largest size on request, where a sized
+  // URL can be one the source itself refuses. The plain URL is the fallback.
+  const attempts = [
+    ...(serviceId ? [() => copyImageService({serviceId, baseKey, reportPhase})] : []),
+    () => copyImageUrl({url: source.id, baseKey, reportPhase}),
+  ];
+  for (const attempt of attempts) {
+    try {
+      local = await attempt();
+      break;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  if (!local) return drop(lastError?.message || "unknown error");
+
+  const service = localService(local.localServiceId, local.localIsV3);
+  // Sized to what the source declared, or a 300px box when it declared nothing.
+  const box = source.width && source.height ? Math.max(source.width, source.height) : 300;
+  manifest.thumbnail = [
+    boxedThumbnail({service, width: local.localInfo.width, height: local.localInfo.height, box}),
+  ];
+  return {status: "copied"};
 }
 
 async function copyCanvasAsset({identifier, canvasIndex, canvas, onPhase}) {
@@ -126,6 +182,12 @@ async function copyCanvasAsset({identifier, canvasIndex, canvas, onPhase}) {
   const reportPhase = async (phase) => {
     if (onPhase) await onPhase(phase);
   };
+
+  if (isAvCanvas(canvas)) {
+    // copyImageService is handed in rather than required by avCopy.js, which
+    // this module already requires — the reverse would be a cycle.
+    return copyAvCanvas({identifier, canvasIndex, canvas, onPhase, copyImageService, localService});
+  }
 
   const body = paintingBody(canvas);
   const serviceId = body?.service?.[0]?.id;
@@ -136,29 +198,83 @@ async function copyCanvasAsset({identifier, canvasIndex, canvas, onPhase}) {
   if (imageApiBase && serviceId.startsWith(imageApiBase)) {
     // Image is already ours. Its derivatives may not be: earlier imports
     // repointed the painting body only, so make them catch up.
-    repointCanvasDerivatives(canvas, serviceId, body.service[0]?.type === "ImageService3");
+    repointCanvasDerivatives(canvas, serviceId, body.service[0]?.type === "ImageService3", {
+      width: body.width,
+      height: body.height,
+    });
     return;
   }
 
+  const {localServiceId, localIsV3, localInfo} = await copyImageService({
+    serviceId,
+    baseKey: `image/${identifier}/${canvasIndex}`,
+    reportPhase,
+  });
+
+  canvas.items[0].items[0].body = {
+    id: `${localServiceId}/full/${localIsV3 ? "max" : "full"}/0/default.jpg`,
+    type: "Image",
+    format: "image/jpeg",
+    width: localInfo.width,
+    height: localInfo.height,
+    service: [localService(localServiceId, localIsV3)],
+  };
+
+  repointCanvasDerivatives(canvas, localServiceId, localIsV3, {
+    width: localInfo.width,
+    height: localInfo.height,
+  });
+}
+
+// One image, from a source Image API service onto ours: the largest size the
+// source serves, uploaded to the source bucket at `${baseKey}.jpg`, waited on
+// until the iiif-image Lambda has made its pyramid TIFF, then read back as our
+// own service. Shared by image canvases and A/V posters.
+//
+// It asks the source for its largest size and never for a specific one, which
+// is what makes it robust to a source that advertises a thumbnail URL it will
+// not actually serve (NUL's poster service returns 400 for its own
+// "!300,300" on a 320x240 frame).
+async function copyImageService({serviceId, baseKey, reportPhase}) {
   await reportPhase("Fetching image info…");
   const sourceInfo = await fetchJson(`${serviceId.replace(/\/$/, "")}/info.json`);
-  const imageUrl = largestImageUrl(sourceInfo);
+  return copyImageUrl({url: largestImageUrl(sourceInfo), baseKey, reportPhase});
+}
 
+// The formats the iiif-image Lambda converts, keyed by the content type the
+// source serves. The extension matters: that Lambda decides by it.
+const PIPELINE_EXTENSIONS = {
+  "image/jpeg": ".jpg",
+  "image/png": ".png",
+  "image/webp": ".webp",
+  "image/tiff": ".tif",
+};
+
+// Any single image URL -> our Image API. copyImageService is this with the
+// URL chosen for it; a plain thumbnail URL (NUL's work thumbnail is one, with
+// no service behind it) comes straight here.
+async function copyImageUrl({url, baseKey, reportPhase}) {
   await reportPhase("Downloading image…");
-  const imageResponse = await fetch(imageUrl, {signal: AbortSignal.timeout(120000)});
+  // Anonymous, like every import fetch: only what a stranger could already get.
+  const imageResponse = await fetch(url, {credentials: "omit", signal: AbortSignal.timeout(120000)});
   if (!imageResponse.ok || !imageResponse.body) {
-    throw new Error(`Unable to download image from ${imageUrl} (status ${imageResponse.status})`);
+    throw new Error(`Unable to download image from ${url} (status ${imageResponse.status})`);
+  }
+  const contentType = (imageResponse.headers.get("content-type") || "image/jpeg").split(";")[0].trim();
+  const extension = PIPELINE_EXTENSIONS[contentType];
+  if (!extension) {
+    await imageResponse.body.cancel().catch(() => {});
+    throw new Error(`Unable to convert ${contentType} from ${url}`);
   }
 
-  const baseKey = `image/${identifier}/${canvasIndex}`;
   await reportPhase("Uploading to your library…");
   const upload = new Upload({
     client: s3,
     params: {
       Bucket: sourceBucket,
-      Key: `${baseKey}.jpg`,
+      Key: `${baseKey}${extension}`,
       Body: Readable.fromWeb(imageResponse.body),
-      ContentType: "image/jpeg",
+      ContentType: contentType,
     },
   });
   await upload.done();
@@ -187,28 +303,19 @@ async function copyCanvasAsset({identifier, canvasIndex, canvas, onPhase}) {
   const localInfo = await fetchJson(`${imageApiBase}/${encodeURIComponent(baseKey)}/info.json`);
   const localIsV3 = detectImageApiVersion(localInfo) === 3;
   const localServiceId = (localInfo?.id || localInfo?.["@id"] || "").replace(/\/$/, "");
-
-  canvas.items[0].items[0].body = {
-    id: `${localServiceId}/full/${localIsV3 ? "max" : "full"}/0/default.jpg`,
-    type: "Image",
-    format: "image/jpeg",
-    width: localInfo.width,
-    height: localInfo.height,
-    service: [localService(localServiceId, localIsV3)],
-  };
-
-  repointCanvasDerivatives(canvas, localServiceId, localIsV3);
+  return {localServiceId, localIsV3, localInfo};
 }
 
 module.exports = {
   copyCanvasAsset,
+  copyImageService,
+  copyImageUrl,
+  copyManifestThumbnail,
   paintingBody,
-  repointManifestThumbnail,
   detectImageApiVersion,
   largestImageUrl,
   fetchJson,
   localService,
-  localImageUrl,
   repointImageResources,
   repointCanvasDerivatives,
 };

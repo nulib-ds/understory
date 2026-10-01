@@ -22,19 +22,40 @@ export function assetLabelFromKey(key) {
   return basename.replace(/\.[^./]+$/, "");
 }
 
+// Our Image API is 3.0 (VITE_IIIF_BASE_URL ends /iiif/3). In 3.0 a request
+// larger than the image is refused unless it carries `^`, so a fixed-size tile
+// — a 64px list thumbnail, a 400px sign-in square — would 400 for any image or
+// poster smaller than the tile. For display that is the wrong trade: filling
+// the box is the point. So requests to OUR service say `^`.
+//
+// Only ours: `^` is not valid Image API 2, and a source's service in an import
+// preview could be either, so its requests are left exactly as they were.
+//
+// Written `%5E`, not `^`. Browsers encode it themselves, but our server
+// refuses a bare `^` from a client that does not (measured with curl), and
+// these URLs can end up in documents other clients read.
+const OWN_IMAGE_API_IS_V3 = /\/iiif\/3$/.test(IIIF_BASE_URL);
+
+export function imageRequestUrl(serviceId, {region = "full", size}) {
+  const id = (serviceId || "").replace(/\/$/, "");
+  const own = OWN_IMAGE_API_IS_V3 && id.startsWith(`${IIIF_BASE_URL}/`);
+  return `${id}/${region}/${own ? "%5E" : ""}${size}/0/default.jpg`;
+}
+
 // A resolved IIIF image info response is always servable as a thumbnail JPEG,
 // unlike the original upload (which may be a browser-unrenderable format like TIFF).
 export function buildThumbnailUrlFromInfo(imageInfo, size = 64) {
   const serviceId = imageInfo?.id || imageInfo?.["@id"];
   if (!serviceId) return null;
-  return `${serviceId.replace(/\/$/, "")}/full/,${size}/0/default.jpg`;
+  return imageRequestUrl(serviceId, {size: `,${size}`});
 }
 
 export function buildCanvasResource(manifest, imageInfo, label) {
   if (!manifest?.id) {
     throw new Error("Work is missing an id");
   }
-  // serverless-iiif currently serves IIIF Image API 2.1 (`@context`/`@id`), not 3.x (`id`) — support both.
+  // Our service is Image API 3 (`id`, `type`), but a v2 info (`@context`/`@id`)
+  // is still read correctly, so either base works.
   const imageId = imageInfo?.id || imageInfo?.["@id"];
   if (!imageId) {
     throw new Error("Image info is missing an id");

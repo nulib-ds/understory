@@ -504,6 +504,15 @@ main.layout {
   text-align: left;
 }
 
+/* The canvases an import leaves out (restricted, encrypted, needs
+   transcoding), listed inside a Callout. The Callout's own grid would put each
+   item in its icon column, so the list spans both and indents itself. */
+.import-skipped-list {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding-left: var(--space-5);
+}
+
 .import-preview-thumbnail {
   position: relative;
   width: calc(64 * var(--px));

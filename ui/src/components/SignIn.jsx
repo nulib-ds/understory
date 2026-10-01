@@ -7,6 +7,7 @@ import {
 } from "aws-amplify/auth";
 import {Box, Button, Callout, Flex, Heading, Text, TextField} from "@radix-ui/themes";
 import Wordmark from "./Wordmark";
+import {imageRequestUrl} from "../lib/canvasAssets";
 import "./SignIn.css";
 
 // Mirrors the pool's password policy (template.yml CognitoUserPool): 8+ chars,
@@ -30,10 +31,11 @@ const PRESENTATION_BASE =
     : "";
 
 // A square region at a fixed size, so every tile is identical no matter the
-// original aspect ratio. `square` and explicit `w,h` are level-2 Image API and
-// read the same in both 2.x and 3.x, so no version branching is needed.
+// original aspect ratio. With `^` (see imageRequestUrl), because the showcase
+// can draw from A/V posters, and a 320x240 poster's square is only 240px: on
+// Image API 3 a 400px tile of it is otherwise a 400 error, not a tile.
 const squareUrl = (service) =>
-  `${service.replace(/\/$/, "")}/square/${SHOWCASE_TILE},${SHOWCASE_TILE}/0/default.jpg`;
+  imageRequestUrl(service, {region: "square", size: `${SHOWCASE_TILE},${SHOWCASE_TILE}`});
 
 function pickRandom(items, count) {
   const pool = [...items];

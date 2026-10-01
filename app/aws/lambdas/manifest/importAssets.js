@@ -10,7 +10,7 @@ const {readManifest, writeManifest} = require("./store");
 const {upsertQuietly, SYNC_NEW} = require("./workIndex");
 const {INTERNAL_PREFIX} = require("../../../shared/space");
 // The canvas copy itself, shared with the collection import state machine.
-const {copyCanvasAsset, repointManifestThumbnail} = require("../../../shared/assetCopy");
+const {copyCanvasAsset, copyManifestThumbnail} = require("../../../shared/assetCopy");
 
 const s3 = new S3Client({});
 const lambdaClient = new LambdaClient({});
@@ -58,8 +58,13 @@ async function writeManifestItems(identifier, manifest) {
     current = manifest;
   }
   current.items = manifest.items;
+  // The thumbnail is the walk's to own (no API route writes it), including
+  // its REMOVAL: copyManifestThumbnail deletes one it could not copy, and
+  // "only if present" would quietly restore the source's link from `current`.
   if (manifest.thumbnail) {
     current.thumbnail = manifest.thumbnail;
+  } else {
+    delete current.thumbnail;
   }
   // skipIndex: the walk rewrites this once per canvas. The import indexes
   // once when it starts and once when it finishes.
@@ -102,11 +107,19 @@ async function invokeSelf(payload) {
   );
 }
 
-async function triggerAssetImport({identifier, total}) {
+// `skipped` is what screenAvCanvases removed before the manifest was written:
+// audio/video canvases we could not host, each with its reason. It rides on
+// the status object for the whole walk so the work page can say what did not
+// come across — and it is why a work whose every canvas was skipped still
+// gets a status object, rather than none.
+async function triggerAssetImport({identifier, total, skipped = []}) {
   if (!total) {
+    if (skipped.length) {
+      await writeImportStatus(identifier, {status: "complete", total: 0, completed: 0, skipped});
+    }
     return;
   }
-  await writeImportStatus(identifier, {status: "in-progress", total, completed: 0});
+  await writeImportStatus(identifier, {status: "in-progress", total, completed: 0, skipped});
   // The walk skips indexing per canvas, so the index is stamped here and again
   // at the end. `importing` is what lets a publish refuse to freeze a
   // half-rewritten manifest.
@@ -200,6 +213,9 @@ async function handleImportAssets({identifier, canvasIndex, reconcile}) {
 
   const previousStatus = await readImportStatus(identifier).catch(() => null);
   const failures = Array.isArray(previousStatus?.failures) ? previousStatus.failures : [];
+  // Every write below builds a fresh status object, so this has to be carried
+  // into each one or the first progress update would erase it.
+  const skipped = Array.isArray(previousStatus?.skipped) ? previousStatus.skipped : [];
 
   const items = Array.isArray(manifest.items) ? manifest.items : [];
 
@@ -234,6 +250,7 @@ async function handleImportAssets({identifier, canvasIndex, reconcile}) {
           done: [...done].sort((a, b) => a - b),
           active: Object.fromEntries(active),
           failures,
+          skipped,
           phase: active.size ? `Copying ${active.size} of ${items.length}…` : null,
         }),
       )
@@ -316,6 +333,7 @@ async function handleImportAssets({identifier, canvasIndex, reconcile}) {
         done: [...done].sort((a, b) => a - b),
         active: {},
         failures,
+        skipped,
         phase: null,
         error: "Import was interrupted — resume to continue.",
       });
@@ -323,7 +341,7 @@ async function handleImportAssets({identifier, canvasIndex, reconcile}) {
     return;
   }
 
-  await writeImportStatus(identifier, {
+  const finishing = {
     status: "in-progress",
     total: items.length,
     completed: done.size,
@@ -331,11 +349,17 @@ async function handleImportAssets({identifier, canvasIndex, reconcile}) {
     done: [...done].sort((a, b) => a - b),
     active: {},
     failures,
-    phase: "Updating manifest thumbnail…",
+    skipped,
+  };
+  await writeImportStatus(identifier, {...finishing, phase: "Copying the work's thumbnail…"});
+  // The source's own choice of thumbnail, copied as its own image — not a
+  // canvas picked on the curator's behalf. See copyManifestThumbnail.
+  const thumbnail = await copyManifestThumbnail({
+    identifier,
+    manifest,
+    onPhase: (phase) => writeImportStatus(identifier, {...finishing, phase}).catch(() => {}),
   });
-  if (repointManifestThumbnail(manifest)) {
-    await writeManifestItems(identifier, manifest);
-  }
+  await writeManifestItems(identifier, manifest);
   // The one index write for the whole walk: thumbnails, item count and the
   // content hash all settle here. Re-read rather than trusting the in-memory
   // copy, which the walk has been mutating.
@@ -364,8 +388,10 @@ async function handleImportAssets({identifier, canvasIndex, reconcile}) {
     done: [...done].sort((a, b) => a - b),
     active: {},
     failures,
+    skipped,
+    thumbnail,
     error: failures.length
-      ? `${failures.length} of ${items.length} image${failures.length === 1 ? "" : "s"} could not be copied`
+      ? `${failures.length} of ${items.length} asset${failures.length === 1 ? "" : "s"} could not be copied`
       : undefined,
   });
   console.log(

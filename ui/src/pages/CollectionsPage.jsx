@@ -18,6 +18,7 @@ import {COLLECTION_API_BASE, apiFetch} from "../lib/api";
 import {suggestCollectionSlug, collectionSlugError} from "../lib/collectionSlug";
 import {ROLE_ADMIN, useSession} from "../lib/session";
 import PageHeading from "../components/PageHeading";
+import {imageRequestUrl} from "../lib/canvasAssets";
 import PageReady from "../components/PageReady";
 import AddCollectionModal from "../components/collections/AddCollectionModal";
 
@@ -32,7 +33,7 @@ function collectionThumbnailUrl(thumbnail, size = 48) {
   const service = Array.isArray(first.service) ? first.service[0] : first.service;
   const serviceId = service?.id || service?.["@id"];
   if (serviceId) {
-    return `${serviceId.replace(/\/$/, "")}/square/${size},${size}/0/default.jpg`;
+    return imageRequestUrl(serviceId, {region: "square", size: `${size},${size}`});
   }
   return first.id || null;
 }
