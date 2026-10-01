@@ -24,11 +24,9 @@ async function readManifest(identifier) {
 // write that a later one in the same request supersedes — see the import route.
 async function writeManifest(identifier, manifest, {skipIndex = false, syncState, waitForIndex = true} = {}) {
   const key = manifestObjectKey(identifier);
-  // Normalized on EVERY write, not just the ones that touch partOf. This is
-  // what makes a manifest carrying the old inline `staticiiif` prefix object
-  // heal on any save — a title edit, a metadata edit, an asset reorder — rather
-  // than only when it is moved between collections. An object in @context is
-  // what stops Clover rendering it at all.
+  // Normalized on EVERY write, not just the ones that touch partOf, so whatever
+  // route wrote it — a title edit, a metadata edit, an asset reorder — a stored
+  // manifest's @context ends with the presentation context, exactly once.
   const next = {...manifest, "@context": normalizeContext(manifest?.["@context"])};
   const body = JSON.stringify(next, null, 2);
   await s3.send(

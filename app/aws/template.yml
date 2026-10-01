@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: IIIF Collection Builder
+Description: "Understory: admin backend for downstream IIIF sites"
 
 Parameters:
   ServerlessIiifVersion:
@@ -8,7 +8,7 @@ Parameters:
     Default: "7.0.1"
   GitHubRepo:
     Type: String
-    Description: "URL of your GitHub fork of this repo (e.g. https://github.com/your-org/static-iiif)"
+    Description: "URL of the GitHub repo Amplify builds the UI from: https://github.com/nulib-ds/understory, or your fork of it"
   GitHubBranch:
     Type: String
     Default: main
@@ -36,7 +36,7 @@ Parameters:
   ProjectName:
     Type: String
     Default: understory
-    Description: "PLACEHOLDER — the project name is not settled. Used only to build hostnames (iiif-<project>.<base>, images-<project>.<base>, admin-<project>.<base>). Must be lowercase; settle it before the first staging deploy, because it ends up inside published document URLs."
+    Description: "Used only to build hostnames (iiif-<project>.<base>, images-<project>.<base>, admin-<project>.<base>). Must be lowercase. It ends up inside published document URLs, so do not change it on a stack that has published."
   BaseDomainName:
     Type: String
     Default: ""

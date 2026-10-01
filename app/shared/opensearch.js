@@ -127,36 +127,63 @@ function expectOk(response, what) {
 // API Gateway's limit. 1s is OpenSearch's own default, and this is a tiny
 // index, so pinning it costs the shared cluster nothing it was not already
 // designed for.
+//
+// It is never part of the create request. A domain can set a floor, and the
+// shared dev domain does (an OR1 domain: cluster.minimum.index.refresh_interval
+// 5s, default 10s). A create asking for less is refused outright, so a new
+// stack got no working index at all: every S3 write succeeded, every index
+// write failed quietly, and every works list came back empty.
 const DEFAULT_INDEX_SETTINGS = {number_of_shards: 1, number_of_replicas: 0, refresh_interval: "1s"};
 
+// Resolves true when this call created the index.
 async function ensureIndex(name, properties, settings = DEFAULT_INDEX_SETTINGS) {
+  const {refresh_interval: refreshInterval, ...createSettings} = settings;
+  let created = false;
   const head = await osRequest("HEAD", `/${name}`);
   if (head.status === 200) {
     expectOk(
       await osRequest("PUT", `/${name}/_mapping`, JSON.stringify({properties})),
       `Failed to update mapping for ${name}`,
     );
-    // An index created before this, or given another interval by a template,
-    // is brought into line — refresh_interval is a dynamic setting. Best
-    // effort: failing here must not stop the write that called ensure, and a
-    // permission the shared domain withholds would otherwise do exactly that.
-    if (settings.refresh_interval) {
-      const updated = await osRequest(
-        "PUT",
-        `/${name}/_settings`,
-        JSON.stringify({index: {refresh_interval: settings.refresh_interval}}),
-      ).catch((error) => ({status: 0, text: error.message}));
-      if (updated.status >= 300 || updated.status === 0) {
-        console.warn(`Could not set refresh_interval on ${name}: ${updated.status} ${updated.text}`);
-      }
+  } else {
+    const response = await osRequest(
+      "PUT",
+      `/${name}`,
+      JSON.stringify({settings: createSettings, mappings: {properties}}),
+    );
+    // Another writer can create it between our HEAD and this PUT: a fresh
+    // stack's first collection import starts five batches at once. Theirs
+    // will do. The opposite of createIndexExclusive, where "already exists"
+    // means a rival publish run owns the candidate.
+    if (response.json?.error?.type !== "resource_already_exists_exception") {
+      expectOk(response, `Failed to create index ${name}`);
+      created = true;
     }
-    return false;
   }
-  expectOk(
-    await osRequest("PUT", `/${name}`, JSON.stringify({settings, mappings: {properties}})),
-    `Failed to create index ${name}`,
-  );
-  return true;
+  if (refreshInterval) await pinRefreshInterval(name, refreshInterval);
+  return created;
+}
+
+// refresh_interval is a dynamic setting, so this also brings an index created
+// before it, or given another interval by a template, into line. Best effort:
+// failing here must not stop the write that called ensure, and a permission
+// the shared domain withholds would otherwise do exactly that.
+async function pinRefreshInterval(name, interval) {
+  const put = (value) =>
+    osRequest("PUT", `/${name}/_settings`, JSON.stringify({index: {refresh_interval: value}})).catch(
+      (error) => ({status: 0, text: error.message}),
+    );
+  let response = await put(interval);
+  // Below the domain's floor, settle for the floor. It is named only in the
+  // refusal ("…cannot be smaller than cluster.minimum.index.refresh_interval
+  // [5s]"): reading cluster settings instead needs a permission a scoped
+  // domain policy can withhold.
+  const floor =
+    response.status === 400 && /minimum\.index\.refresh_interval \[([^\]]+)\]/.exec(response.text || "")?.[1];
+  if (floor) response = await put(floor);
+  if (response.status >= 300 || response.status === 0) {
+    console.warn(`Could not set refresh_interval on ${name}: ${response.status} ${response.text}`);
+  }
 }
 
 // Fails if the index already exists, rather than treating that as success.

@@ -1,5 +1,5 @@
 {
-  "name": "iiif-image",
+  "name": "understory-iiif-image",
   "version": "1.0.0",
   "description": "IIIF image Lambda function",
   "main": "index.js",

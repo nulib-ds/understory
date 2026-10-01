@@ -2,14 +2,15 @@ version = 0.1
 
 [default.deploy.parameters]
 # Pick a stack name unique to you — this becomes your personal dev stack.
-# e.g. "jsmith-dev-static-iiif". Everyone on the team deploys their own copy
-# of this stack rather than sharing one.
-stack_name = "<your-username>-dev-static-iiif"
+# e.g. "jsmith-dev-understory". Everyone on the team deploys their own copy
+# of this stack rather than sharing one. Shared environments take the same
+# shape: "staging-understory", "production-understory".
+stack_name = "<your-username>-dev-understory"
 resolve_s3 = true
 region = "us-east-1"
 capabilities = "CAPABILITY_IAM CAPABILITY_AUTO_EXPAND"
 
-# GitHub repo URL — the URL of your GitHub fork of this repository
+# GitHub repo URL — https://github.com/nulib-ds/understory, or your fork of it
 # GitHub personal access token — needs "repo" scope
 #   Generate one at: https://github.com/settings/tokens → Generate new token (classic) → check "repo"
 # GitHub branch to deploy (default: main)
@@ -23,7 +24,9 @@ capabilities = "CAPABILITY_IAM CAPABILITY_AUTO_EXPAND"
 # <prefix>.<slug>._pub.<runId>, with <prefix>.<slug> as the alias a consuming
 # site points at.
 #
-# After deploying, read the OpenSearchAccessRoleArn stack output and add it to
-# that domain's access policy yourself. It is one ARN — PublishFunction shares
-# ManifestFunction's role so that it stays one.
-parameter_overrides = "GitHubRepo=https://github.com/your-org/your-repo GitHubOAuthToken=ghp_your_token_here GitHubBranch=main OpenSearchDomainName=your-domain-name OpenSearchEndpoint=https://search-your-domain-xxxx.us-east-1.es.amazonaws.com"
+# The shared dev domain's access policy already trusts this whole account, so a
+# dev stack needs nothing more. For a domain whose policy names roles one by
+# one, read the OpenSearchAccessRoleArn stack output after deploying and add it
+# yourself. It is one ARN — PublishFunction shares ManifestFunction's role so
+# that it stays one.
+parameter_overrides = "GitHubRepo=https://github.com/nulib-ds/understory GitHubOAuthToken=ghp_your_token_here GitHubBranch=main OpenSearchDomainName=your-domain-name OpenSearchEndpoint=https://search-your-domain-xxxx.us-east-1.es.amazonaws.com"

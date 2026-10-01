@@ -327,11 +327,15 @@ async function finalize({slug, runId, indexName, result}) {
     getAliases(liveAliasName(prefix, slug)).then(Object.keys),
   ]);
   await updateAliases(stageActions({index: indexName, stagedAlias, previouslyStaged}));
+  // This write replaces the status whole, so carry over what Invalidate
+  // recorded on it rather than dropping the run's only record of the CDN.
+  const {cdn} = (await readJson(statusKeyFor(slug)))?.document || {};
   await writeStatus(slug, {
     runId,
     status: result?.failed ? "partial" : "succeeded",
     phase: "Done",
     ...result,
+    ...(cdn ? {cdn} : {}),
     indexName,
     stagedIndex: indexName,
     finishedAt: new Date().toISOString(),
@@ -389,8 +393,12 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // writeStatus replaces the object wholesale, and this task runs between two
 // states that own most of its fields — so read, merge, write.
+// readJson hands back {document, bytes, etag}; the patch goes on the document.
+// Spreading the wrapper instead wrote a status with no top-level `status`, so
+// the panel lost track of a run while its CDN cache cleared, and the `cdn`
+// outcome nested itself one level deeper with every patch.
 async function patchStatus(slug, patch) {
-  const current = (await readJson(statusKeyFor(slug))) || {};
+  const current = (await readJson(statusKeyFor(slug)))?.document || {};
   await writeStatus(slug, {...current, ...patch});
 }
 

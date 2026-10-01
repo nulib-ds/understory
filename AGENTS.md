@@ -272,13 +272,21 @@ publish run's writes into its candidate index: nothing reads that until the
 alias flip, so waiting there would only slow the run.
 
 **That makes the refresh interval the latency of every save, so we set it.**
-`ensureIndex` pins the working index to `refresh_interval: 1s`, on creation and
-on an existing index (best effort, since it is a dynamic setting). It was
-inherited before, and on the shared domain that is whatever a template or the
+`ensureIndex` pins the working index's `refresh_interval` after creating it, and
+on an existing index, best effort, since it is a dynamic setting: 1s, or the
+domain's floor when it refuses that. Inherited, it is whatever a template or the
 cluster says. `POST /manifests/import` makes three index writes, and measured
 at ~28–31s it was crossing API Gateway's 30s limit: the browser showed
 "Unable to import that manifest" while the Lambda went on and imported the
 work anyway.
+
+> **The interval is never part of the create request.** The shared dev domain
+> is an OR1 domain: `cluster.minimum.index.refresh_interval` is 5s and the
+> default 10s, and a create asking for less is refused outright. Asking for 1s
+> at creation left the first stack built after the pin with **no working
+> index**: every S3 write succeeded, every index write failed quietly, and every
+> works list was empty. The stacks before it had indexes older than the pin, so
+> it had been failing quietly on them too, and they ran at the 10s default.
 
 **A request waits only on its last index write.** `writeManifest`,
 `fileNewWork` and `upsertQuietly` take `waitForIndex` / `waitFor: false` for a
@@ -290,7 +298,7 @@ Bulk writes use `update` + `doc_as_upsert`, never `index`. `index` replaces the 
 
 Two document shapes, deliberately different. The working document carries `workId`, `collection`, `contentHash`, `syncState` and `importing`; the **published** document carries only `manifestId`, `title`, `thumbnails` and `itemCount` — nothing about how this app works. `thumbnails` is the one addition over the old shape, because a site rendering a result list otherwise has to fetch every manifest to draw it.
 
-The domain is not provisioned by this repo. After a deploy, read the `OpenSearchAccessRoleArn` stack output and add it to that domain's access policy yourself — the domain's resource-based policy is not owned by this template. It is one ARN: `PublishFunction` shares `ManifestFunction`'s role precisely so it stays one.
+The domain is not provisioned by this repo, and its resource-based policy is not owned by this template. The shared dev domain's policy grants `es:*` to the whole account (`arn:aws:iam::<account>:root`, checked 2026-10-01), so a dev stack's role needs nothing beyond its own IAM policy. A domain whose policy names roles one by one needs the `OpenSearchAccessRoleArn` stack output added to it after a deploy. It is one ARN: `PublishFunction` shares `ManifestFunction`'s role precisely so it stays one.
 
 > If the shared domain has **fine-grained access control** enabled, an IAM resource-policy grant is not sufficient — the role must also be mapped as a backend role in the security plugin, and `indices:admin/aliases` is a cluster-level permission there. Not verified against this deployment.
 
@@ -310,7 +318,7 @@ Load-bearing, not incidental:
 
 - **`WriteCollection` is built from what the batches actually did, never from the plan.** A work whose write failed is simply absent, so a published collection can never advertise a manifest that 404s. Leaf before root, mirroring `applyReconciliation`.
 - **`Invalidate` cannot fail the run.** `published/*` is cached hard at the edge, so the run drops it — ONE wildcard path, `/published/*`, because a wildcard counts as a single invalidation path however many objects it matches and the free allowance is 1,000 paths a month *across the whole account*. Naming each object instead would spend a large collection's share of that on one run, and it cannot be narrowed to the collection anyway: manifests are keyed by work id, not by collection. The task catches its own errors, records the outcome under `cdn` on the status object, and returns normally; the state machine's `Catch` routes to `Finalize`, never `RecordFailure`. By that point every published byte is written and correct, and a stale edge cache is hygiene rather than correctness — reporting the collection as failed would be false in the direction that matters. `runId` is the `CallerReference`, so a retry reuses the existing invalidation instead of paying for a second path.
-- **Each published member carries `staticiiif:contentHash`** — the hash of the working bytes it was made from. That is the record of what is live, and it is why a work edited mid-run correctly shows as changed again afterwards. **The run therefore needs no lock**, and edits are not blocked while it runs.
+- **Each published member carries `CONTENT_HASH_KEY`** (`https://nulib-ds.github.io/understory/ns#contentHash`) — the hash of the working bytes it was made from. That is the record of what is live, and it is why a work edited mid-run correctly shows as changed again afterwards. **The run therefore needs no lock**, and edits are not blocked while it runs.
 - A diff journal written on every save was considered and rejected: a journal drifts the moment a write half-fails or a run dies, and nothing repairs it. Comparing durable artifacts cannot drift.
 - The candidate index is created with a must-fail-if-exists PUT, so two runs starting in the same instant cannot both believe they own it.
 - **Garbage collection only ever deletes an index nothing points at any more**, and never one carrying an alias — so a concurrent run's candidate is safe and a flip is safe to retry. That happens in exactly two places: the flip route deletes the index that just stopped being live, and `Finalize` deletes the candidates its own is replacing (best effort, after the status write).
@@ -360,47 +368,6 @@ ui/                        # React/Vite frontend — talks to the deployed AWS s
 
 > Note: `app/storage/`, if present, is a vestige of an earlier approach and is not used by any current Lambda.
 
-## Cutover — read before deploying this over an existing stack
-
-The working/published split changes every S3 key and every manifest `id` URL,
-and the search index changed name and shape. **Nothing migrates.** A stack that
-had content before needs it wiped and re-created:
-
-```bash
-STACK=<your-stack-name>
-
-# 1. The old flat presentation tree. Buckets are DeletionPolicy: Retain, so
-#    deleting the stack would NOT do this.
-aws s3 rm "s3://${STACK}-iiif/presentation/" --recursive
-
-# 2. The old global index (the new names are ${STACK}._working and friends).
-#    Signed request, or do it from the OpenSearch console.
-#    DELETE /${STACK}-works
-
-# 3. Deploy, then paste the new role ARN into the domain's access policy.
-cd app/aws && sam build --use-container && sam deploy
-aws cloudformation describe-stacks --stack-name "$STACK" \
-  --query "Stacks[0].Outputs[?OutputKey=='OpenSearchAccessRoleArn'].OutputValue" --output text
-```
-
-Then recreate collections on `/` and re-import works. Images under `image/` in
-both buckets are untouched by the key change, but a work re-imported from a
-source manifest will fetch them again.
-
-Parameters that changed: `SearchIndexName` is gone, replaced by
-`SearchIndexPrefix` (defaults to the stack name, must be lowercase).
-`OpenSearchEndpoint` and `OpenSearchDomainName` are now **required** — the works
-list is served by the index, so a stack without one cannot list anything.
-
-`ui/.env.local` loses `VITE_SEARCH_API_URL`.
-
-> **This refactor has not yet been run against a live stack.** It is verified by
-> 78 unit tests, esbuild resolving both Lambda graphs, `sam validate --lint`, and
-> the UI building and serving every route — none of which exercises S3,
-> OpenSearch or Step Functions. Treat the first deploy as the real test, and
-> expect to find things. The end-to-end checklist in the plan file
-> (`~/.claude/plans/`, §8) is written for exactly that pass.
-
 ## Build, Test, and Development Commands
 - `npm install` — install root dependencies; run inside `ui/` and any Lambda subdirectory separately.
 - `npm test` — placeholder; replace with your actual test runner as coverage is added.
@@ -436,7 +403,7 @@ aws sts get-caller-identity         # sanity check — should return your accoun
 SSO sessions expire; re-run `aws sso login` whenever `sam`/`aws` commands start failing with `ExpiredToken`/`ExpiredTokenException`.
 
 ### 2. Stand up (or update) your personal stack
-1. Copy `app/aws/samconfig.toml.example` to `app/aws/samconfig.toml` (gitignored) and set `stack_name` to something unique to you, e.g. `<yourname>-dev-static-iiif`.
+1. Copy `app/aws/samconfig.toml.example` to `app/aws/samconfig.toml` (gitignored) and set `stack_name` to something unique to you, e.g. `<yourname>-dev-understory` (see Naming).
 2. First time only:
    ```
    cd app/aws
@@ -491,11 +458,40 @@ aws cognito-idp admin-set-user-password \
 ### Amplify deployment
 Connect the repo in Amplify (this is Amplify **Hosting** only — auth/storage/API are all defined via SAM, not the Amplify backend framework). The inline `BuildSpec` in `template.yml`'s `AmplifyApp` resource handles the build (`ui/` subdirectory, outputs `ui/dist`) and injects the `VITE_*` environment variables from the stack's own resources automatically. On a stack with a custom domain, `AmplifyDomain` also attaches `admin-<project>.<base>` to the deploy branch — see **Hostnames** under CDN.
 
+Two things CloudFormation does not do, both seen on fresh stacks:
+
+- **It never starts the first build.** The app and branch are created, but builds run only on a push to `GitHubBranch`, so a stack created after the latest push shows Amplify's "Welcome" placeholder at `UIEndpoint` until the next push, or until `aws amplify start-job --app-id <id> --branch-name <branch> --job-type RELEASE`. The local dev server is unaffected.
+- **Deleting the stack leaves the app's deploy key on the repo**, a read-only key titled `<appId>:amplify@aws`. Remove it under the repo's Settings › Deploy keys once the app is gone.
+
 ## Naming
 
-The app is called **Understory** in the UI. The repo, the AWS stack, bucket
-names and S3 prefixes are all still `static-iiif` — that rename has not been
-done, so don't "fix" the mismatch in infrastructure without being asked.
+The project is **Understory** everywhere: the UI, the repo
+(`https://github.com/nulib-ds/understory`), the packages and the AWS footprint.
+
+| | Shape | Example |
+|---|---|---|
+| Personal dev stack | `<owner>-dev-understory` | `mat-dev-understory` |
+| Shared environment | `<env>-understory` | `staging-understory`, `production-understory` |
+| Packages | `understory`, `understory-<part>` | `understory-ui`, `understory-manifest` |
+
+Every AWS name derives from the stack name — the buckets (`<stack>-iiif`,
+`<stack>-source`), Lambdas, state machines, Cognito pool, Amplify app
+(`<stack>-ui`) and search-index prefix — so `stack_name` in `samconfig.toml` is
+the whole of a stack's identity, and changing it means a new stack. The one
+exception is the custom-domain hostnames, built from `ProjectName`
+(`understory`) and `BaseDomainName`: only one stack per base domain can hold
+them, which is why a dev stack leaves `BaseDomainName` empty. Staging shares an
+account with the dev stacks; the environment segment is what keeps the names
+apart.
+
+A bare `iiif` names the standard, not the project, and stays: the `-iiif` bucket
+suffix, `iiif-image`, `IIIFDistribution`, `IIIF_BASE_URL`, `/iiif/3`.
+
+The extension terms written into documents — `MANAGED_KEY`, `ITEM_COUNT_KEY`,
+`CONTENT_HASH_KEY` — all hang off `EXTENSION_NAMESPACE` in
+`app/shared/collection.js`, `https://nulib-ds.github.io/understory/ns#`. It is
+an identifier and need not resolve. Changing it changes the stored data format,
+so do it only while the data is disposable.
 
 ## Sign-in showcase
 
@@ -1066,7 +1062,7 @@ the current one.
   repaired by one call. Under the reverse design a lost object would be
   unrecoverable data loss.
 
-**This applies to the WORKING space only.** `staticiiif:contentHash` on a
+**This applies to the WORKING space only.** `CONTENT_HASH_KEY` on a
 published leaf's members is state a *publish event* determines, not the corpus
 — so published documents are written by a publish run and by nothing else, and
 repair never touches them. That keeps reindex a pure function of the working
@@ -1094,24 +1090,23 @@ structurally unable to collide with the reserved `_`-prefixed index segments in
 `search.js`.
 
 Our `partOf` entries are marked with
-`"https://nulib-labs.github.io/static-iiif/ns#managed": true` — an **absolute
-IRI**, not a `staticiiif:`-prefixed compact one.
+`"https://nulib-ds.github.io/understory/ns#managed": true` — an **absolute
+IRI** (`MANAGED_KEY`), never a compact one.
 
-> This was a compact IRI with the prefix declared in `@context`, which is valid
-> JSON-LD 1.1 and which **breaks Clover**. Clover normalizes http→https across
-> `@context` by calling `.replace()` on every entry, guarding only against
-> null — so an inline term-definition object throws
+> A compact IRI needs its prefix declared in `@context`, as an inline
+> term-definition object. That is valid JSON-LD 1.1 and it **breaks Clover**.
+> Clover normalizes http→https across `@context` by calling `.replace()` on
+> every entry, guarding only against null — so an object entry throws
 > `r.replace is not a function` and the viewer never renders. Canopy uses
-> Clover, so this broke consumers of anything published, not only this app's
-> own preview. An absolute IRI expands on its own, so `@context` is the bare
-> presentation string again and there is nothing to trip over.
-> `normalizeContext` sheds a stale prefix declaration, so a manifest written
-> before this heals the next time it is saved. There is a regression test.
+> Clover, so it would break consumers of anything published, not only this
+> app's own preview. An absolute IRI expands on its own, so `@context` stays
+> the bare presentation string and there is nothing to trip over. A test checks
+> that every `@context` we emit survives Clover's normalization.
 
 An imported manifest's own `partOf` (Northwestern's, say) is preserved verbatim
 and never shown as one of ours; `isManagedPartOfEntry` matches on marker-or-path
 **and** requires the id to sit under our own base URL, which is what stops us
-claiming a collection belonging to another static-iiif deployment.
+claiming a collection belonging to another Understory deployment.
 
 The works list has no Collection column: every row on a collection page is in
 the same collection. It has a **Status** column instead, showing each work's

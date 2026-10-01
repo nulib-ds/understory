@@ -1,8 +1,8 @@
 // Publishing: the transform that turns a working IIIF document into its
 // published twin, and the diff that decides what a run has to do.
 //
-// Pure — node:crypto only, no AWS SDK — so all of it is unit-testable. The IO
-// lives in app/aws/lambdas/publish/.
+// Pure — node:crypto and ./collection only, no AWS SDK — so all of it is
+// unit-testable. The IO lives in app/aws/lambdas/publish/.
 //
 // Publish is a rewrite, not a copy. Each space's documents describe their own
 // URLs, so a published manifest is retrievable at its own `id`, and so is the
@@ -10,10 +10,11 @@
 // — the bytes always differ — which is why we hash and record it ourselves.
 
 const crypto = require("node:crypto");
+const {EXTENSION_NAMESPACE} = require("./collection");
 
 // An absolute IRI for the same reason MANAGED_KEY is one: a compact IRI would
 // need a prefix declared in @context, and an object in @context breaks Clover.
-const CONTENT_HASH_KEY = "https://nulib-labs.github.io/static-iiif/ns#contentHash";
+const CONTENT_HASH_KEY = `${EXTENSION_NAMESPACE}contentHash`;
 
 // sha256 of the exact bytes stored, never of a re-serialization. There is no
 // canonical JSON here: applyCollections reorders keys as a side effect, so

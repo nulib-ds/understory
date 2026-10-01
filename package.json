@@ -1,14 +1,15 @@
 {
-  "name": "static-iiif",
+  "name": "understory",
   "version": "1.0.0",
+  "private": true,
   "description": "",
-  "homepage": "https://github.com/nulib-labs/static-iiif#readme",
+  "homepage": "https://github.com/nulib-ds/understory#readme",
   "bugs": {
-    "url": "https://github.com/nulib-labs/static-iiif/issues"
+    "url": "https://github.com/nulib-ds/understory/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/nulib-labs/static-iiif.git"
+    "url": "git+https://github.com/nulib-ds/understory.git"
   },
   "license": "ISC",
   "author": "",

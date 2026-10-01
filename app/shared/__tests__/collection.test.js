@@ -6,8 +6,6 @@ const path = require("node:path");
 const {
   ROOT_COLLECTION_SLUG,
   PRESENTATION_CONTEXT,
-  STATIC_IIIF_PREFIX,
-  STATIC_IIIF_NAMESPACE,
   MANAGED_KEY,
   ITEM_COUNT_KEY,
   collectionSlugPattern,
@@ -15,6 +13,7 @@ const {
   sanitizeCollectionSlug,
   collectionObjectKey,
   rootCollectionKey,
+  collectionSlugFromKey,
   buildCollectionId,
   collectionSlugFromId,
   normalizeContext,
@@ -105,6 +104,31 @@ test("key and id builders", () => {
   assert.equal(collectionSlugFromId(undefined), null);
 });
 
+// The reindex prune decides what to DELETE from this. Reading the slug by
+// position returned "collection" for every working key, root included, so
+// every reindex deleted every collection document it had just written.
+test("collectionSlugFromKey inverts collectionObjectKey, in either space", () => {
+  for (const space of ["working", "published"]) {
+    assert.equal(collectionSlugFromKey(collectionObjectKey("campus-maps", space), space), "campus-maps");
+    assert.equal(collectionSlugFromKey(rootCollectionKey(space), space), ROOT_COLLECTION_SLUG);
+  }
+  // The space defaults to working, like the builders.
+  assert.equal(collectionSlugFromKey("working/presentation/collection/campus-maps/collection.json"), "campus-maps");
+
+  // Anything that is not one collection document in the asked-for space names no slug.
+  for (const key of [
+    collectionObjectKey("campus-maps", "published"),
+    "working/presentation/manifest/abc/manifest.json",
+    "working/presentation/collection/a/b/collection.json",
+    "working/presentation/collection//collection.json",
+    "working/presentation/collection/campus-maps/other.json",
+    "presentation/collection/campus-maps/collection.json",
+    undefined,
+  ]) {
+    assert.equal(collectionSlugFromKey(key), null, String(key));
+  }
+});
+
 test("normalizeContext: the presentation context, last and exactly once", () => {
   assert.equal(normalizeContext(PRESENTATION_CONTEXT), PRESENTATION_CONTEXT);
   assert.equal(normalizeContext(null), PRESENTATION_CONTEXT);
@@ -126,14 +150,6 @@ test("normalizeContext: the presentation context, last and exactly once", () => 
       .some((entry) => typeof entry !== "string"),
     false,
   );
-
-  // A prefix declaration left by the old shape, or by another deployment, is
-  // shed rather than carried forward — so a manifest written before this heals
-  // the next time it is saved.
-  const legacy = [{[STATIC_IIIF_PREFIX]: STATIC_IIIF_NAMESPACE}, PRESENTATION_CONTEXT];
-  assert.equal(normalizeContext(legacy), PRESENTATION_CONTEXT);
-  const theirs = [{[STATIC_IIIF_PREFIX]: "https://elsewhere.example/ns#"}, PRESENTATION_CONTEXT];
-  assert.equal(normalizeContext(theirs), PRESENTATION_CONTEXT);
 });
 
 // The bug this shape exists to avoid. Clover normalizes http->https across
@@ -176,7 +192,7 @@ test("isManagedPartOfEntry: ours, theirs, and the cross-deployment trap", () => 
   const unmarked = {id: buildCollectionId(BASE, "campus-maps"), type: "Collection"};
   assert.equal(isManagedPartOfEntry(unmarked, {baseUrl: BASE}), true);
 
-  // THE important case: another static-iiif deployment's manifest arrives with a
+  // THE important case: another Understory deployment's manifest arrives with a
   // genuine marker pointing at a bucket we do not own. Claiming it would make us
   // invent leaf documents for slugs nobody here asked for.
   const foreignManaged = {
@@ -214,7 +230,7 @@ test("managedCollectionRefs / foreignPartOfEntries split the array", () => {
 
 test("stripForeignManagedEntries drops another deployment's claims on import", () => {
   const manifest = {
-    "@context": [{[STATIC_IIIF_PREFIX]: "https://elsewhere.example/ns#"}, PRESENTATION_CONTEXT],
+    "@context": PRESENTATION_CONTEXT,
     partOf: [
       nulManifest.partOf[0],
       {

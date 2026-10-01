@@ -323,7 +323,7 @@ exports.handler = async (event) => {
       const identifier = crypto.randomUUID();
       // The source institution's own partOf is kept verbatim as provenance. Only
       // entries claiming to be *ours* while pointing somewhere we don't own are
-      // dropped — that happens when importing from another static-iiif
+      // dropped — that happens when importing from another Understory
       // deployment, and keeping them would invent collections nobody asked for.
       // localizeStructuralIds AFTER the id is set — it derives every canvas,
       // page and annotation id from the manifest's own. Without it the work

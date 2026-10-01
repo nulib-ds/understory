@@ -21,18 +21,16 @@ const ROOT_COLLECTION_LABEL = "All Collections";
 
 const PRESENTATION_CONTEXT = "http://iiif.io/api/presentation/3/context.json";
 
-// A registered-extension-style namespace, per the IIIF extension guidance. The
-// trailing "#" is load-bearing: under JSON-LD 1.1 a simple term definition is
-// only usable as a compact-IRI prefix when its value ends in a gen-delim, so
-// dropping it would make `staticiiif:managed` silently fail to expand.
-const STATIC_IIIF_PREFIX = "staticiiif";
-const STATIC_IIIF_NAMESPACE = "https://nulib-labs.github.io/static-iiif/ns#";
-// Absolute IRIs, not `staticiiif:`-prefixed compact IRIs. A compact IRI needs a
-// prefix declared in @context, and declaring one means putting an object into
-// the @context array — which is legal JSON-LD 1.1 and which Clover cannot read
-// (see normalizeContext). An absolute IRI expands on its own.
-const MANAGED_KEY = `${STATIC_IIIF_NAMESPACE}managed`;
-const ITEM_COUNT_KEY = `${STATIC_IIIF_NAMESPACE}itemCount`;
+// A registered-extension-style namespace, per the IIIF extension guidance. It is
+// an identifier, not a document: nothing has to be served there. publish.js
+// builds its own term from it too, so this is the only place the IRI is written.
+const EXTENSION_NAMESPACE = "https://nulib-ds.github.io/understory/ns#";
+// Absolute IRIs, not compact ones. A compact IRI needs a prefix declared in
+// @context, and declaring one means putting an object into the @context array —
+// which is legal JSON-LD 1.1 and which Clover cannot read (see
+// normalizeContext). An absolute IRI expands on its own.
+const MANAGED_KEY = `${EXTENSION_NAMESPACE}managed`;
+const ITEM_COUNT_KEY = `${EXTENSION_NAMESPACE}itemCount`;
 
 const MAX_LABEL_LENGTH = 200;
 const MAX_SLUG_LENGTH = 96;
@@ -119,6 +117,19 @@ function rootCollectionKey(space = WORKING) {
   return collectionObjectKey(ROOT_COLLECTION_SLUG, space);
 }
 
+// The inverse of collectionObjectKey: the slug a collection document's key
+// names, or null for any other key. Never read it by position. The prune once
+// took `Key.split("/")[2]`, which became the literal "collection" when keys
+// gained their space prefix, so every reindex deleted every collection
+// document it had just written, the root included.
+function collectionSlugFromKey(key, space = WORKING) {
+  const prefix = `${spaceKey(space, COLLECTION_PREFIX)}/`;
+  const suffix = `/${COLLECTION_OBJECT}`;
+  if (typeof key !== "string" || !key.startsWith(prefix) || !key.endsWith(suffix)) return null;
+  const slug = key.slice(prefix.length, -suffix.length);
+  return slug && !slug.includes("/") ? slug : null;
+}
+
 function buildCollectionId(baseUrl, slug, space = WORKING) {
   const normalizedBase = (baseUrl || "").replace(/\/$/, "");
   const key = collectionObjectKey(slug, space);
@@ -138,29 +149,17 @@ function collectionSlugFromId(id) {
 // with it LAST. This only ever normalizes what a manifest arrived with — we add
 // no extension context of our own.
 //
-// We used to declare a `staticiiif` prefix here as an inline term-definition
-// object, so `staticiiif:managed` would expand. That is valid JSON-LD 1.1 and
-// it broke Clover: it maps over @context calling `.replace("http://","https://")`
-// on every entry, guarding only against null, so an object entry threw
-// "r.replace is not a function" and the viewer never rendered. Clover is what
-// Canopy uses, so a manifest we publish with an object in @context breaks
-// downstream consumers too, not just this app.
-//
-// The extension terms are absolute IRIs now (see MANAGED_KEY). An absolute IRI
-// needs no prefix declaration, so @context goes back to being the bare
-// presentation string and there is nothing for a consumer to trip over.
+// Never add one as an inline term-definition object. That is valid JSON-LD 1.1
+// and it breaks Clover: it maps over @context calling
+// `.replace("http://","https://")` on every entry, guarding only against null,
+// so an object entry throws "r.replace is not a function" and the viewer never
+// renders. Clover is what Canopy uses, so a manifest we publish with an object
+// in @context breaks downstream consumers too, not just this app. That is why
+// the extension terms are absolute IRIs (see MANAGED_KEY): they need no prefix
+// declaration, so @context stays the bare presentation string.
 function normalizeContext(existing) {
   const entries = Array.isArray(existing) ? existing : existing ? [existing] : [];
-  const foreign = entries.filter((entry) => {
-    if (entry === PRESENTATION_CONTEXT) return false;
-    // Shed any prefix declaration — ours, from before this changed, or another
-    // deployment's that came in with an import.
-    if (entry && typeof entry === "object" && !Array.isArray(entry)) {
-      const keys = Object.keys(entry);
-      return !(keys.length === 1 && keys[0] === STATIC_IIIF_PREFIX);
-    }
-    return true;
-  });
+  const foreign = entries.filter((entry) => entry !== PRESENTATION_CONTEXT);
   const next = [...foreign, PRESENTATION_CONTEXT];
   return next.length === 1 ? PRESENTATION_CONTEXT : next;
 }
@@ -179,7 +178,7 @@ function buildPartOfEntry({baseUrl, slug, label}) {
 // Two independent signals, because each fails alone: the marker is lost to a
 // hand-edit, and the path check breaks the day IIIF_BASE_URL moves to a custom
 // domain. The baseUrl clause is what stops us claiming a collection belonging to
-// *another* static-iiif deployment whose manifest we imported — those arrive
+// *another* Understory deployment whose manifest we imported — those arrive
 // carrying a genuine marker pointing at a bucket we do not own.
 function isManagedPartOfEntry(entry, {baseUrl} = {}) {
   if (!entry || typeof entry !== "object" || Array.isArray(entry)) return false;
@@ -220,7 +219,7 @@ function foreignPartOfEntries(partOf, {baseUrl} = {}) {
 }
 
 // On import, drop entries that carry our marker but point somewhere we do not
-// own. Without this, importing from another static-iiif deployment injects
+// own. Without this, importing from another Understory deployment injects
 // membership in collections nobody here asked for.
 function stripForeignManagedEntries(manifest, {baseUrl}) {
   const entries = partOfEntries(manifest?.partOf);
@@ -498,8 +497,7 @@ module.exports = {
   ROOT_COLLECTION_SLUG,
   ROOT_COLLECTION_LABEL,
   PRESENTATION_CONTEXT,
-  STATIC_IIIF_PREFIX,
-  STATIC_IIIF_NAMESPACE,
+  EXTENSION_NAMESPACE,
   MANAGED_KEY,
   ITEM_COUNT_KEY,
   MAX_LABEL_LENGTH,
@@ -511,6 +509,7 @@ module.exports = {
   sanitizeCollectionSlug,
   collectionObjectKey,
   rootCollectionKey,
+  collectionSlugFromKey,
   buildCollectionId,
   buildRootCollectionId,
   collectionSlugFromId,

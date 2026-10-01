@@ -19,7 +19,6 @@ const {listManifestSummaries} = require("../../../shared/manifest");
 const {extractLabel} = require("../../../shared/language");
 const {
   COLLECTION_PREFIX,
-  COLLECTION_OBJECT,
   ROOT_COLLECTION_SLUG,
   MAX_COLLECTIONS_PER_WORK,
   CollectionNameError,
@@ -27,6 +26,7 @@ const {
   sanitizeCollectionSlug,
   collectionObjectKey,
   rootCollectionKey,
+  collectionSlugFromKey,
   managedCollectionRefs,
   applyCollections,
   buildCollectionDocument,
@@ -687,8 +687,7 @@ async function pruneCollections(keep) {
       }),
     );
     const stale = (response.Contents || [])
-      .filter((object) => object.Key.endsWith(`/${COLLECTION_OBJECT}`))
-      .map((object) => ({key: object.Key, slug: object.Key.split("/")[2]}))
+      .map((object) => ({key: object.Key, slug: collectionSlugFromKey(object.Key)}))
       // The root is never pruned, however empty it gets.
       .filter(({slug}) => slug && slug !== ROOT_COLLECTION_SLUG && !keep.has(slug));
 
