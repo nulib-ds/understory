@@ -1282,6 +1282,12 @@ Resources:
       # it is listed. The server does the routing, so there is no rewrite rule.
       Platform: WEB_COMPUTE
       IAMServiceRole: !GetAtt AmplifyServiceRole.Arn
+      # Must stay empty: the old static site's rewrite of every path to
+      # /index.html sends the server's routes to a page it does not have.
+      # CloudFormation does not clear rules an existing app already has, even
+      # set to [] here, so converting an older stack also needs, once:
+      #   aws amplify update-app --app-id <id> --custom-rules '[]'
+      CustomRules: []
       # The build is amplify.yml at the repo root, versioned with the code it
       # builds. Amplify gives that file precedence over a spec set here, so
       # there is none.

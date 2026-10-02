@@ -499,6 +499,11 @@ This is Amplify **Hosting** only — auth, storage and the API are all defined i
 - **`AmplifyServiceRole`** lets Amplify write the server's logs to CloudWatch (`/aws/amplify/…`). The server calls no other AWS service.
 - The `NEXT_PUBLIC_*` variables come from the stack's own resources, set on the app as environment variables, which `next build` reads directly.
 
+**Converting a stack built for the old static UI**, two things learned on `mat-dev-understory`:
+
+- **Deploy the template before the Next.js code reaches the branch Amplify builds.** In the other order, Amplify builds Next.js on the old static platform and publishes `.next` as plain files, and the hosted UI returns 404 until the template lands and a fresh build runs (`aws amplify start-job --app-id <id> --branch-name <branch> --job-type RELEASE`).
+- **Clear the old rewrite rule once:** `aws amplify update-app --app-id <id> --custom-rules '[]'`. The static UI sent every path without a file extension to `/index.html`, which the server does not have, and CloudFormation leaves an existing app's rules in place even with `CustomRules: []` in the template.
+
 Two things CloudFormation does not do, both seen on fresh stacks:
 
 - **It never starts the first build.** The app and branch are created, but builds run only on a push to `GitHubBranch`, so a stack created after the latest push shows Amplify's "Welcome" placeholder at `UIEndpoint` until the next push, or until `aws amplify start-job --app-id <id> --branch-name <branch> --job-type RELEASE`. The local dev server is unaffected.
