@@ -8,7 +8,8 @@ import {
 import {Box, Button, Callout, Flex, Heading, Text, TextField} from "@radix-ui/themes";
 import Wordmark from "./Wordmark";
 import {imageRequestUrl} from "../lib/canvasAssets";
-import "./SignIn.css";
+// SignIn.css is imported by the root layout (src/app/layout.jsx), with every
+// other global sheet, in cascade order.
 
 // Mirrors the pool's password policy (template.yml CognitoUserPool): 8+ chars,
 // upper, lower, number, symbols not required.
@@ -26,8 +27,8 @@ const NEW_PASSWORD_STEP = "CONFIRM_SIGN_IN_WITH_NEW_PASSWORD_REQUIRED";
 const SHOWCASE_COUNT = 5;
 const SHOWCASE_TILE = 400;
 const PRESENTATION_BASE =
-  import.meta.env.VITE_STORAGE_BUCKET && import.meta.env.VITE_STORAGE_REGION
-    ? `https://${import.meta.env.VITE_STORAGE_BUCKET}.s3.${import.meta.env.VITE_STORAGE_REGION}.amazonaws.com`
+  process.env.NEXT_PUBLIC_STORAGE_BUCKET && process.env.NEXT_PUBLIC_STORAGE_REGION
+    ? `https://${process.env.NEXT_PUBLIC_STORAGE_BUCKET}.s3.${process.env.NEXT_PUBLIC_STORAGE_REGION}.amazonaws.com`
     : "";
 
 // A square region at a fixed size, so every tile is identical no matter the

@@ -1,16 +1,26 @@
+# The one build spec for the admin UI. Amplify reads this file in preference to
+# a spec set on the app (app/aws/template.yml sets none), so the build changes
+# with the code it builds, on whichever branch Amplify follows.
 version: 1
-frontend:
-  phases:
-    preBuild:
-      commands:
-        - npm ci --prefix ui
-    build:
-      commands:
-        - npm run build --prefix ui
-  artifacts:
-    baseDirectory: ui/dist
-    files:
-      - '**/*'
-  cache:
-    paths:
-      - ui/node_modules/**/*
+applications:
+  - appRoot: ui
+    frontend:
+      phases:
+        preBuild:
+          commands:
+            - nvm install 22
+            - nvm use 22
+            - npm ci
+        build:
+          commands:
+            - npm run build
+      artifacts:
+        # Next.js on Amplify Hosting compute (WEB_COMPUTE): the whole .next
+        # build, which Amplify turns into the server and its static assets.
+        baseDirectory: .next
+        files:
+          - '**/*'
+      cache:
+        paths:
+          - node_modules/**/*
+          - .next/cache/**/*

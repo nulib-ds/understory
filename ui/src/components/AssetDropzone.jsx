@@ -13,12 +13,13 @@ import {
   buildThumbnailUrlFromInfo,
   mediaKindFromFile,
 } from "../lib/canvasAssets";
-import "./AssetDropzone.css";
+// AssetDropzone.css is imported by the root layout (src/app/layout.jsx), with
+// every other global sheet, in cascade order.
 
-const SOURCE_BUCKET = import.meta.env.VITE_SOURCE_BUCKET || "";
-const STORAGE_REGION = import.meta.env.VITE_STORAGE_REGION || import.meta.env.VITE_AWS_REGION || "";
+const SOURCE_BUCKET = process.env.NEXT_PUBLIC_SOURCE_BUCKET || "";
+const STORAGE_REGION = process.env.NEXT_PUBLIC_STORAGE_REGION || "";
 
-// Amplify's default configured Storage bucket (VITE_STORAGE_BUCKET) is the IIIF
+// Amplify's default configured Storage bucket (NEXT_PUBLIC_STORAGE_BUCKET) is the IIIF
 // *output* bucket — uploads need to go to the separate *source* bucket instead
 // (the one the iiif-image Lambda watches), so every uploadData call must target
 // it explicitly rather than relying on the default.
@@ -70,7 +71,7 @@ function extensionFromFilename(name) {
 async function waitForImageInfo(key) {
   const infoUrl = buildInfoUrlFromKey(key);
   if (!infoUrl) {
-    throw new Error("VITE_IIIF_BASE_URL is not configured");
+    throw new Error("NEXT_PUBLIC_IIIF_BASE_URL is not configured");
   }
   for (let attempt = 0; attempt < INFO_POLL_ATTEMPTS; attempt += 1) {
     const response = await fetch(infoUrl).catch(() => null);

@@ -1,5 +1,5 @@
 import {Box, Dialog} from "@radix-ui/themes";
-import CloverViewer from "@samvera/clover-iiif/viewer";
+import CloverViewer from "../CloverViewer";
 import {CLOVER_OPTIONS, CLOVER_THEME} from "../../cloverTheme";
 
 // Clover in a modal. Keyed on the work so opening a different row rebuilds the

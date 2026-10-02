@@ -1240,59 +1240,80 @@ Resources:
                 Action: s3:PutObject
                 Resource: !Sub "arn:aws:s3:::${AWS::StackName}-iiif/av/*"
 
+  # Assumed by Amplify Hosting compute to write the Next.js server's logs to
+  # CloudWatch, and for nothing else: the server calls no AWS service. Pages
+  # render in the browser and call the API with the user's own token.
+  AmplifyServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: amplify.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: AmplifyComputeLogs
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource:
+                  - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/amplify/*"
+                  - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/amplify/*:log-stream:*"
+              - Effect: Allow
+                Action: logs:DescribeLogGroups
+                Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:*"
+
   AmplifyApp:
     Type: AWS::Amplify::App
     Properties:
       Name: !Sub "${AWS::StackName}-ui"
       Repository: !Ref GitHubRepo
       OauthToken: !Ref GitHubOAuthToken
-      CustomRules:
-        - Source: '</^[^.]+$|\.(?!(css|gif|ico|jpg|jpeg|js|png|txt|svg|woff|woff2|ttf|map|json|webp)$)([^.]+$)/>'
-          Target: "/index.html"
-          Status: "200"
-      BuildSpec: |
-        version: 1
-        frontend:
-          phases:
-            preBuild:
-              commands:
-                - npm ci --prefix ui
-            build:
-              commands:
-                - echo "VITE_IIIF_BASE_URL=$VITE_IIIF_BASE_URL"
-                - printf 'VITE_IIIF_BASE_URL=%s\n' "$VITE_IIIF_BASE_URL" > ui/.env.production
-                - npm run build --prefix ui
-          artifacts:
-            baseDirectory: ui/dist
-            files:
-              - '**/*'
-          cache:
-            paths:
-              - ui/node_modules/**/*
+      # Next.js on Amplify Hosting's managed server, not a static site:
+      # collection slugs and work ids are created at runtime, so their routes
+      # cannot be prerendered. AWS supports Next.js 12-15 here; move to 16 once
+      # it is listed. The server does the routing, so there is no rewrite rule.
+      Platform: WEB_COMPUTE
+      IAMServiceRole: !GetAtt AmplifyServiceRole.Arn
+      # The build is amplify.yml at the repo root, versioned with the code it
+      # builds. Amplify gives that file precedence over a spec set here, so
+      # there is none.
       EnvironmentVariables:
+        # The app's folder in this repo, matching appRoot in amplify.yml. AWS
+        # requires it to be set explicitly on an app created by CloudFormation.
+        - Name: AMPLIFY_MONOREPO_APP_ROOT
+          Value: ui
+        # Next.js inlines NEXT_PUBLIC_* into the browser bundle at build time.
         # The Image API base, despite the name. Must be the distribution, not
         # the Function URL behind it, or the admin UI fetches every tile past
         # the cache.
-        - Name: VITE_IIIF_BASE_URL
+        - Name: NEXT_PUBLIC_IIIF_BASE_URL
           Value: !If
             - HasCustomDomain
             - !Sub "https://images-${ProjectName}.${BaseDomainName}/iiif/3"
             - !Sub "https://${ImagesDistribution.DomainName}/iiif/3"
-        - Name: VITE_MANIFEST_API_URL
+        - Name: NEXT_PUBLIC_MANIFEST_API_URL
           Value: !Sub "https://${ManifestHttpApi}.execute-api.${AWS::Region}.amazonaws.com/manifests"
-        - Name: VITE_COLLECTION_API_URL
+        - Name: NEXT_PUBLIC_COLLECTION_API_URL
           Value: !Sub "https://${ManifestHttpApi}.execute-api.${AWS::Region}.amazonaws.com/collections"
-        - Name: VITE_STORAGE_BUCKET
+        - Name: NEXT_PUBLIC_STORAGE_BUCKET
           Value: !Sub "${AWS::StackName}-iiif"
-        - Name: VITE_SOURCE_BUCKET
+        - Name: NEXT_PUBLIC_SOURCE_BUCKET
           Value: !Sub "${AWS::StackName}-source"
-        - Name: VITE_STORAGE_REGION
+        - Name: NEXT_PUBLIC_STORAGE_REGION
           Value: !Ref AWS::Region
-        - Name: VITE_STORAGE_IDENTITY_POOL_ID
+        - Name: NEXT_PUBLIC_STORAGE_IDENTITY_POOL_ID
           Value: !Ref CognitoIdentityPool
-        - Name: VITE_COGNITO_USER_POOL_ID
+        - Name: NEXT_PUBLIC_COGNITO_USER_POOL_ID
           Value: !Ref CognitoUserPool
-        - Name: VITE_COGNITO_CLIENT_ID
+        - Name: NEXT_PUBLIC_COGNITO_CLIENT_ID
           Value: !Ref CognitoUserPoolClient
 
   AmplifyBranch:
@@ -1300,6 +1321,7 @@ Resources:
     Properties:
       AppId: !GetAtt AmplifyApp.AppId
       BranchName: !Ref GitHubBranch
+      Framework: "Next.js - SSR"
       EnableAutoBuild: true
 
   # The admin UI's hostname, alongside iiif-<project> and images-<project>.

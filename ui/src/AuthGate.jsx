@@ -1,6 +1,12 @@
-import {useCallback, useEffect, useState} from "react";
+"use client";
+
+import {useCallback, useEffect, useMemo, useState} from "react";
 import {fetchAuthSession, getCurrentUser, signOut as amplifySignOut} from "aws-amplify/auth";
 import {Flex, Spinner} from "@radix-ui/themes";
+// For its side effect: importing api.js is what configures Amplify, and this is
+// the first thing on every route to call it. Relying on a page to import it
+// first would leave any route without one (not-found, a redirect) unconfigured.
+import "./lib/api";
 import SignIn from "./components/SignIn";
 import {SessionContext, sessionFromGroups} from "./lib/session";
 
@@ -49,6 +55,10 @@ export default function AuthGate({children}) {
     }
   }, []);
 
+  // signOut travels with the session rather than as a prop: a layout's
+  // children are elements, not a function it can hand arguments to.
+  const value = useMemo(() => ({...session, signOut}), [session, signOut]);
+
   if (status === "checking") {
     return (
       <Flex align="center" justify="center" style={{minHeight: "100vh"}}>
@@ -61,9 +71,5 @@ export default function AuthGate({children}) {
     return <SignIn onSignedIn={refresh} />;
   }
 
-  return (
-    <SessionContext.Provider value={session}>
-      {children({signOut, username: session.username})}
-    </SessionContext.Provider>
-  );
+  return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;
 }

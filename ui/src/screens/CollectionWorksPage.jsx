@@ -1,5 +1,7 @@
+"use client";
+
 import {useCallback, useEffect, useRef, useState} from "react";
-import {useNavigate, useParams, useSearchParams} from "react-router-dom";
+import {useParams, usePathname, useRouter, useSearchParams} from "next/navigation";
 import {Box, Button, Callout, Card, Flex, Text, TextField} from "@radix-ui/themes";
 import {PlusIcon} from "@radix-ui/react-icons";
 import {
@@ -104,7 +106,7 @@ function WorksListPanel({
           {!manifestApiAvailable && (
             <Callout.Root color="red" size="1" mb="3">
               <Callout.Text>
-                Work API URL is not configured. Update VITE_MANIFEST_API_URL to point at the deployed endpoint.
+                Work API URL is not configured. Update NEXT_PUBLIC_MANIFEST_API_URL to point at the deployed endpoint.
               </Callout.Text>
             </Callout.Root>
           )}
@@ -148,7 +150,7 @@ function WorksListPanel({
 export default function CollectionWorksPage() {
   const {slug: rawSlug} = useParams();
   const slug = rawSlug ? decodeURIComponent(rawSlug) : null;
-  const navigate = useNavigate();
+  const router = useRouter();
 
   // Every work now lives under its collection, so a work's URL carries the slug.
   const workPath = useCallback(
@@ -158,9 +160,9 @@ export default function CollectionWorksPage() {
   );
   const selectWork = useCallback(
     (identifier) => {
-      navigate(identifier ? workPath(identifier) : `/collection/${encodeURIComponent(slug)}`);
+      router.push(identifier ? workPath(identifier) : `/collection/${encodeURIComponent(slug)}`);
     },
-    [navigate, slug, workPath],
+    [router, slug, workPath],
   );
 
 
@@ -205,7 +207,7 @@ export default function CollectionWorksPage() {
     const q = queryRef.current;
     const endpoint = collectionWorksUrl(slug, {q});
     if (!endpoint) {
-      setWorksError("Collection API URL is not configured. Set VITE_COLLECTION_API_URL and redeploy.");
+      setWorksError("Collection API URL is not configured. Set NEXT_PUBLIC_COLLECTION_API_URL and redeploy.");
       setWorksLoaded(true);
       return;
     }
@@ -359,18 +361,24 @@ export default function CollectionWorksPage() {
   };
 
   // `q` lives in the URL so the filter survives the list -> work -> back round
-  // trip, which is the whole flow. `replace` so the back button does not walk
-  // every keystroke. The page offset deliberately does NOT live here.
-  const [searchParams, setSearchParams] = useSearchParams();
+  // trip, which is the whole flow. Replaced, not pushed, so the back button does
+  // not walk every keystroke. The page offset deliberately does NOT live here.
+  //
+  // Through history.replaceState rather than router.replace: the router would
+  // ask the server for this page again on every keystroke. Next keeps
+  // useSearchParams in step with the native history API.
+  const searchParams = useSearchParams();
+  const pathname = usePathname();
   const query = searchParams.get("q") || "";
   const setQuery = useCallback(
     (next) => {
       const params = new URLSearchParams(searchParams);
       if (next) params.set("q", next);
       else params.delete("q");
-      setSearchParams(params, {replace: true});
+      const search = params.toString();
+      window.history.replaceState(null, "", search ? `${pathname}?${search}` : pathname);
     },
-    [searchParams, setSearchParams],
+    [pathname, searchParams],
   );
 
   // Held in a ref as well as state so refreshWorks stays stable: it is called

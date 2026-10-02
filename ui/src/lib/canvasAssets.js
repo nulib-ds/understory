@@ -1,7 +1,7 @@
 // Shared by App.jsx (reorder/remove, manifest fetch/save) and AssetDropzone.jsx
 // (upload + attach) — anything that builds or resolves a canvas from an S3 asset key.
 
-const IIIF_BASE_URL = (import.meta.env.VITE_IIIF_BASE_URL || "").replace(/\/$/, "");
+const IIIF_BASE_URL = (process.env.NEXT_PUBLIC_IIIF_BASE_URL || "").replace(/\/$/, "");
 
 export function slugifyManifestId(value) {
   return (value || "")
@@ -22,7 +22,7 @@ export function assetLabelFromKey(key) {
   return basename.replace(/\.[^./]+$/, "");
 }
 
-// Our Image API is 3.0 (VITE_IIIF_BASE_URL ends /iiif/3). In 3.0 a request
+// Our Image API is 3.0 (NEXT_PUBLIC_IIIF_BASE_URL ends /iiif/3). In 3.0 a request
 // larger than the image is refused unless it carries `^`, so a fixed-size tile
 // — a 64px list thumbnail, a 400px sign-in square — would 400 for any image or
 // poster smaller than the tile. For display that is the wrong trade: filling
@@ -118,7 +118,7 @@ export function buildCanvasResource(manifest, imageInfo, label) {
 // An A/V upload lands at av/{workId}/{assetId}.{ext} in the source bucket, and
 // the av-transcode Lambda reports on it in {documents base}/av/{workId}/{assetId}/media.json
 // (app/shared/av.js). That base is IIIF_BASE_URL on the backend, which the UI
-// has no variable for — VITE_IIIF_BASE_URL is the Image API — but every
+// has no variable for — NEXT_PUBLIC_IIIF_BASE_URL is the Image API — but every
 // manifest id already starts with it, so it is read from there rather than
 // adding a setting that could drift.
 

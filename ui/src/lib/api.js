@@ -7,13 +7,13 @@
 import {Amplify} from "aws-amplify";
 import {fetchAuthSession} from "aws-amplify/auth";
 
-export const MANIFEST_API_BASE = (import.meta.env.VITE_MANIFEST_API_URL || "").replace(/\/$/, "");
-// VITE_MANIFEST_API_URL already ends in /manifests, so the collections
+export const MANIFEST_API_BASE = (process.env.NEXT_PUBLIC_MANIFEST_API_URL || "").replace(/\/$/, "");
+// NEXT_PUBLIC_MANIFEST_API_URL already ends in /manifests, so the collections
 // vocabulary is a sibling endpoint rather than a child of it. The fallback
 // derives one so the feature still works against a stack deployed before the
 // variable existed.
 export const COLLECTION_API_BASE = (
-  import.meta.env.VITE_COLLECTION_API_URL ||
+  process.env.NEXT_PUBLIC_COLLECTION_API_URL ||
   (/\/manifests$/.test(MANIFEST_API_BASE) ? MANIFEST_API_BASE.replace(/\/manifests$/, "/collections") : "")
 ).replace(/\/$/, "");
 // /manifests, /collections and /users are siblings, so /users is derived the
@@ -21,12 +21,11 @@ export const COLLECTION_API_BASE = (
 export const USER_API_BASE = /\/manifests$/.test(MANIFEST_API_BASE)
   ? MANIFEST_API_BASE.replace(/\/manifests$/, "/users")
   : "";
-export const STORAGE_BUCKET = import.meta.env.VITE_STORAGE_BUCKET || "";
-export const STORAGE_REGION =
-  import.meta.env.VITE_STORAGE_REGION || import.meta.env.VITE_AWS_REGION || "";
-export const STORAGE_IDENTITY_POOL_ID = import.meta.env.VITE_STORAGE_IDENTITY_POOL_ID || "";
-export const COGNITO_USER_POOL_ID = import.meta.env.VITE_COGNITO_USER_POOL_ID || "";
-export const COGNITO_CLIENT_ID = import.meta.env.VITE_COGNITO_CLIENT_ID || "";
+export const STORAGE_BUCKET = process.env.NEXT_PUBLIC_STORAGE_BUCKET || "";
+export const STORAGE_REGION = process.env.NEXT_PUBLIC_STORAGE_REGION || "";
+export const STORAGE_IDENTITY_POOL_ID = process.env.NEXT_PUBLIC_STORAGE_IDENTITY_POOL_ID || "";
+export const COGNITO_USER_POOL_ID = process.env.NEXT_PUBLIC_COGNITO_USER_POOL_ID || "";
+export const COGNITO_CLIENT_ID = process.env.NEXT_PUBLIC_COGNITO_CLIENT_ID || "";
 
 // Module-scope side effect, as before: importing this module is what configures
 // Amplify, so every consumer of apiFetch is configured by construction.

@@ -1,17 +1,20 @@
-import {Link, Outlet, useLocation} from "react-router-dom";
+"use client";
+
+import Link from "next/link";
+import {usePathname} from "next/navigation";
 import {Box, Heading} from "@radix-ui/themes";
 import {ROLE_ADMIN, useSession} from "../lib/session";
 import Wordmark from "./Wordmark";
-import "../App.css";
 
 // The app's top-level sections. Order here is the order on the page.
 //
-// Each carries its own `match` because NavLink's built-in matching cannot
-// express what the collections tab needs: without `end`, `to="/"` is a prefix
-// of every path and lights on /users; with `end`, it goes dark on
-// /collection/:slug. So this uses a plain Link and decides for itself.
+// Each carries its own `match` because prefix matching cannot express what the
+// collections tab needs: as a prefix, "/" lights on every path, /users
+// included; as an exact match, it goes dark on /collection/:slug. So each
+// section decides for itself.
 //
-// Adding a section means one entry here, one `match`, and one <Route>.
+// Adding a section means one entry here, one `match`, and one route folder
+// under src/app/(app)/.
 const SECTIONS = [
   {
     path: "/",
@@ -23,12 +26,11 @@ const SECTIONS = [
   {path: "/users", label: "Users", adminOnly: true, match: (p) => p.startsWith("/users")},
 ];
 
-// aria-current is set by hand here. NavLink would set it for free, but it
-// derives it from the same matching this replaces — so it would mark the wrong
-// tab, which is worse than not having it.
+// aria-current is set by hand, from the same `match`, so the tab that looks
+// active is the one announced as current.
 function SectionNav() {
   const {role} = useSession();
-  const {pathname} = useLocation();
+  const pathname = usePathname();
   const visible = SECTIONS.filter((section) => !section.adminOnly || role === ROLE_ADMIN);
 
   return (
@@ -38,7 +40,7 @@ function SectionNav() {
         return (
           <Link
             key={section.path}
-            to={section.path}
+            href={section.path}
             className={`section-link${isActive ? " section-link--active" : ""}`}
             aria-current={isActive ? "page" : undefined}
           >
@@ -53,7 +55,8 @@ function SectionNav() {
 // Every signed-in route renders inside this: the purple bar, the page container
 // and the app wordmark are identical across sections, so they live here once
 // instead of in each screen.
-export default function AppShell({signOut, username}) {
+export default function AppShell({children}) {
+  const {signOut, username} = useSession();
   return (
     <>
       {/* Full-bleed purple utility bar, mirroring the one at the top of
@@ -91,15 +94,13 @@ export default function AppShell({signOut, username}) {
             {/* The link goes inside the h1, not around it: the heading stays
                 the page's h1 and the link is its content. */}
             <Heading as="h1" size="6" className="app-wordmark">
-              <Link to="/">
+              <Link href="/">
                 <Wordmark />
               </Link>
             </Heading>
             <SectionNav />
           </div>
-          <Box pt="2">
-            <Outlet />
-          </Box>
+          <Box pt="2">{children}</Box>
         </div>
       </main>
     </>
