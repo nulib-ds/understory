@@ -69,6 +69,9 @@ export function looksLikeIiifHtml(value) {
 // inspected without rendering anything.
 export function sanitizeIiifHtml(value) {
   if (!looksLikeIiifHtml(value)) return null;
+  // DOMParser is a browser API. Where there is none (a server render), the
+  // value is shown as the plain text it also is, rather than failing.
+  if (typeof DOMParser === "undefined") return null;
   const doc = new DOMParser().parseFromString(quoteUnquotedHrefs(value), "application/xml");
   // Both Chrome and Firefox report a failed parse as a <parsererror> element
   // rather than by throwing.

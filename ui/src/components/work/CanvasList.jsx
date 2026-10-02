@@ -177,6 +177,9 @@ export default function CanvasList({
           </Text>
         ) : (
           <DndContext
+            // A fixed id: dnd-kit otherwise numbers its aria ids from a module
+            // counter, which a server render and the browser count differently.
+            id="canvas-list"
             sensors={sensors}
             collisionDetection={closestCenter}
             onDragEnd={handleDragEnd}

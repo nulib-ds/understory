@@ -12,7 +12,7 @@ import {
   TextField,
 } from "@radix-ui/themes";
 import {ZoomInIcon} from "@radix-ui/react-icons";
-import CloverViewer from "@samvera/clover-iiif/viewer";
+import CloverViewer from "../CloverViewer";
 import {CLOVER_OPTIONS, CLOVER_THEME} from "../../cloverTheme";
 
 export default function AddWorkModal({

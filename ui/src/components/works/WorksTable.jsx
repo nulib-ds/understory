@@ -1,5 +1,5 @@
 import {useState} from "react";
-import {Link as RouterLink} from "react-router-dom";
+import NextLink from "next/link";
 import {Button, Callout, Flex, Link, Table, Text} from "@radix-ui/themes";
 import PreviewDialog from "./PreviewDialog";
 import DeleteWorkDialog from "./DeleteWorkDialog";
@@ -110,9 +110,9 @@ export default function WorksTable({works, onDelete, workPath, filtered, loading
               </Table.Cell>
               <Table.RowHeaderCell className="work-title-cell">
                 <Link asChild size="2" weight="bold">
-                  <RouterLink to={workPath(work.identifier)}>
+                  <NextLink href={workPath(work.identifier)} prefetch={false}>
                     {work.label || work.identifier}
-                  </RouterLink>
+                  </NextLink>
                 </Link>
               </Table.RowHeaderCell>
               <Table.Cell className="assets-cell">
@@ -126,7 +126,7 @@ export default function WorksTable({works, onDelete, workPath, filtered, loading
               <Table.Cell>
                 <Flex gap="3" justify="end" className="manifest-row-actions">
                   <Link asChild size="2">
-                    <RouterLink to={workPath(work.identifier)}>Edit</RouterLink>
+                    <NextLink href={workPath(work.identifier)} prefetch={false}>Edit</NextLink>
                   </Link>
                   <Button variant="ghost" size="2" onClick={() => setPreviewWork(work)}>
                     Preview

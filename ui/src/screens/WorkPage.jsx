@@ -1,7 +1,10 @@
+"use client";
+
 import {useCallback, useEffect, useMemo, useState} from "react";
-import {Link as RouterLink, useNavigate, useParams} from "react-router-dom";
+import NextLink from "next/link";
+import {useParams} from "next/navigation";
 import {Box, Button, Callout, Card, Flex, SegmentedControl, Text} from "@radix-ui/themes";
-import CloverViewer from "@samvera/clover-iiif/viewer";
+import CloverViewer from "../components/CloverViewer";
 import {arrayMove} from "@dnd-kit/sortable";
 import {COLLECTION_API_BASE, MANIFEST_API_BASE, apiFetch, manifestApiUrl} from "../lib/api";
 import {CLOVER_OPTIONS, CLOVER_THEME} from "../cloverTheme";
@@ -92,9 +95,9 @@ function WorkDetailPanel({
               weight="bold" would otherwise pull it back to 700. */}
           <Text asChild weight="bold">
             <h2 className="page-heading work-breadcrumb">
-              <RouterLink to={collectionPath} className="work-breadcrumb__collection">
+              <NextLink href={collectionPath} className="work-breadcrumb__collection">
                 {collectionLabel}
-              </RouterLink>
+              </NextLink>
               <span className="work-breadcrumb__separator" aria-hidden="true">/</span>
               <InlineTextEditor
                 as="span"
@@ -232,10 +235,13 @@ function WorkDetailPanel({
 // refetches when you navigate back to it.
 export default function WorkPage() {
   const {slug: rawSlug, workId} = useParams();
-  const slug = rawSlug ? decodeURIComponent(rawSlug) : null;
+  // A Move rewrites the address with history.replaceState instead of
+  // navigating (see moveWork), so the route's params keep the slug this page was
+  // reached by. movedTo is the collection the work lives in since.
+  const [movedTo, setMovedTo] = useState(null);
+  const slug = movedTo ?? (rawSlug ? decodeURIComponent(rawSlug) : null);
   const selectedManifestId = workId ? decodeURIComponent(workId) : null;
   const collectionPath = `/collection/${encodeURIComponent(slug)}`;
-  const navigate = useNavigate();
 
   const manifestApiAvailable = Boolean(MANIFEST_API_BASE);
   const [manifestDetail, setManifestDetail] = useState(null);
@@ -391,13 +397,21 @@ export default function WorkPage() {
         prev && prev.identifier === selectedManifestId ? {...prev, collection: next} : prev,
       );
       // The work now lives under a different slug, so the URL it was reached by
-      // is stale. Replace rather than push: the old URL would 404 on Back.
+      // is stale. Replace rather than push: the old URL would 404 on Back. And
+      // through history.replaceState rather than the router: navigating to a
+      // new [slug] would remount this page, flashing it and reloading Clover
+      // for a change the viewer cannot see.
       if (next?.slug && next.slug !== slug) {
-        navigate(`/collection/${encodeURIComponent(next.slug)}/work/${encodeURIComponent(selectedManifestId)}`, {replace: true});
+        setMovedTo(next.slug);
+        window.history.replaceState(
+          null,
+          "",
+          `/collection/${encodeURIComponent(next.slug)}/work/${encodeURIComponent(selectedManifestId)}`,
+        );
       }
       return next;
     },
-    [selectedManifestId, slug, navigate],
+    [selectedManifestId, slug],
   );
 
   const handleAttachAssets = useCallback(

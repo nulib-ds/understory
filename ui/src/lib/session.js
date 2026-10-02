@@ -11,6 +11,7 @@ export const SessionContext = createContext({
   username: "",
   role: null,
   collections: [],
+  signOut: null,
 });
 
 export function useSession() {

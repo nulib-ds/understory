@@ -1,16 +1,26 @@
-# React + Vite
+# Understory admin UI
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+The admin app for Understory: a Next.js 15 App Router app, rendered in the browser behind Cognito and hosted on Amplify Hosting's managed server.
 
-Currently, two official plugins are available:
+## Run it
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+1. Copy `.env.local.example` to `.env.local` and fill it in from your stack's outputs.
+2. Run `npm install`.
+3. Run `npm run dev`, and open http://localhost:3000.
 
-## React Compiler
+| Command | Does |
+|---|---|
+| `npm run dev` | Starts the dev server on port 3000 |
+| `npm run build` | Runs the production build, the one Amplify runs |
+| `npm run lint` | Runs ESLint |
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+## Layout
 
-## Expanding the ESLint configuration
+| Path | Contents |
+|---|---|
+| `src/app/` | Routes: one folder per route, the layouts, and not-found |
+| `src/screens/` | The screen each route renders |
+| `src/components/` | Everything the screens share |
+| `src/lib/` | API access, the session, and IIIF helpers |
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+Only `src/app/layout.jsx` imports global CSS, in cascade order. [AGENTS.md](../AGENTS.md) explains this and the UI's other conventions.

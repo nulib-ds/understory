@@ -3,7 +3,7 @@
 ## Project Overview
 This project is the admin backend for one or more downstream IIIF sites (Canopy or similar), deployed entirely on AWS. **A collection is the unit of everything**: each downstream site is driven by one curatorial collection, consuming that collection's IIIF documents and its own search index.
 
-A SAM application (`app/aws/template.yml`) provisions a source S3 bucket and an output S3 bucket (`*-iiif`). An S3-triggered Lambda (`app/aws/lambdas/iiif-image/`) converts uploaded source images to pyramid TIFFs (Level 2) for use by `samvera/serverless-iiif` (a nested SAR application). `app/aws/lambdas/manifest/` exposes the whole CRUD and query API behind API Gateway + Cognito. `app/aws/lambdas/publish/` is the task worker for the publish state machine. A React/Vite frontend (`ui/`) talks to them, hosted via Amplify.
+A SAM application (`app/aws/template.yml`) provisions a source S3 bucket and an output S3 bucket (`*-iiif`). An S3-triggered Lambda (`app/aws/lambdas/iiif-image/`) converts uploaded source images to pyramid TIFFs (Level 2) for use by `samvera/serverless-iiif` (a nested SAR application). `app/aws/lambdas/manifest/` exposes the whole CRUD and query API behind API Gateway + Cognito. `app/aws/lambdas/publish/` is the task worker for the publish state machine. A Next.js frontend (`ui/`) talks to them, hosted on Amplify Hosting's managed server.
 
 ### The two spaces
 
@@ -58,7 +58,7 @@ compressed.
 
 ### Image API version: 3
 
-`IMAGE_API_BASE_URL` (and the UI's `VITE_IIIF_BASE_URL`) end in **`/iiif/3`**.
+`IMAGE_API_BASE_URL` (and the UI's `NEXT_PUBLIC_IIIF_BASE_URL`) end in **`/iiif/3`**.
 serverless-iiif serves both `/iiif/2` and `/iiif/3` from the same TIFFs; the
 path chosen is the version every service id, `info.json` and request we write
 carries. It was `/iiif/2` until 2026-09-30, apparently an early default, and
@@ -148,11 +148,16 @@ A work belongs to **exactly one** collection, recorded in its `partOf`. There is
 
 ## UI Structure
 
-Routes are declared in `ui/src/main.jsx`. Everything signed-in renders through a
-**layout route**, `AppShell` (`ui/src/components/AppShell.jsx`), which owns the
+Routes are folders under `ui/src/app/` (the Next.js App Router). Everything
+signed-in sits in the `(app)` route group, whose layout wraps every page in
+`AuthGate` and `AppShell` (`ui/src/components/AppShell.jsx`). `AppShell` owns the
 purple Northwestern bar, the page container, and the band carrying the
-"Understory" wordmark and the section switcher. Section components render into
-its `<Outlet />` and must not draw chrome of their own.
+"Understory" wordmark and the section switcher. Screens render as its `children`
+and must not draw chrome of their own.
+
+Each route's `page.jsx` is a thin wrapper around a screen in `ui/src/screens/`.
+The folder is `screens/`, not `pages/`: Next reserves `src/pages/` for its older
+Pages Router and tries to serve every file in it as a route.
 
 The purple bar carries the Northwestern mark on the left and the session strip
 on the right — `Signed in as <email> | Sign out`, with sign-out as an underlined
@@ -164,13 +169,13 @@ reload on a cached session.
 
 | Route | Component | State |
 |---|---|---|
-| `/` | `CollectionsPage` (`ui/src/pages/`) | Built — the home page |
-| `/collections` | redirect to `/` | for older links |
-| `/collection/:slug` | `CollectionWorksPage` | Built — index-backed list, filter, publish panel |
-| `/collection/:slug/work/:workId` | `WorkPage` | Built |
+| `/` | `CollectionsPage` (`ui/src/screens/`) | Built — the home page |
+| `/collections` | redirect to `/` (`ui/next.config.mjs`) | for older links |
+| `/collection/[slug]` | `CollectionWorksPage` | Built — index-backed list, filter, publish panel |
+| `/collection/[slug]/work/[workId]` | `WorkPage` | Built |
 | `/users` | `UsersPage` | Built — admin only |
 
-Anything else redirects to `/`.
+Anything else lands on `/` (`ui/src/app/not-found.jsx`).
 
 There is deliberately **no all-works view**: a work belongs to exactly one
 collection, so the collections list is where you start and a work is always
@@ -191,8 +196,8 @@ reached through its collection.
   writes to the `image/` prefix of the **source** bucket (not the IIIF/output
   bucket) — that upload is what feeds the `iiif-image` Lambda's pipeline. The
   Cognito authenticated role's IAM policy scopes `s3:PutObject`/`s3:GetObject`
-  to `image/*` only; the bucket root is intentionally not writable (or listable)
-  from the UI.
+  to `image/*` and `av/*`; the bucket root is intentionally not writable (or
+  listable) from the UI.
 - **Users** (`/users`) — lists the Cognito user pool and assigns roles and
   collection grants. Admin-only, hidden from the section menu for everyone else.
   See "Roles and permissions" below.
@@ -202,15 +207,15 @@ dropdown cost a click and said less than simply showing them. The active
 underline is painted transparent on every link so becoming active never changes
 a link's height.
 
-They are plain `Link`s, not `NavLink`s, and each `SECTIONS` entry carries its own
-`match(pathname)`. NavLink's built-in matching cannot express what the
-collections tab needs: without `end`, `to="/"` is a prefix of every path and
-lights on `/users`; with `end`, it goes dark on `/collection/:slug`. Because the
-matching is ours, `aria-current` is set by hand too — NavLink would derive it
-from the matching being replaced, and marking the wrong tab is worse than not
-marking one.
+They are `next/link` `Link`s, and each `SECTIONS` entry carries its own
+`match(pathname)`. Prefix matching cannot express what the collections tab
+needs: as a prefix, `/` lights on every path, `/users` included; as an exact
+match, it goes dark on `/collection/[slug]`. Because the matching is ours,
+`aria-current` is set by hand from the same `match`, so the tab that looks
+active is the one announced as current.
 
-Adding a section means one entry in `SECTIONS`, its `match`, and one `<Route>`.
+Adding a section means one entry in `SECTIONS`, its `match`, and one route folder
+under `ui/src/app/(app)/`.
 
 **Every page renders inside `PageReady`** (`ui/src/components/PageReady.jsx`),
 which holds the page body hidden until everything on it has loaded, then shows
@@ -234,7 +239,30 @@ the body does, and a spinner appears only past 400ms.
 
 `ui/src/lib/api.js` holds the Amplify configuration, the deployed endpoint bases,
 `apiFetch` and `manifestApiUrl`. Importing it is what configures Amplify, so
-every `apiFetch` caller is configured by construction.
+every `apiFetch` caller is configured by construction. `AuthGate` imports it for
+that reason alone: it is the first thing on every route to call Amplify, so no
+route depends on a screen having imported `api.js` first.
+
+### Next.js specifics
+
+- **Every screen is a client component.** Tokens live in the browser, so
+  `AuthGate` holds each page until it knows the session, and the server renders
+  only its spinner. `/` and `/users` are prerendered at build; the two slug
+  routes render on demand, which is why the app needs a server at all (see
+  **Amplify deployment**).
+- **Clover only through `ui/src/components/CloverViewer.jsx`**, which loads it
+  with `next/dynamic` and `ssr: false`. OpenSeadragon touches `document` the
+  moment it is imported, so a direct import breaks the server render.
+- **A URL change that should not cost a server request goes through
+  `window.history.replaceState`**, which Next keeps in step with `usePathname`
+  and `useSearchParams`. Router navigation fetches the route from the server. Two
+  places rely on it: the `?q=` filter, which would otherwise make a request per
+  keystroke, and a Move, where navigating to the new `[slug]` would remount
+  `WorkPage` and reload Clover. `WorkPage` keeps the moved slug in state,
+  because the route's params still hold the old one.
+- **`prefetch={false}` on list links.** Next prefetches every link on screen, and
+  on Amplify compute each prefetch is a server request: two links on each of 50
+  rows in the works table.
 
 `AssetDropzone` also takes audio and video, which go to the source bucket's
 `av/` prefix instead — see **Audio and video** below.
@@ -361,9 +389,13 @@ app/
     manifest.js            # manifest keys/templates/listing — loads the SDK
     opensearch.js          # signed HTTP to the domain — loads the SDK
     assetCopy.js           # copy one canvas's image onto our Image API — loads the SDK
-ui/                        # React/Vite frontend — talks to the deployed AWS stack
+ui/                        # Next.js frontend — talks to the deployed AWS stack
+  src/app/                 #   routes: one folder per route, layouts, not-found
+  src/screens/             #   the screen each route renders
+  next.config.mjs
   .env.local               # Your personal env config (gitignored — copy from .env.local.example)
   .env.local.example
+amplify.yml                # the one build spec for the hosted UI
 ```
 
 > Note: `app/storage/`, if present, is a vestige of an earlier approach and is not used by any current Lambda.
@@ -383,7 +415,7 @@ ui/                        # React/Vite frontend — talks to the deployed AWS s
 > appears. Start Docker and rebuild with `--use-container` instead. To confirm a build is
 > sound: `ls app/aws/.aws-sam/build/IIIFImageFunction/node_modules/@img/` should list
 > `sharp-linux-arm64` and no `darwin` entries.
-- `cd ui && npm run dev` — start the Vite dev server for the frontend, pointed at your personal stack's endpoints via `ui/.env.local`.
+- `cd ui && npm run dev` — start the Next.js dev server (port 3000) for the frontend, pointed at your personal stack's endpoints via `ui/.env.local`. `npm run build` is the production build Amplify runs.
 
 ## Local Development
 
@@ -420,43 +452,52 @@ Fetch your stack's outputs:
 ```
 aws cloudformation describe-stacks --stack-name <your-stack-name> --query 'Stacks[0].Outputs'
 ```
-Copy `ui/.env.local.example` to `ui/.env.local` (gitignored) and fill it in from the output values — the mapping from CloudFormation output key to `VITE_*` variable is documented in the example file itself (`IiifEndpoint` → `VITE_IIIF_BASE_URL`, `ManifestApiUrl` → `VITE_MANIFEST_API_URL` with `/manifests` appended, `IIIFBucketName` → `VITE_STORAGE_BUCKET`, `SourceBucketName` → `VITE_SOURCE_BUCKET`, etc).
+Copy `ui/.env.local.example` to `ui/.env.local` (gitignored) and fill it in from the output values — the mapping from CloudFormation output key to `NEXT_PUBLIC_*` variable is documented in the example file itself (`ImagesEndpoint` → `NEXT_PUBLIC_IIIF_BASE_URL`, `ManifestApiUrl` → `NEXT_PUBLIC_MANIFEST_API_URL` with `/manifests` appended, `IIIFBucketName` → `NEXT_PUBLIC_STORAGE_BUCKET`, `SourceBucketName` → `NEXT_PUBLIC_SOURCE_BUCKET`, etc).
 
 ### 4. Run the UI and sign in
 ```
 cd ui
 npm run dev
 ```
-Open `http://localhost:5173`. You'll land on the Cognito `Authenticator` sign-in screen — this is expected, the whole app is behind auth now. If you don't have a user in your stack's Cognito pool yet, create one (the pool uses email as the username):
+Open `http://localhost:3000`. You'll land on the sign-in screen — this is expected, the whole app is behind auth. If you don't have a user in your stack's Cognito pool yet, create one (the pool uses email as the username):
 ```
 aws cognito-idp admin-create-user \
-  --user-pool-id <VITE_COGNITO_USER_POOL_ID> \
+  --user-pool-id <NEXT_PUBLIC_COGNITO_USER_POOL_ID> \
   --username <your-email> \
   --user-attributes Name=email,Value=<your-email> Name=email_verified,Value=true \
   --message-action SUPPRESS
 
 aws cognito-idp admin-set-user-password \
-  --user-pool-id <VITE_COGNITO_USER_POOL_ID> \
+  --user-pool-id <NEXT_PUBLIC_COGNITO_USER_POOL_ID> \
   --username <your-email> \
   --password '<a-password-meeting-the-pool-policy>' \
   --permanent
 ```
-(If `admin-create-user` says the user already exists, just run the `admin-set-user-password` step to reset it.) Sign in, and you should see the dashboard: the **Works** tab with the Presentation Manifests panel (talking to the real manifest API) and Clover Viewer preview, and the **Assets** tab with the S3 Storage Browser listing your stack's source bucket (`image/` prefix, upload-enabled).
+(If `admin-create-user` says the user already exists, just run the `admin-set-user-password` step to reset it.) Add yourself to the `admin` group (see **Bootstrapping** under Roles and permissions), then sign in: you land on **Collections**.
 
 ## Environment / Feature Flags
 
 ### UI (`ui/`)
+Next.js inlines each `NEXT_PUBLIC_*` into the browser bundle at build time, so a
+change needs a rebuild (or a restart of `npm run dev`). Read each one as a
+literal `process.env.NEXT_PUBLIC_X`: Next replaces only that exact expression.
+
 | Variable | Description |
 |---|---|
-| `VITE_IIIF_BASE_URL` | The **Image API** base, despite the name — e.g. `https://d111111abcdef8.cloudfront.net/iiif/3`. Copy from the `ImagesEndpoint` stack output, not `IiifEndpoint`: the latter is the Lambda Function URL behind the distribution. |
-| `VITE_MANIFEST_API_URL` | The `ManifestHttpApi` endpoint from stack outputs. |
-| `VITE_COLLECTION_API_URL` | The `ManifestHttpApi` endpoint's `/collections` path. Needed as its own variable because `VITE_MANIFEST_API_URL` already ends in `/manifests`; the UI derives a fallback from it, but set this explicitly. **Every `VITE_*` must also be added to the `define` block in `ui/vite.config.js`** — Amplify injects them as process env vars, which Vite's own `.env` handling never sees, so a missing entry is `undefined` in production and fine in dev. |
-| `VITE_STORAGE_BUCKET` / `VITE_STORAGE_REGION` | The IIIF output S3 bucket and its region. `STORAGE_BUCKET` also configures Amplify's default `Storage.S3` bucket (used for Auth/Storage bootstrap). |
-| `VITE_SOURCE_BUCKET` | The source S3 bucket (uploads land here, under `image/`, and trigger the `iiif-image` Lambda). Used by `AssetDropzone`. |
-| `VITE_STORAGE_IDENTITY_POOL_ID` / `VITE_COGNITO_USER_POOL_ID` / `VITE_COGNITO_CLIENT_ID` | Cognito identifiers from stack outputs, for the Amplify `Authenticator`. |
+| `NEXT_PUBLIC_IIIF_BASE_URL` | The **Image API** base, despite the name — e.g. `https://d111111abcdef8.cloudfront.net/iiif/3`. Copy from the `ImagesEndpoint` stack output, not `IiifEndpoint`: the latter is the Lambda Function URL behind the distribution. |
+| `NEXT_PUBLIC_MANIFEST_API_URL` | The `ManifestHttpApi` endpoint from stack outputs. |
+| `NEXT_PUBLIC_COLLECTION_API_URL` | The `ManifestHttpApi` endpoint's `/collections` path. Needed as its own variable because `NEXT_PUBLIC_MANIFEST_API_URL` already ends in `/manifests`; the UI derives a fallback from it, but set this explicitly. |
+| `NEXT_PUBLIC_STORAGE_BUCKET` / `NEXT_PUBLIC_STORAGE_REGION` | The IIIF output S3 bucket and its region. `STORAGE_BUCKET` also configures Amplify's default `Storage.S3` bucket (used for Auth/Storage bootstrap). |
+| `NEXT_PUBLIC_SOURCE_BUCKET` | The source S3 bucket (uploads land here, under `image/` and `av/`, and trigger the converters). Used by `AssetDropzone`. |
+| `NEXT_PUBLIC_STORAGE_IDENTITY_POOL_ID` / `NEXT_PUBLIC_COGNITO_USER_POOL_ID` / `NEXT_PUBLIC_COGNITO_CLIENT_ID` | Cognito identifiers from stack outputs, for `AuthGate` and the sign-in screen. |
 
 ### Amplify deployment
-Connect the repo in Amplify (this is Amplify **Hosting** only — auth/storage/API are all defined via SAM, not the Amplify backend framework). The inline `BuildSpec` in `template.yml`'s `AmplifyApp` resource handles the build (`ui/` subdirectory, outputs `ui/dist`) and injects the `VITE_*` environment variables from the stack's own resources automatically. On a stack with a custom domain, `AmplifyDomain` also attaches `admin-<project>.<base>` to the deploy branch — see **Hostnames** under CDN.
+This is Amplify **Hosting** only — auth, storage and the API are all defined in SAM, not the Amplify backend framework. On a stack with a custom domain, `AmplifyDomain` also attaches `admin-<project>.<base>` to the deploy branch — see **Hostnames** under CDN.
+
+- **It runs a server.** `AmplifyApp` sets `Platform: WEB_COMPUTE`, Amplify Hosting's managed Next.js server, because collection slugs and work ids are created at runtime and a static export can only serve routes it knew at build time. AWS supports Next.js 12–15 there, which is why `ui/` pins 15.5; move to 16 once AWS lists it. The server does the routing, so the app has no rewrite rules.
+- **`amplify.yml` at the repo root is the one build spec**, in monorepo form (`appRoot: ui`, artifacts `.next`). Amplify reads that file in preference to a spec set on the app, so the template sets none, and the build changes with the code it builds. `AMPLIFY_MONOREPO_APP_ROOT=ui` must match `appRoot`; AWS requires it on an app created by CloudFormation.
+- **`AmplifyServiceRole`** lets Amplify write the server's logs to CloudWatch (`/aws/amplify/…`). The server calls no other AWS service.
+- The `NEXT_PUBLIC_*` variables come from the stack's own resources, set on the app as environment variables, which `next build` reads directly.
 
 Two things CloudFormation does not do, both seen on fresh stacks:
 
@@ -785,7 +826,7 @@ can never be overwritten by a late "processing". The Lambda takes duration,
 size and output paths from the COMPLETE event rather than guessing filenames.
 For a frame capture, `outputFilePaths` names the last frame, which is the
 poster. The UI derives the documents base from `manifest.id` because
-`VITE_IIIF_BASE_URL` is the Image API, not the documents host.
+`NEXT_PUBLIC_IIIF_BASE_URL` is the Image API, not the documents host.
 
 Canvas shape: a `Video` or `Sound` painting body with
 `format: application/vnd.apple.mpegurl`, `duration` on both canvas and body,
@@ -1285,7 +1326,7 @@ Use CommonJS modules (`require`/`module.exports`) and 2-space indentation in all
 
 ## Design Conventions
 
-The UI is built on Radix Themes (`accentColor="iris"`, `grayColor="mauve"`, `scaling="110%"` in `ui/src/main.jsx`). Reach for a Radix component before hand-rolling one, and use theme tokens (`--gray-N`, `--accent-N`, `--space-N`, `--radius-N`) rather than literal colors or pixel values. Never hardcode a hex — it will not follow the theme.
+The UI is built on Radix Themes (`accentColor="iris"`, `grayColor="mauve"`, `scaling="110%"` in `ui/src/app/layout.jsx`). Reach for a Radix component before hand-rolling one, and use theme tokens (`--gray-N`, `--accent-N`, `--space-N`, `--radius-N`) rather than literal colors or pixel values. Never hardcode a hex — it will not follow the theme.
 
 **Page headings.** Every section gets one centred heading via `PageHeading`
 (`ui/src/components/PageHeading.jsx`), and a work's title on its detail page is
@@ -1359,13 +1400,15 @@ viewer's `z-index: 99999` is trapped in its own stacking context and a modest
 Any rule that overrides `.canvas-label-editable` (which sets
 `align-self: flex-start`) must use a two-class selector so it wins regardless of
 source order, and must live in `ui/src/App.css` — component stylesheets under
-`ui/src/components/` are imported *before* `App.css`, so an equal-specificity
-override there would silently lose.
+`ui/src/components/` load *before* `App.css`, so an equal-specificity override
+there would silently lose.
 
-Since `App.jsx` was split up, `AppShell.jsx` is the **only** importer of
-`App.css`, which is what keeps it last. Do not add a second importer earlier in
-the graph, and do not split the file — the fluid-scale and token blocks at its
-head must load exactly once, before every component stylesheet.
+**`ui/src/app/layout.jsx` is the only place that imports global CSS**, in one
+ordered list: Radix, `theme.css`, the fonts, `index.css`, the component sheets,
+and `App.css` last. Next loads a layout's CSS before the CSS of the pages beneath
+it, so a stylesheet imported from a component would land *after* `App.css` and
+reverse that order. Add a new sheet to that list, never to a component, and do
+not split `App.css`: its fluid-scale and token blocks must load exactly once.
 
 **Fluid scale — read this before writing any pixel value.** Nothing on the page
 is a fixed size. One viewport-driven unit in `ui/src/App.css` drives type,
@@ -1457,7 +1500,7 @@ cd app && npx esbuild aws/lambdas/manifest/index.js --bundle \
 cd app/aws && sam validate --lint          # offline; needs no credentials
 ```
 
-esbuild resolving the whole graph catches a missing export or a require cycle, and `eslint` in `ui/` has `no-undef` on, which catches a variable that failed to move during a refactor. Note eslint's `varsIgnorePattern: ^[A-Z_]` means it will **not** flag an unused component or icon import — those have to be found by hand.
+esbuild resolving the whole graph catches a missing export or a require cycle, and `eslint` in `ui/` has `no-undef` on, which catches a variable that failed to move during a refactor. Note eslint's `varsIgnorePattern: ^[A-Z_]` means it will **not** flag an unused component or icon import — those have to be found by hand. `npm run build` in `ui/` prerenders the static routes, so it also catches browser-only code reached during a server render.
 
 ## Commit & Pull Request Guidelines
 Use Conventional Commits (`feat:`, `fix:`, `chore:`, etc.) from the start. Reference related GitHub issues in the PR body. Include manual verification steps (`npm test`, sample render) so reviewers can reproduce. Keep PRs focused; split unrelated work into separate branches.

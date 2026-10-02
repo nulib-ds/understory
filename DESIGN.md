@@ -8,13 +8,14 @@ Going forward, new UI should be built with Radix Themes components (`Button`, `C
 
 ### Theme configuration
 
-The app is wrapped in a single `<Theme>` provider (`ui/src/main.jsx`) with:
+The app is wrapped in a single `<Theme>` provider (the root layout, `ui/src/app/layout.jsx`) with:
 
 - `appearance="light"`
 - `accentColor="iris"`
 - `grayColor="mauve"`
+- `scaling="110%"`
 
-Any new top-level provider usage (e.g. rendering outside the normal `main.jsx` tree, such as in tests or a Storybook-style harness) should reuse these same props so components look consistent wherever they're rendered.
+Any new top-level provider usage (e.g. rendering outside the root layout, such as in tests or a Storybook-style harness) should reuse these same props so components look consistent wherever they're rendered.
 
 ### What's already migrated
 

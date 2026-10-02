@@ -21,11 +21,11 @@ Use Understory as the backend of a [Canopy IIIF](https://nulib-ds.github.io/cano
 ## How it fits together
 
 ```
-Admin UI (React) ──▶ API (API Gateway and Lambda, behind Cognito)
-                      ├─ S3: draft and published IIIF documents
-                      ├─ serverless-iiif: IIIF Image API 3.0
-                      ├─ MediaConvert: HLS audio and video
-                      └─ OpenSearch: a search index per published collection
+Admin UI (Next.js) ──▶ API (API Gateway and Lambda, behind Cognito)
+                        ├─ S3: draft and published IIIF documents
+                        ├─ serverless-iiif: IIIF Image API 3.0
+                        ├─ MediaConvert: HLS audio and video
+                        └─ OpenSearch: a search index per published collection
 
 Canopy IIIF site ◀── published documents, images, streams, and search, through CloudFront
 ```

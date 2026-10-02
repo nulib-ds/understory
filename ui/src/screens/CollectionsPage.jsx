@@ -1,5 +1,8 @@
+"use client";
+
 import {useEffect, useState} from "react";
-import {Link as RouterLink, useNavigate} from "react-router-dom";
+import NextLink from "next/link";
+import {useRouter} from "next/navigation";
 import {
   AlertDialog,
   Badge,
@@ -55,9 +58,9 @@ function CollectionRow({collection, canDelete = false, onDelete}) {
               fell back to the UA default — browser blue and underlined —
               instead of the accent every other link in the app uses. */}
           <Link asChild size="2" weight="bold">
-            <RouterLink to={`/collection/${encodeURIComponent(collection.slug)}`}>
+            <NextLink href={`/collection/${encodeURIComponent(collection.slug)}`} prefetch={false}>
               {collection.label}
-            </RouterLink>
+            </NextLink>
           </Link>
         </Flex>
       </Table.RowHeaderCell>
@@ -120,7 +123,7 @@ export default function CollectionsPage() {
   const [error, setError] = useState(null);
   const [adding, setAdding] = useState(false);
   const isAdmin = session.role === ROLE_ADMIN;
-  const navigate = useNavigate();
+  const router = useRouter();
 
   // The Add flow branches the same way Add Work does:
   //   choose -> create
@@ -272,7 +275,7 @@ export default function CollectionsPage() {
       // works appear as they land — mirroring the work import, which goes to the
       // work it just created. The collection already exists and is resolvable;
       // it is simply empty until the run fills it.
-      navigate(`/collection/${encodeURIComponent(data.collection.slug)}`);
+      router.push(`/collection/${encodeURIComponent(data.collection.slug)}`);
     } catch (err) {
       setImportError(err.message);
     } finally {
@@ -315,7 +318,7 @@ export default function CollectionsPage() {
             {!available && (
               <Callout.Root color="red" size="1" mb="3">
                 <Callout.Text>
-                  Collection API URL is not configured. Update VITE_COLLECTION_API_URL to point at the
+                  Collection API URL is not configured. Update NEXT_PUBLIC_COLLECTION_API_URL to point at the
                   deployed endpoint.
                 </Callout.Text>
               </Callout.Root>
