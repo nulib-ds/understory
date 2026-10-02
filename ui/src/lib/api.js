@@ -79,9 +79,9 @@ export async function apiFetch(url, {method = "GET", body, errorMessage = "Reque
   return data;
 }
 
-// The collection's works, filtered and paged by the server. Replaces the old
-// GET /manifests corpus listing and GET /search together — they are one query
-// now, against that collection's slice of the working index.
+// The collection's works, filtered and paged by the server, which reads them
+// from the collection's own documents rather than a search index — so a save
+// is on the list the moment it returns.
 export function collectionWorksUrl(slug, {q = "", from = 0, size = 50} = {}) {
   if (!COLLECTION_API_BASE) return null;
   const params = new URLSearchParams();

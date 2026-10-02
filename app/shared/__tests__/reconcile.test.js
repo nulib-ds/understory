@@ -295,3 +295,104 @@ test("canonicalizeCollectionLabels adopts the existing collection's spelling", (
   assert.deepEqual(canonicalizeCollectionLabels([], root), []);
   assert.deepEqual(canonicalizeCollectionLabels(null, root), []);
 });
+
+// --- member terms ------------------------------------------------------------
+
+const {
+  CONTENT_HASH_KEY,
+  ITEM_COUNT_KEY,
+  THUMBNAIL_SERVICE_KEY,
+  memberFromManifest,
+  canvasThumbnailService,
+  workIdFromManifestUrl,
+} = require("../collection");
+
+const SERVICE = "https://images.example/iiif/3/w1%2F0";
+
+const imageCanvas = (serviceId) => ({
+  id: "c",
+  type: "Canvas",
+  items: [{items: [{body: {type: "Image", service: [{id: serviceId, type: "ImageService3"}]}}]}],
+});
+
+test("a member carries its hash, canvas count and list thumbnail", () => {
+  const plan = planReconciliation({
+    baseUrl: BASE,
+    member: {...member("a", "Aardvark"), contentHash: "h-a", itemCount: 3, thumbnailService: SERVICE},
+    desired: [{slug: "campus-maps", label: "Campus Maps"}],
+    root: createRootCollectionTemplate({baseUrl: BASE}),
+    leaves: {"campus-maps": null},
+  });
+  const [item] = plan.leafWrites[0].document.items;
+  assert.equal(item[CONTENT_HASH_KEY], "h-a");
+  assert.equal(item[ITEM_COUNT_KEY], 3);
+  assert.equal(item[THUMBNAIL_SERVICE_KEY], SERVICE);
+});
+
+// Reconciliation rebuilds the whole leaf from its members, so a term it fails
+// to carry is erased from every work the save was NOT about.
+test("saving one work keeps every other member's terms intact", () => {
+  const existing = leaf("campus-maps", "Campus Maps", [
+    {...member("a", "Aardvark"), contentHash: "h-a", itemCount: 3, thumbnailService: SERVICE},
+    {...member("b", "Bison"), contentHash: "h-b-old", itemCount: 1},
+  ]);
+  const plan = planReconciliation({
+    baseUrl: BASE,
+    member: {...member("b", "Bison"), contentHash: "h-b-new", itemCount: 2},
+    desired: [{slug: "campus-maps", label: "Campus Maps"}],
+    root: rootWith([{slug: "campus-maps", label: "Campus Maps", thumbnail: null, itemCount: 2}]),
+    leaves: {"campus-maps": existing},
+  });
+  const [a, b] = plan.leafWrites[0].document.items;
+  assert.equal(a[CONTENT_HASH_KEY], "h-a", "untouched member keeps its hash");
+  assert.equal(a[ITEM_COUNT_KEY], 3);
+  assert.equal(a[THUMBNAIL_SERVICE_KEY], SERVICE);
+  assert.equal(b[CONTENT_HASH_KEY], "h-b-new", "the saved member takes the new hash");
+  assert.equal(b[ITEM_COUNT_KEY], 2);
+});
+
+// A missing hash reads as "changed". Defaulting it to anything would risk the
+// opposite error: a work shown as published that never gets republished.
+test("an unknown hash is left out rather than guessed", () => {
+  const plan = planReconciliation({
+    baseUrl: BASE,
+    member: member("a", "Aardvark"),
+    desired: [{slug: "campus-maps", label: "Campus Maps"}],
+    root: createRootCollectionTemplate({baseUrl: BASE}),
+    leaves: {"campus-maps": null},
+  });
+  const [item] = plan.leafWrites[0].document.items;
+  assert.equal(CONTENT_HASH_KEY in item, false);
+  assert.equal(THUMBNAIL_SERVICE_KEY in item, false);
+});
+
+test("memberFromManifest derives everything but the hash from the manifest", () => {
+  const manifest = {
+    id: manifestId("w1"),
+    label: {en: ["Map of campus"]},
+    items: [{id: "silent", type: "Canvas", items: []}, imageCanvas(SERVICE), imageCanvas("https://other")],
+  };
+  assert.deepEqual(memberFromManifest(manifest, {contentHash: "h"}), {
+    manifestId: manifestId("w1"),
+    label: "Map of campus",
+    thumbnail: null,
+    contentHash: "h",
+    itemCount: 3,
+    // The first canvas that HAS a service, which is what the list showed before.
+    thumbnailService: SERVICE,
+  });
+});
+
+test("canvasThumbnailService falls back to an A/V canvas's poster", () => {
+  assert.equal(canvasThumbnailService(imageCanvas(SERVICE)), SERVICE);
+  const video = {items: [{items: [{body: {type: "Video"}}]}], thumbnail: [{service: [{id: "poster-svc"}]}]};
+  assert.equal(canvasThumbnailService(video), "poster-svc");
+  assert.equal(canvasThumbnailService({items: []}), null);
+});
+
+test("workIdFromManifestUrl reads either space, and nothing else", () => {
+  assert.equal(workIdFromManifestUrl(`${BASE}/working/presentation/manifest/w1/manifest.json`), "w1");
+  assert.equal(workIdFromManifestUrl(`${BASE}/published/presentation/manifest/w1/manifest.json`), "w1");
+  assert.equal(workIdFromManifestUrl(`${BASE}/working/presentation/collection/x/collection.json`), null);
+  assert.equal(workIdFromManifestUrl(undefined), null);
+});

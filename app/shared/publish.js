@@ -10,11 +10,10 @@
 // — the bytes always differ — which is why we hash and record it ourselves.
 
 const crypto = require("node:crypto");
-const {EXTENSION_NAMESPACE} = require("./collection");
-
-// An absolute IRI for the same reason MANAGED_KEY is one: a compact IRI would
-// need a prefix declared in @context, and an object in @context breaks Clover.
-const CONTENT_HASH_KEY = `${EXTENSION_NAMESPACE}contentHash`;
+// Defined in collection.js, beside the other extension terms, because the
+// working leaf carries it too: a work is in sync exactly when its working and
+// published members carry the same hash.
+const {CONTENT_HASH_KEY} = require("./collection");
 
 // sha256 of the exact bytes stored, never of a re-serialization. There is no
 // canonical JSON here: applyCollections reorders keys as a side effect, so
@@ -111,6 +110,13 @@ function externalImageServices(manifest, imageApiBase) {
 // durable artifacts. A diff journal written on every save was the alternative
 // and was rejected: a journal drifts the moment a write half-fails or a run
 // dies, and nothing ever repairs it.
+//
+// A working member flagged `importing` is HELD: an import walk is still
+// rewriting it, so publishing now would freeze a half-copied manifest. It is
+// neither written nor removed. A held work that was published before stays
+// live at its old version (`publishedHash` says which); one that never was
+// stays unpublished. The works list calls this without the flag, which is what
+// keeps its status column and a run's diff the same computation.
 function planPublish({workingMembers = [], publishedMembers = []}) {
   const publishedByUrl = new Map(
     publishedMembers.map((member) => [member.workId, member[CONTENT_HASH_KEY] || null]),
@@ -118,14 +124,17 @@ function planPublish({workingMembers = [], publishedMembers = []}) {
   const adds = [];
   const changes = [];
   const unchanged = [];
+  const held = [];
   for (const member of workingMembers) {
-    if (!publishedByUrl.has(member.workId)) adds.push(member);
+    if (member.importing) {
+      held.push({...member, publishedHash: publishedByUrl.get(member.workId) ?? null});
+    } else if (!publishedByUrl.has(member.workId)) adds.push(member);
     else if (publishedByUrl.get(member.workId) !== member.contentHash) changes.push(member);
     else unchanged.push(member);
   }
   const workingIds = new Set(workingMembers.map((member) => member.workId));
   const removes = publishedMembers.filter((member) => !workingIds.has(member.workId));
-  return {adds, changes, unchanged, removes, total: workingMembers.length};
+  return {adds, changes, unchanged, held, removes, total: workingMembers.length};
 }
 
 // The alias moves in ONE multi-action _aliases call, which is atomic on AWS

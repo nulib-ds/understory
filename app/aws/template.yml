@@ -23,11 +23,11 @@ Parameters:
   OpenSearchEndpoint:
     Type: String
     NoEcho: true
-    Description: "Full https:// endpoint of the OpenSearch domain (used for signed HTTP calls). REQUIRED: the collection works list is served by the index, so a stack without one has no way to list works."
+    Description: "Full https:// endpoint of the OpenSearch domain (used for signed HTTP calls). REQUIRED for publishing: each publish run builds its collection's search index here. The admin works list does not use it."
   SearchIndexPrefix:
     Type: String
     Default: ""
-    Description: "Prefix for this stack's OpenSearch index and alias names. Must be lowercase. Defaults to the stack name. Index names are built as <prefix>._working and <prefix>.<slug>._pub.<runId>, with <prefix>.<slug> as the alias a consuming site points at."
+    Description: "Prefix for this stack's OpenSearch index and alias names. Must be lowercase. Defaults to the stack name. Index names are built as <prefix>.<slug>._pub.<runId>, with <prefix>.<slug> as the alias a consuming site points at."
   # --- CDN and custom domains -------------------------------------------------
   # A dev stack sets none of these: both distributions are still created, and the
   # base URLs point at their generated *.cloudfront.net domains (see Outputs). Only
@@ -298,9 +298,8 @@ Resources:
             Compress: true
             # CachingDisabled: every TTL 0, so this is a pass-through to S3 and
             # every request sees current bytes. That is the point — a save is
-            # followed almost immediately by a read that has to see it, the same
-            # read-your-write constraint behind ?refresh=wait_for on the index,
-            # and any TTL here reads as "the save did nothing".
+            # followed almost immediately by a read that has to see it, and any
+            # TTL here reads as "the save did nothing".
             CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
             ResponseHeadersPolicyId: !Ref IiifCorsPolicy
 
@@ -578,8 +577,8 @@ Resources:
               Action:
                 - events:PutEvents
               Resource: !Sub "arn:aws:events:${AWS::Region}:${AWS::AccountId}:event-bus/default"
-            # The working index is maintained write-through from the save
-            # paths, and the collection works list is a query against it.
+            # The publish routes flip a collection's search alias and drop the
+            # index it leaves; PublishFunction shares this role to build them.
             - Effect: Allow
               Action:
                 - es:ESHttpGet

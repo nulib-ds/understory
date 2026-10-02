@@ -59,9 +59,9 @@ function WorksListPanel({
           {/* The collection's size, and nothing else — it does not move when
               the list is filtered. That is why it comes from the sync counts
               rather than the works response's `total`, which counts only the
-              rows matching the filter ("0 of 0 works match"). Every indexed
-              work carries a syncState (the document builder defaults it to
-              new), so the three buckets sum to the whole collection. */}
+              rows matching the filter ("0 of 0 works match"). Every member
+              lands in exactly one bucket (the server counts an unknown hash
+              as changed), so the three sum to the whole collection. */}
           {collectionSize !== null && (
             <Text size="1" color="gray">
               {collectionSize} work{collectionSize === 1 ? "" : "s"}

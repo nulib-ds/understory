@@ -23,14 +23,7 @@ const {jsonResponse, parseBody, isNotFound} = require("./http");
 const {INTERNAL_PREFIX} = require("../../../shared/space");
 const {AV_PREFIX} = require("../../../shared/av");
 const {readManifest, writeManifest} = require("./store");
-const {
-  upsertQuietly,
-  removeQuietly,
-  listWorks,
-  syncCounts,
-  SYNC_NEW,
-  SYNC_CHANGED,
-} = require("./workIndex");
+const {reconcileQuietly} = require("./collectionStore");
 const {
   principalFromEvent,
   canEditWork,
@@ -42,7 +35,6 @@ const {handleMediaRoute} = require("./mediaRoutes");
 const {
   handleCollectionsRoute,
   handleManifestCollectionRoute,
-  reconcileQuietly,
   fileNewWork,
   desiredCollectionSlugs,
 } = require("./collections");
@@ -200,9 +192,7 @@ exports.handler = async (event) => {
   }
 
   if (event?.action === "importAssets") {
-    // reconcileQuietly is handed in here because collections.js requires
-    // importAssets.js, so importAssets.js cannot require it back.
-    return handleImportAssets({...event, reconcile: reconcileQuietly});
+    return handleImportAssets(event);
   }
 
   const method = event?.requestContext?.http?.method || event?.httpMethod || "GET";
@@ -252,7 +242,8 @@ exports.handler = async (event) => {
         }
         const identifier = crypto.randomUUID();
         const template = createManifestTemplate({ baseUrl: manifestBaseUrl, identifier, label });
-        await writeManifest(identifier, template, {syncState: SYNC_NEW});
+        // skipCollection: filing writes it again, into its collection.
+        await writeManifest(identifier, template, {skipCollection: true});
         const manifest = await fileNewWork({
           identifier,
           manifest: template,
@@ -338,19 +329,13 @@ exports.handler = async (event) => {
           {baseUrl: manifestBaseUrl},
         ),
       );
-      // Three index writes happen in this request, and each used to wait for
-      // an OpenSearch refresh. Only the LAST needs to be searchable when the
-      // response lands — the works list re-reads straight after — so the
-      // earlier ones do not wait. That last one is triggerAssetImport's when
-      // there are canvases to copy, and filing's when there are none.
-      const hasCanvases = Array.isArray(importedManifest.items) && importedManifest.items.length > 0;
-      await writeManifest(identifier, importedManifest, {syncState: SYNC_NEW, waitForIndex: false});
+      // skipCollection: filing writes it again, into its collection.
+      await writeManifest(identifier, importedManifest, {skipCollection: true});
       const filedManifest = await fileNewWork({
         identifier,
         manifest: importedManifest,
         slug: body.collection,
         writeManifest,
-        waitForIndex: !hasCanvases,
       });
       try {
         // `items` is optional in the spec, and a Manifest that omits it threw a
@@ -432,14 +417,10 @@ exports.handler = async (event) => {
             manifest[field] = body[field];
           }
         }
+        // Also refreshes the work's entry in its collection document — the
+        // cached title every downstream consumer sees, and the hash the works
+        // list compares.
         await writeManifest(identifier, manifest);
-        if (updates.includes("label")) {
-          // Collection documents cache each member's title. A stale one is
-          // visible to every downstream consumer of a public IIIF document, so
-          // refresh it here rather than waiting for the next reindex. Membership
-          // is unchanged, so this is usually reads and no writes.
-          await reconcileQuietly({ manifest });
-        }
         return jsonResponse(200, { manifest: manifestDetail(identifier, manifest) });
       } catch (error) {
         if (error.message === "Invalid JSON payload") {
@@ -467,7 +448,6 @@ exports.handler = async (event) => {
         // Truth first (the manifest is gone), projection second. A failure here
         // is logged, not surfaced: the delete itself succeeded, and a reindex
         // repairs the leftovers.
-        await removeQuietly(identifier);
         await reconcileQuietly({ manifest, desired: [], removed: true });
         return jsonResponse(200, { deleted: true });
       } catch (error) {

@@ -91,9 +91,8 @@ import preview could be v2, where `^` is invalid.
 through it; only `published/` is cached by it.** They are path segments under
 one `IIIF_BASE_URL`, not separate hosts, so there is one distribution either
 way. `working/*` gets a zero-TTL behaviour — every save is followed almost
-immediately by a read that has to see it, the same read-your-write constraint
-behind `?refresh=wait_for` on the index, so any TTL there reads as "the save did
-nothing". Working documents are fetched by the browser (Clover previews, the raw
+immediately by a read that has to see it, so any TTL there reads as "the save
+did nothing". Working documents are fetched by the browser (Clover previews, the raw
 manifest link), not by the admin UI's data layer, which goes through the API.
 
 ### Hostnames
@@ -171,7 +170,7 @@ reload on a cached session.
 |---|---|---|
 | `/` | `CollectionsPage` (`ui/src/screens/`) | Built — the home page |
 | `/collections` | redirect to `/` (`ui/next.config.mjs`) | for older links |
-| `/collection/[slug]` | `CollectionWorksPage` | Built — index-backed list, filter, publish panel |
+| `/collection/[slug]` | `CollectionWorksPage` | Built — list served from the collection documents, filter, publish panel |
 | `/collection/[slug]/work/[workId]` | `WorkPage` | Built |
 | `/users` | `UsersPage` | Built — admin only |
 
@@ -267,64 +266,113 @@ route depends on a screen having imported `api.js` first.
 `AssetDropzone` also takes audio and video, which go to the source bucket's
 `av/` prefix instead — see **Audio and video** below.
 
+## The works list
+
+`GET /collections/{slug}/works` is served from the collection's two leaf
+documents, `working/…/collection/{slug}/collection.json` and its `published/`
+twin, read in the Lambda, which then filters and pages
+(`listCollectionWorks`, `app/shared/worksList.js`). No search index is
+involved, so curators browsing never wake OpenSearch, and because S3 reads see
+the latest write, a save is on the list the moment it returns.
+
+Each working member carries three extension terms beside `id`, `label` and
+`thumbnail` (all in `app/shared/collection.js`):
+
+| Term | What it is |
+|---|---|
+| `CONTENT_HASH_KEY` | sha256 of the manifest's stored bytes, as they are now |
+| `ITEM_COUNT_KEY` | the canvas count |
+| `THUMBNAIL_SERVICE_KEY` | the first canvas image service, which the list draws. Not `thumbnail`: a work built in the UI has none, because its canvases carry no thumbnail of their own. |
+
+All three are derived from the manifest, so reindex recomputes them and the
+rule about collection state (see **Collections**) holds. None of them reach
+published output, because the published leaf is built from the run's own
+results, not from the working leaf.
+
+**A row's status is the publish diff.** The published leaf's members carry the
+hash of the working bytes each live copy was made from, so new / changed /
+published is `planPublish` run over the two leaves. That is the same function
+the publish run uses, so a row's badge and what pressing Publish would do to it
+cannot disagree. A member with no recorded hash reads as `changed`, the safe
+direction: a work wrongly shown as unpublished costs a click, but one wrongly
+shown as published is never republished.
+
+**Every save rewrites its leaf.** `writeManifest` (`store.js`) is still the
+single manifest writer. After the PUT it refreshes the work's member entry
+through `reconcileQuietly` (`collectionStore.js`). That makes every edit a
+read-modify-write of one shared object, so leaf and root writes are
+conditional. The read records the ETag, the write sends `IfMatch` (or
+`IfNoneMatch: "*"` for an object that did not exist), and a 412 or 409 re-reads,
+re-plans and retries up to five times, jittered. Creating and deleting a
+collection, and the collection import's `WriteCollection`, write the root the
+same way (`updateRoot`), and re-check their preconditions against the root as
+it is at that moment.
+
+`skipCollection` on `writeManifest` is for a write that a later one supersedes:
+
+- the import walk's per-canvas writes, whose last write does the one refresh;
+- a membership change, whose caller reconciles itself with the returned hash,
+  because only it knows the collection being left (`previous`);
+- every write from the collection import, which must never touch the leaf
+  per work.
+
+The filter is a normalized token match on the label: case and accents are
+folded, every word must appear, and rows stay in the leaf's own label order.
+There is no typo tolerance, where the index's `fuzziness: AUTO` had some. If
+richer admin search (metadata, full text) is ever wanted, bring it back as a
+deliberate search feature that accepts a cold start, not as something the list
+page depends on.
+
+A member is about 600 bytes, so a 5,000-work leaf is roughly 3MB, read
+in-region. The size objection that once kept the list off the leaf was about the
+browser downloading it, and the browser still gets one page.
+
+> **This replaced a working search index** (`{prefix}._working`), maintained
+> write-through on every save with `?refresh=wait_for`. Keeping it usable needed:
+> - a pinned `refresh_interval` (the shared OR1 domain's floor is 5s, and a
+>   create asking for less is refused outright, which once left a stack with no
+>   index and an empty list);
+> - per-request bookkeeping of which write waited;
+> - a Painless scripted update in the publish run, which OpenSearch Serverless
+>   cannot run.
+>
+> Its only readers were the works list, the sync counts and that scripted
+> update, and it only ever searched `title`. A stack deployed before the change
+> still has an orphaned `{prefix}._working` index on the domain. Nothing reads or
+> writes it, and it can be deleted by hand.
+
 ## Search index
 
-One WORKING index per stack, holding every collection and filtered by a `collection` term. Published indexes are per collection, per publish run, behind a stable alias a downstream site points at. Names are built in `app/shared/search.js`:
+Only the published side has indexes: one per collection, per publish run,
+behind a stable alias a downstream site points at. Names are built in
+`app/shared/search.js`:
 
 ```
-{prefix}._working              the admin UI reads this
 {prefix}.{slug}._pub.{runId}   one run's frozen output
 {prefix}.{slug}                alias -> whichever pub index is live
 {prefix}.{slug}._staged        alias -> a candidate awaiting its flip
 ```
 
-Working is **one** index, not one per collection, because the OpenSearch domain is pre-existing and shared by every developer's personal stack. Fifteen collections × three indexes × two shards is ~75 shards per stack, against AWS guidance of 20–25 per GiB of JVM heap — and since OpenSearch 2.17 `cluster.max_shards_per_node` is fixed and cannot be raised. Published stays per collection because that is what makes an alias flip atomic for one collection without touching another's.
+They are per collection because that is what makes an alias flip atomic for one
+collection without touching another's.
 
 Two naming rules, both of which a test exists for:
 
-- **Reserved segments start with `_`, and segment counts differ.** Without that, `{prefix}.working` is both the working index *and* the live alias of a collection someone named "Working".
+- **Reserved segments start with `_`, and segment counts differ.** This mattered
+  most for the retired working index: without the `_`, `{prefix}.working` was
+  also the live alias of a collection named "Working". The names stay as they
+  are, because live aliases are what consuming sites point at.
 - **`.` separates the parts, not `-`.** A slug is `[a-z0-9-]+`, so with a hyphen the staged alias of `my-coll` and the live alias of `my-coll-staged` are the same string.
 
-**The working index is maintained write-through.** Every create, save, move and delete updates exactly one document in the same request that writes S3 — `app/aws/lambdas/manifest/store.js` is the single manifest writer and owns both. A full rebuild is no longer the everyday action; it is `POST /collections/reindex`, a rare repair that rebuilds the collection documents and the index from one pass over the corpus. The index holds no state S3 does not determine, which is what makes that possible and what stops it ever being the authority.
+Candidate writes never wait for a refresh, because nothing reads a candidate
+until its alias flip. Bulk writes use `update` + `doc_as_upsert`, never
+`index`, so a retried batch merges into what an earlier attempt wrote rather than
+replacing it.
 
-The import walk passes `skipIndex`: it rewrites the manifest once per canvas, and a 271-canvas import would otherwise be 271 index writes. It indexes once at the start (with `importing: true`) and once at the end.
-
-Writes ask to become searchable before returning (`?refresh=wait_for`).
-OpenSearch is near-real-time: a write is durable at once but invisible to
-search until the next refresh, 1s by default. Every write here is followed
-almost immediately by a read that has to see it — the works list after a save,
-the sync counts the moment a publish run reports itself finished — and without
-this the UI shows stale rows and stale counts until something re-queries a
-second later, which reads as "the button did nothing". The exception is the
-publish run's writes into its candidate index: nothing reads that until the
-alias flip, so waiting there would only slow the run.
-
-**That makes the refresh interval the latency of every save, so we set it.**
-`ensureIndex` pins the working index's `refresh_interval` after creating it, and
-on an existing index, best effort, since it is a dynamic setting: 1s, or the
-domain's floor when it refuses that. Inherited, it is whatever a template or the
-cluster says. `POST /manifests/import` makes three index writes, and measured
-at ~28–31s it was crossing API Gateway's 30s limit: the browser showed
-"Unable to import that manifest" while the Lambda went on and imported the
-work anyway.
-
-> **The interval is never part of the create request.** The shared dev domain
-> is an OR1 domain: `cluster.minimum.index.refresh_interval` is 5s and the
-> default 10s, and a create asking for less is refused outright. Asking for 1s
-> at creation left the first stack built after the pin with **no working
-> index**: every S3 write succeeded, every index write failed quietly, and every
-> works list was empty. The stacks before it had indexes older than the pin, so
-> it had been failing quietly on them too, and they ran at the 10s default.
-
-**A request waits only on its last index write.** `writeManifest`,
-`fileNewWork` and `upsertQuietly` take `waitForIndex` / `waitFor: false` for a
-write that a later one in the same request supersedes. The import route uses it
-on its first two. Anything new that makes several index writes in one request
-should do the same.
-
-Bulk writes use `update` + `doc_as_upsert`, never `index`. `index` replaces the whole document, so a save racing the publish run's sync-state write would clobber it rather than merge.
-
-Two document shapes, deliberately different. The working document carries `workId`, `collection`, `contentHash`, `syncState` and `importing`; the **published** document carries only `manifestId`, `title`, `thumbnails` and `itemCount` — nothing about how this app works. `thumbnails` is the one addition over the old shape, because a site rendering a result list otherwise has to fetch every manifest to draw it.
+The published document carries only `manifestId`, `title`, `thumbnails` and
+`itemCount`, nothing about how this app works. `thumbnails` is there because a
+site rendering a result list would otherwise have to fetch every manifest to
+draw it.
 
 The domain is not provisioned by this repo, and its resource-based policy is not owned by this template. The shared dev domain's policy grants `es:*` to the whole account (`arn:aws:iam::<account>:root`, checked 2026-10-01), so a dev stack's role needs nothing beyond its own IAM policy. A domain whose policy names roles one by one needs the `OpenSearchAccessRoleArn` stack output added to it after a deploy. It is one ARN: `PublishFunction` shares `ManifestFunction`'s role precisely so it stays one.
 
@@ -338,15 +386,17 @@ Two deliberate user actions, and the order is the point:
 2. The curator rebuilds their static site from the published assets.
 3. **Publish search index** is then a single atomic multi-action `_aliases` call.
 
-The candidate is built in step 1 on purpose. Building it at flip time would index whatever the working index held by then — including edits made during step 2 — which re-opens exactly the drift the two steps exist to close.
+The candidate is built in step 1 on purpose. Building it at flip time would index whatever the working documents held by then — including edits made during step 2 — which re-opens exactly the drift the two steps exist to close.
 
 The pipeline is an **inline Map**, not a Distributed Map: `Plan` writes the work list to S3 and emits only batch indices, so the state payload stays kilobytes against the 256KB limit. That avoids `ItemReader` IAM, the `ResultWriter` payload trap, and the circular dependency a Distributed Map creates by needing `states:StartExecution` on itself. Progress is a count of batch result objects in S3 — each batch owns a distinct key, so nothing contends and a page reload picks the run back up.
 
 Load-bearing, not incidental:
 
-- **`WriteCollection` is built from what the batches actually did, never from the plan.** A work whose write failed is simply absent, so a published collection can never advertise a manifest that 404s. Leaf before root, mirroring `applyReconciliation`.
+- **`WriteCollection` is built from what the batches actually did, never from the plan.** A work whose write failed is simply absent, so a published collection can never advertise a manifest that 404s. Leaf before root, mirroring reconciliation in `collectionStore.js`.
 - **`Invalidate` cannot fail the run.** `published/*` is cached hard at the edge, so the run drops it — ONE wildcard path, `/published/*`, because a wildcard counts as a single invalidation path however many objects it matches and the free allowance is 1,000 paths a month *across the whole account*. Naming each object instead would spend a large collection's share of that on one run, and it cannot be narrowed to the collection anyway: manifests are keyed by work id, not by collection. The task catches its own errors, records the outcome under `cdn` on the status object, and returns normally; the state machine's `Catch` routes to `Finalize`, never `RecordFailure`. By that point every published byte is written and correct, and a stale edge cache is hygiene rather than correctness — reporting the collection as failed would be false in the direction that matters. `runId` is the `CallerReference`, so a retry reuses the existing invalidation instead of paying for a second path.
-- **Each published member carries `CONTENT_HASH_KEY`** (`https://nulib-ds.github.io/understory/ns#contentHash`) — the hash of the working bytes it was made from. That is the record of what is live, and it is why a work edited mid-run correctly shows as changed again afterwards. **The run therefore needs no lock**, and edits are not blocked while it runs.
+- **Each published member carries `CONTENT_HASH_KEY`** (`https://nulib-ds.github.io/understory/ns#contentHash`) — the hash of the working bytes it was made from. That is the record of what is live, it is half of the works list's status column (see **The works list**), and it is why a work edited mid-run correctly shows as changed again afterwards. **The run therefore needs no lock**, and edits are not blocked while it runs.
+- **A batch writes whatever bytes it records.** It re-reads every member and records the hash of what it read, so a work planned as unchanged but edited since `Plan` is written too. Otherwise the published leaf would claim a version that was never published, and the next diff would find nothing to do.
+- **A work still importing is held, not published.** `Plan` reads each member's `internal/import-status/{workId}.json` beside its manifest, and an `in-progress` one is neither written nor removed (`planPublish`'s `held`). If it was live before, its published copy is carried into the new collection and candidate index unchanged, under its old hash. If it never was, it stays unpublished. The count is `held` on the status object. This replaced an `importing` flag on the working index that was written on every import but never actually read.
 - A diff journal written on every save was considered and rejected: a journal drifts the moment a write half-fails or a run dies, and nothing repairs it. Comparing durable artifacts cannot drift.
 - The candidate index is created with a must-fail-if-exists PUT, so two runs starting in the same instant cannot both believe they own it.
 - **Garbage collection only ever deletes an index nothing points at any more**, and never one carrying an alias — so a concurrent run's candidate is safe and a flip is safe to retry. That happens in exactly two places: the flip route deletes the index that just stopped being live, and `Finalize` deletes the candidates its own is replacing (best effort, after the status write).
@@ -366,8 +416,8 @@ app/
     lambdas/
       iiif-image/          # Lambda: converts source images to pyramid TIFFs (Level 2)
       manifest/            # Lambda: the whole API — works, collections, users, publish routes
-        store.js           #   the ONE manifest writer: S3 PUT + working-index upsert together
-        workIndex.js       #   the working index: write-through, works list, sync counts
+        store.js           #   the ONE manifest writer: S3 PUT, then refresh its collection entry
+        collectionStore.js #   collection documents: versioned reads, conditional writes, reconcile
         publishRoutes.js   #   start a run, read its progress, flip the alias
         importRoutes.js    #   collection import: preview, start a run, read its progress
       publish/             # Lambda: PublishStateMachine's task worker
@@ -377,7 +427,8 @@ app/
     space.js               # working/published spaces and their key + URL prefixes
     collection.js          # IIIF Collection documents, slugs, partOf, reconciliation
     publish.js             # the URL-rewriting transform, content hashes, the run plan
-    search.js              # index/alias names and the two document shapes
+    search.js              # published index/alias names and the document shape
+    worksList.js           # the works list and its status column, from two leaves
     access.js              # every authorization decision
     language.js            # IIIF language maps
     sourceFetch.js         # fetching someone else's IIIF doc, and dropping A/V
@@ -648,14 +699,11 @@ staleness check surfaces a Resume button instead of the import looking alive.
 **The walk refreshes the collection when it finishes.** `fileNewWork` writes the
 work's entry into the collection document at FILE time — before this walk has
 copied anything — so the collection cached a label and a thumbnail still pointing
-at the source, and nothing ever came back to correct them. The tail of the walk
-now calls `reconcileQuietly({manifest})`, which is exactly the
-"membership unchanged; refresh cached labels/thumbnails" case
-`reconcileManifestCollections` documents. `reconcile` is **injected by the
-dispatcher** rather than required, because collections.js already requires
-importAssets.js and the reverse would be a cycle — the same reason `fileNewWork`
-takes `writeManifest` as an argument. The collection import has never had this
-problem: its `WriteCollection` runs after every work is copied.
+at the source, and nothing ever came back to correct them. The walk's periodic
+writes pass `skipCollection`, and its last one does not, so that write refreshes
+the work's entry: the copied thumbnail, the canvas count and the hash of the
+finished manifest. The collection import has never had this problem: its
+`WriteCollection` runs after every work is copied.
 
 ## Collection import
 
@@ -724,21 +772,23 @@ and progress is one `ListObjectsV2` — which is also what lets a page reload pi
 a run back up. The run mutex is the conditional write on `status.json`, the same
 `IfNoneMatch`/`IfMatch` pair the publish routes use.
 
-### Indexing is unchanged: per work, on save
+### The works list fills in at the end
 
-`writeManifest` is still the single writer and still indexes in the same call.
-The only nuance is the `skipIndex` flag that already existed for the canvas walk:
-copying canvases rewrites the same manifest repeatedly, so each work is indexed
-explicitly twice instead — once when it is created, so the row appears in the
-works list straight away, and once when its canvases are done, with the content
-hash of the bytes actually stored. The manifest is re-read before that hash is
-taken, because `writeManifest` normalizes `@context` on the way out and hashing
-the in-memory copy would hash something that was never stored.
+Every write a task makes passes `skipCollection`, so a work is not in the
+works list until `WriteCollection` has run. Each task's result carries
+everything that work's member entry needs, including the hash of the bytes
+`writeManifest` reports having stored (never the in-memory copy, which
+`writeManifest` normalizes on the way out). The progress banner covers the
+wait.
 
-> **`RecordFailure` clears `importing` on every work that landed.** That flag is
-> what stops a publish freezing a half-rewritten manifest, so a run that died
-> would otherwise leave the collection unpublishable for ever. Publish needs no
-> equivalent because it writes to a throwaway candidate index; this does not.
+`WriteCollection` also keeps any member the leaf already had that the run did
+not produce, such as a work moved in on its own page mid-run. It writes the leaf
+conditionally, because a curator's save may be rewriting it at the same moment.
+
+> **`RecordFailure` runs `WriteCollection` too, best effort.** A run that died
+> part-way has still filed every work it landed, because each work's `partOf`
+> names the collection. Without this those works would be missing from the works
+> list, and from publishing, until a reindex.
 
 ### Audio and video are dropped
 
@@ -1164,24 +1214,25 @@ The empty-filter row survives from the old collection filter, retargeted to the
 header, or the control disappears with the rows and there is no way to undo it.
 
 Routes: `GET /collections` (one GetObject; creates the root if absent),
-`GET /collections/{slug}/works` (index-backed; carries the collection label and
+`GET /collections/{slug}/works` (served from the two leaves; carries the collection label and
 whole-collection sync counts so the page needs one request),
 `PUT /manifests/{id}/collection` (a move), the three publish routes under
 `/collections/{slug}/publish`, the three import routes
 (`POST /collections/import/preview`, `POST /collections/import`,
 `GET /collections/{slug}/import` — see Collection import above), and
-`POST /collections/reindex` (full rebuild + prune, plus the search index). Reconciliation reads the
+`POST /collections/reindex` (full rebuild + prune, member hashes included). Reconciliation reads the
 **union** of current and desired slugs — never the diff, which would let a retry
 short-circuit after a partial failure — and writes leaves, then the root, then
-deletions, so the root never advertises a collection whose document 404s.
-Reconciliation failure returns 200 with `reconciliation.ok: false`: the
+deletions, so the root never advertises a collection whose document 404s. Every
+leaf and root write is conditional on the version it read (see **The works
+list**). Reconciliation failure returns 200 with `reconciliation.ok: false`: the
 authoritative write already succeeded, so reporting failure would be false in the
 direction that matters.
 
 `POST /collections/reindex` reads the whole corpus behind API Gateway's hard
 30 s integration timeout, so at a few thousand works it will 504 at the gateway
 while the Lambda runs on. It is a rare repair rather than an everyday action —
-the working index is maintained write-through and publishing has its own state
+every save keeps its collection's leaf current, and publishing has its own state
 machine — but if it needs to scale, the pattern to copy is PublishStateMachine,
 not the self-invoke chain in `importAssets.js`.
 
@@ -1279,12 +1330,11 @@ comparison is the thing that breaks.
 
 ### Gotchas
 
-- The **working search index** carries a `collection` keyword field so the works
-  list is one query. It is `keyword`, not `text`, because the filter is a
-  `term` clause. `ensureIndex` PUTs the mapping even when the index already
-  exists (adding a property is idempotent), but existing documents only gain the
-  field when they are next written — **a schema change is not live until a
-  reindex.**
+- **A new member term is not live until a reindex.** A collection member only
+  gains a new extension term when that work is next saved, or when
+  `POST /collections/reindex` rebuilds every leaf. Until then a member written
+  before the content hash existed has none, and so shows as **changed** in the
+  works list. That is the safe direction, but it looks alarming after a deploy.
 - The sign-in showcase is built from the **unfiltered** corpus. Deriving it from
   one caller's visible subset would let whoever triggered the rebuild shrink
   what every anonymous visitor sees.
@@ -1490,7 +1540,7 @@ That is the reason for the split in `app/shared/`, and it is worth keeping delib
 
 | SDK-free, unit-tested | Loads the SDK, not testable from the root |
 |---|---|
-| `space.js`, `collection.js`, `publish.js`, `search.js`, `access.js`, `language.js`, `sourceFetch.js`, `av.js`, `hls.js`, `avImport.js`, `imageRequest.js` | `manifest.js`, `opensearch.js`, `assetCopy.js`, `avCopy.js` |
+| `space.js`, `collection.js`, `publish.js`, `search.js`, `worksList.js`, `access.js`, `language.js`, `sourceFetch.js`, `av.js`, `hls.js`, `avImport.js`, `imageRequest.js` | `manifest.js`, `opensearch.js`, `assetCopy.js`, `avCopy.js` |
 
 Keep `collection.js` free of any `manifest.js` import — `manifest.js` loads the SDK, and the reverse direction would also be a require cycle. `node:crypto` is a core module, so hashing in `publish.js` is fine.
 
@@ -1499,13 +1549,13 @@ There are **no UI tests**. A frontend change's test plan is the manual verificat
 Since the Lambdas cannot be unit-tested, the cheap backend checks worth running before a deploy are:
 
 ```
-npm test                                   # 78 pure tests
+npm test                                   # 166 pure tests
 cd app && npx esbuild aws/lambdas/manifest/index.js --bundle \
   --platform=node --target=node22 '--external:@aws-sdk/*' --outfile=/dev/null
 cd app/aws && sam validate --lint          # offline; needs no credentials
 ```
 
-esbuild resolving the whole graph catches a missing export or a require cycle, and `eslint` in `ui/` has `no-undef` on, which catches a variable that failed to move during a refactor. Note eslint's `varsIgnorePattern: ^[A-Z_]` means it will **not** flag an unused component or icon import — those have to be found by hand. `npm run build` in `ui/` prerenders the static routes, so it also catches browser-only code reached during a server render.
+esbuild resolving the whole graph catches a missing export or a require cycle, and `eslint` in `ui/` has `no-undef` on, which catches a variable that failed to move during a refactor. That config only covers `ui/`; to lint the backend, point `ui/node_modules/.bin/eslint` at `app/` with an inline flat config enabling `no-undef` for CommonJS. Note eslint's `varsIgnorePattern: ^[A-Z_]` means it will **not** flag an unused component or icon import — those have to be found by hand. `npm run build` in `ui/` prerenders the static routes, so it also catches browser-only code reached during a server render.
 
 ## Commit & Pull Request Guidelines
 Use Conventional Commits (`feat:`, `fix:`, `chore:`, etc.) from the start. Reference related GitHub issues in the PR body. Include manual verification steps (`npm test`, sample render) so reviewers can reproduce. Keep PRs focused; split unrelated work into separate branches.

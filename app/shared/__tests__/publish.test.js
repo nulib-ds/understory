@@ -338,3 +338,23 @@ test("publishDocument with no strip list behaves exactly as before", () => {
   assert.equal(document[MANAGED_KEY], true);
   assert.equal(replacements, 1);
 });
+
+// A walk still copying canvases rewrites the manifest as it goes, so a run
+// must neither freeze it half-copied nor drop a version that is already live.
+test("a work mid-import is held: not written, not removed", () => {
+  const plan = planPublish({
+    workingMembers: [
+      {workId: "live-and-importing", contentHash: "h-new", importing: true},
+      {workId: "new-and-importing", contentHash: "h", importing: true},
+      {workId: "ordinary", contentHash: "h2"},
+    ],
+    publishedMembers: [{workId: "live-and-importing", [CONTENT_HASH_KEY]: "h-old"}],
+  });
+  assert.deepEqual(plan.adds.map((m) => m.workId), ["ordinary"]);
+  assert.deepEqual(plan.changes, []);
+  assert.deepEqual(plan.removes, [], "a held work is still a member, so it is not removed");
+  assert.deepEqual(
+    plan.held.map((m) => [m.workId, m.publishedHash]),
+    [["live-and-importing", "h-old"], ["new-and-importing", null]],
+  );
+});

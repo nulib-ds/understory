@@ -4,16 +4,10 @@
 // `presentation/collection/` are a derived projection: maintained incrementally
 // here, and rebuildable from the manifests alone by reindexCollections.
 //
-// planReconciliation is pure and does the thinking; applyReconciliation does the
-// IO in a deliberate order. That split is what makes this testable without
-// mocking the SDK.
-const {
-  S3Client,
-  GetObjectCommand,
-  PutObjectCommand,
-  DeleteObjectCommand,
-  ListObjectsV2Command,
-} = require("@aws-sdk/client-s3");
+// planReconciliation is pure and does the thinking; collectionStore.js does the
+// IO in a deliberate order, with conditional writes. That split is what makes
+// this testable without mocking the SDK.
+const {DeleteObjectCommand, ListObjectsV2Command} = require("@aws-sdk/client-s3");
 
 const {listManifestSummaries} = require("../../../shared/manifest");
 const {extractLabel} = require("../../../shared/language");
@@ -31,16 +25,23 @@ const {
   applyCollections,
   buildCollectionDocument,
   buildRootCollectionDocument,
-  createRootCollectionTemplate,
   rootCollectionSummaries,
   serializeCollection,
-  planReconciliation,
   canonicalizeCollectionLabels,
-  manifestThumbnail,
 } = require("../../../shared/collection");
 const {jsonResponse, parseBody, isNotFound} = require("./http");
-const {WORKING, spaceKey} = require("../../../shared/space");
-const {listWorks, syncCounts, rebuild: rebuildWorkIndex, documentFor: workDocument} = require("./workIndex");
+const {WORKING, PUBLISHED, spaceKey} = require("../../../shared/space");
+const {contentHash} = require("../../../shared/publish");
+const {listCollectionWorks} = require("../../../shared/worksList");
+const {
+  s3,
+  bucket,
+  readJson,
+  writeJson,
+  ensureRoot,
+  updateRoot,
+  reconcileQuietly,
+} = require("./collectionStore");
 const {handlePublishRoute} = require("./publishRoutes");
 const {handleCollectionImportRoute} = require("./importRoutes");
 const {
@@ -51,154 +52,11 @@ const {
 } = require("../../../shared/access");
 const {readImportStatus} = require("./importAssets");
 
-const s3 = new S3Client({});
-const bucket = process.env.IIIF_BUCKET;
 const baseUrl = (process.env.IIIF_BASE_URL || "").replace(/\/$/, "");
 
-// ---------------------------------------------------------------------------
-// S3 access
-// ---------------------------------------------------------------------------
-
-async function streamToString(body) {
-  if (typeof body === "string") return body;
-  if (body && typeof body.transformToString === "function") return body.transformToString();
-  const chunks = [];
-  for await (const chunk of body) chunks.push(chunk);
-  return Buffer.concat(chunks).toString("utf8");
-}
-
-async function readJson(key) {
-  try {
-    const response = await s3.send(new GetObjectCommand({Bucket: bucket, Key: key}));
-    return JSON.parse(await streamToString(response.Body));
-  } catch (error) {
-    if (isNotFound(error)) return null;
-    throw error;
-  }
-}
-
-async function writeJson(key, document) {
-  await s3.send(
-    new PutObjectCommand({
-      Bucket: bucket,
-      Key: key,
-      Body: serializeCollection(document),
-      ContentType: "application/json",
-    }),
-  );
-}
-
-async function readRoot() {
-  return readJson(rootCollectionKey());
-}
-
-// The root must be materialized, not synthesized on read: it is publicly
-// dereferenceable and a downstream consumer must not get a 404. IfNoneMatch
-// makes this a true create-if-absent, so two racing requests can't fight.
-async function ensureRoot() {
-  const existing = await readRoot();
-  if (existing) return existing;
-
-  const template = createRootCollectionTemplate({baseUrl});
-  try {
-    await s3.send(
-      new PutObjectCommand({
-        Bucket: bucket,
-        Key: rootCollectionKey(),
-        Body: serializeCollection(template),
-        ContentType: "application/json",
-        IfNoneMatch: "*",
-      }),
-    );
-  } catch (error) {
-    // Someone else created it between our read and our write. Theirs is fine.
-    if (error?.$metadata?.httpStatusCode !== 412 && error?.name !== "PreconditionFailed") {
-      throw error;
-    }
-    return (await readRoot()) || template;
-  }
-  return template;
-}
-
-// Order matters: every surviving leaf, then the root, then the deletions. That
-// keeps `root ⊆ existing leaf documents` true at every intermediate state, so a
-// crash can never leave the root advertising a collection that 404s.
-async function applyReconciliation(plan) {
-  // Between phases the order is the invariant — leaves, then root, then
-  // deletions, so the root never advertises a document that 404s. Within a
-  // phase the objects are independent, so they go in parallel.
-  await Promise.all(plan.leafWrites.map((write) => writeJson(write.key, write.document)));
-  if (plan.rootChanged) {
-    await writeJson(rootCollectionKey(), plan.rootNext);
-  }
-  await Promise.all(
-    plan.leafDeletes.map((removal) =>
-      s3.send(new DeleteObjectCommand({Bucket: bucket, Key: removal.key})),
-    ),
-  );
-  return {written: plan.leafWrites.length, deleted: plan.leafDeletes.length};
-}
-
-
-// Bring the projection in line with one manifest.
-//
-//   desired === null  -> membership unchanged; refresh cached labels/thumbnails
-//   desired === []    -> remove from everything (used by the delete path)
-//   removed           -> the manifest itself is gone
-async function reconcileManifestCollections({
-  manifest,
-  desired = null,
-  previous,
-  removed = false,
-  root: knownRoot,
-}) {
-  // `previous` must describe the membership as it was BEFORE the manifest was
-  // updated. Deriving it from an already-updated manifest silently drops every
-  // removal out of the touched set, leaving the abandoned collection behind
-  // until the next reindex.
-  const current = previous || managedCollectionRefs(manifest?.partOf, {baseUrl});
-  const target = desired === null ? current : desired;
-
-  const root = knownRoot || (await ensureRoot());
-  const touched = new Set([...current.map((ref) => ref.slug), ...target.map((ref) => ref.slug)]);
-  if (!touched.size) {
-    return {ok: true, written: 0, deleted: 0, collections: rootCollectionSummaries(root)};
-  }
-
-  const leaves = {};
-  await Promise.all(
-    [...touched].map(async (slug) => {
-      leaves[slug] = await readJson(collectionObjectKey(slug));
-    }),
-  );
-
-  const plan = planReconciliation({
-    baseUrl,
-    member: {
-      manifestId: manifest.id,
-      label: extractLabel(manifest.label),
-      thumbnail: manifestThumbnail(manifest),
-    },
-    removed,
-    desired: target,
-    root,
-    leaves,
-  });
-  const result = await applyReconciliation(plan);
-  return {ok: true, ...result, collections: plan.collections};
-}
-
-// Never let projection maintenance fail a request whose authoritative write
-// already succeeded — saying "failed" would be false in the direction that
-// matters. Retrying the same request repairs it, and so does a reindex.
-async function reconcileQuietly(args) {
-  try {
-    return await reconcileManifestCollections(args);
-  } catch (error) {
-    console.error("Collection reconcile failed", error);
-    return {ok: false, error: error.message};
-  }
-}
+// A create or delete the root's current contents refuse — re-checked inside the
+// conditional write, so a lost race is judged against the root as it is now.
+class CollectionConflictError extends Error {}
 
 // ---------------------------------------------------------------------------
 // Public showcase
@@ -366,13 +224,15 @@ async function handleManifestCollectionRoute({
     }
 
     const next = applyCollections(manifest, {baseUrl, collections: canonical});
-    await writeManifest(identifier, next);
+    // skipCollection: this reconcile has to see the collection being LEFT
+    // (`previous`), which writeManifest's own refresh cannot know about.
+    const written = await writeManifest(identifier, next, {skipCollection: true});
 
     const {collections, ...reconciliation} = await reconcileQuietly({
-      manifest: next,
+      manifest: written.manifest,
+      contentHash: written.contentHash,
       desired: canonical,
       previous,
-      root,
     });
     return jsonResponse(200, {
       // Deliberately NOT the whole manifest: a 271-canvas work serializes to
@@ -419,12 +279,16 @@ async function handleCollectionsRoute({method, segments, principal, event}) {
 
   // GET /collections/{slug}/works?q=&from=&size=
   //
-  // Replaces GET /manifests and GET /search together. It is served by the
-  // working index rather than by reading the collection document: at a few
-  // thousand works that document is a multi-megabyte download with no
-  // server-side search, sort or paging. The collection document stays the
-  // authority on membership — it is what publish and repair read — and the
-  // index is the read model the UI queries.
+  // Served from the collection's two leaf documents — working and published —
+  // read here in the Lambda, which then filters and pages. Each working member
+  // carries its own content hash, so a row's status is the same comparison a
+  // publish run makes (listCollectionWorks), and S3 reads see the latest write,
+  // so a save is on the list the moment it returns.
+  //
+  // This used to query a working search index instead, on the grounds that a
+  // leaf of a few thousand works is a multi-megabyte download. That is true of
+  // the BROWSER fetching it; read in-region by the Lambda it is a few hundred
+  // milliseconds at worst, and the browser still gets one page.
   if (segments.length === 3 && segments[2] === "works" && method === "GET") {
     const slug = decodeURIComponent(segments[1]);
     if (!canViewCollection(principal, slug)) {
@@ -434,15 +298,18 @@ async function handleCollectionsRoute({method, segments, principal, event}) {
       const params = event.queryStringParameters || {};
       const size = Math.min(Number(params.size) || 50, 200);
       const from = Math.max(Number(params.from) || 0, 0);
-      const root = await ensureRoot();
+      // Independent reads, so they go together. A slug the root does not list
+      // is a 404 whatever the leaves say.
+      const [root, working, published] = await Promise.all([
+        ensureRoot(),
+        readJson(collectionObjectKey(slug, WORKING)),
+        readJson(collectionObjectKey(slug, PUBLISHED)),
+      ]);
       const known = rootCollectionSummaries(root).find((entry) => entry.slug === slug);
       if (!known) {
         return jsonResponse(404, {error: `No collection called "${slug}"`});
       }
-      const [page, counts] = await Promise.all([
-        listWorks({slug, q: params.q, from, size}),
-        syncCounts(slug),
-      ]);
+      const {counts, ...page} = listCollectionWorks({working, published, q: params.q, from, size});
       return jsonResponse(200, {
         // The label rides along so the page heading needs no second request.
         collection: {slug, label: known.label, id: known.id},
@@ -492,26 +359,40 @@ async function handleCollectionsRoute({method, segments, principal, event}) {
       // becomes identity again.
       const label = sanitizeCollectionLabel(body.label);
       const slug = sanitizeCollectionSlug(body.slug);
-      const root = await ensureRoot();
-      if (rootCollectionSummaries(root).some((entry) => entry.slug === slug)) {
+      const taken = (root) => rootCollectionSummaries(root).some((entry) => entry.slug === slug);
+      if (taken(await ensureRoot())) {
         return jsonResponse(409, {error: `The id "${slug}" is already taken`});
       }
       // An empty IIIF Collection, not a placeholder: `items: []` is what the
       // spec allows and what makes this a real, resolvable document from the
-      // moment it is created.
+      // moment it is created. Leaf before root, so the root never advertises a
+      // document that 404s.
       const document = buildCollectionDocument({baseUrl, slug, label, members: []});
       await writeJson(collectionObjectKey(slug), document);
 
-      const collections = [
-        ...rootCollectionSummaries(root),
-        {slug, label, thumbnail: null, itemCount: 0},
-      ].sort((a, b) => a.label.localeCompare(b.label) || a.slug.localeCompare(b.slug));
-      await writeJson(rootCollectionKey(), buildRootCollectionDocument({baseUrl, collections}));
+      // Conditional, because a save elsewhere may be rewriting the root at the
+      // same moment, and an unconditional write here would undo it — or, two
+      // admins creating collections at once, drop one of them from the register.
+      // The "taken" check is re-run against whatever the root holds by then.
+      const root = await updateRoot((current) => {
+        if (taken(current)) throw new CollectionConflictError(`The id "${slug}" is already taken`);
+        const collections = [
+          ...rootCollectionSummaries(current),
+          {slug, label, thumbnail: null, itemCount: 0},
+        ].sort((a, b) => a.label.localeCompare(b.label) || a.slug.localeCompare(b.slug));
+        return buildRootCollectionDocument({baseUrl, collections});
+      });
 
-      return jsonResponse(201, {collection: {slug, label, id: document.id, itemCount: 0, thumbnail: null}, collections});
+      return jsonResponse(201, {
+        collection: {slug, label, id: document.id, itemCount: 0, thumbnail: null},
+        collections: rootCollectionSummaries(root),
+      });
     } catch (error) {
       if (error instanceof CollectionNameError || error.message === "Invalid JSON payload") {
         return jsonResponse(400, {error: error.message});
+      }
+      if (error instanceof CollectionConflictError) {
+        return jsonResponse(409, {error: error.message});
       }
       console.error("Create collection failed", error);
       return jsonResponse(500, {error: "Unable to create collection"});
@@ -538,11 +419,26 @@ async function handleCollectionsRoute({method, segments, principal, event}) {
           error: `"${summary.label}" still has ${summary.itemCount} work${summary.itemCount === 1 ? "" : "s"}. Remove them from it first.`,
         });
       }
+      // Root before leaf, the reverse of create: the root must never advertise
+      // a collection whose document is already gone. Conditional for the same
+      // reason as create.
+      const next = await updateRoot((current) => {
+        // Re-checked against the root as it is now: a work moved in since the
+        // check above would otherwise be left in a collection that no longer
+        // exists.
+        const now = rootCollectionSummaries(current).find((entry) => entry.slug === slug);
+        if (now?.itemCount) throw new CollectionConflictError(`"${now.label}" is no longer empty.`);
+        return buildRootCollectionDocument({
+          baseUrl,
+          collections: rootCollectionSummaries(current).filter((entry) => entry.slug !== slug),
+        });
+      });
       await s3.send(new DeleteObjectCommand({Bucket: bucket, Key: collectionObjectKey(slug)}));
-      const collections = rootCollectionSummaries(root).filter((entry) => entry.slug !== slug);
-      await writeJson(rootCollectionKey(), buildRootCollectionDocument({baseUrl, collections}));
-      return jsonResponse(200, {deleted: true, collections});
+      return jsonResponse(200, {deleted: true, collections: rootCollectionSummaries(next)});
     } catch (error) {
+      if (error instanceof CollectionConflictError) {
+        return jsonResponse(409, {error: error.message});
+      }
       console.error("Delete collection failed", error);
       return jsonResponse(500, {error: "Unable to delete collection"});
     }
@@ -572,7 +468,7 @@ async function handleCollectionsRoute({method, segments, principal, event}) {
   return jsonResponse(404, {error: "Unknown endpoint"});
 }
 
-// Full rebuild, mirroring POST /search/reindex.
+// Full rebuild of the working collection documents.
 //
 // MEMBERSHIP is still a pure function of the manifest corpus — that is what
 // makes partial writes, hand-edits and base-URL changes repairable by one
@@ -580,25 +476,22 @@ async function handleCollectionsRoute({method, segments, principal, event}) {
 // no members, and nothing in the manifests records it. So this merges the
 // corpus with the collections the root already declares, and prunes only what
 // neither source knows about.
+//
+// Each member's content hash is recomputed in the same pass, so this is also
+// what repairs the works list's status column, and what gives members written
+// before hashes were recorded one.
 async function reindexCollections() {
   const startedAt = Date.now();
-  // Repair rebuilds the working search index from the same pass. The index
-  // holds no state S3 does not determine, which is what makes that possible —
-  // and what stops it from ever being the authority.
-  const indexDocs = [];
+  const hashes = new Map();
   const [summaries, root] = await Promise.all([
     listManifestSummaries({
       s3,
       bucket,
       onManifest: ({identifier, manifest}) => {
-        indexDocs.push(
-          workDocument(identifier, manifest, {
-            // Re-serializing is faithful here: these bytes were written by the
-            // same JSON.stringify(x, null, 2), and object key order survives a
-            // parse/stringify round trip.
-            bytes: JSON.stringify(manifest, null, 2),
-          }),
-        );
+        // Re-serializing is faithful here: these bytes were written by the same
+        // JSON.stringify(x, null, 2), and object key order survives a
+        // parse/stringify round trip.
+        hashes.set(identifier, contentHash(JSON.stringify(manifest, null, 2)));
       },
     }),
     ensureRoot(),
@@ -614,10 +507,15 @@ async function reindexCollections() {
       if (!bySlug.has(ref.slug)) bySlug.set(ref.slug, {labels: [], members: []});
       const group = bySlug.get(ref.slug);
       group.labels.push({identifier: summary.identifier, label: ref.label});
+      // memberFromManifest's shape, from the summary — the manifest itself is
+      // not held onto, to keep the pass's memory flat across the corpus.
       group.members.push({
         manifestId: summary.manifestUrl,
         label: summary.label,
         thumbnail: summary.thumbnail,
+        contentHash: hashes.get(summary.identifier),
+        itemCount: summary.itemCount,
+        thumbnailService: summary.thumbnails?.[0] || null,
       });
     }
   }
@@ -659,7 +557,6 @@ async function reindexCollections() {
   await writeJson(rootCollectionKey(), buildRootCollectionDocument({baseUrl, collections}));
 
   const deleted = await pruneCollections(new Set(bySlug.keys()));
-  const index = await rebuildWorkIndex(indexDocs);
   // The public sign-in sample used to ride on GET /manifests, which is gone.
   // This pass has already paid for the corpus read, so it lands here until
   // the publish run takes it over and builds it from published works instead.
@@ -670,7 +567,6 @@ async function reindexCollections() {
     manifests: summaries.length,
     written,
     deleted,
-    index,
     tookMs: Date.now() - startedAt,
   };
 }
@@ -703,14 +599,19 @@ async function pruneCollections(keep) {
 // Files a freshly created work into collections. Shared by the create and the
 // import route so both apply membership the same way; `previous` is empty by
 // construction, since the work did not exist a moment ago.
-async function fileNewWork({identifier, manifest, slug, writeManifest, waitForIndex = true}) {
+async function fileNewWork({identifier, manifest, slug, writeManifest}) {
   const desired = parseDesiredCollections({collections: slug ? [slug] : []});
   if (!desired.length) return manifest;
   const root = await ensureRoot();
   const canonical = canonicalizeCollectionLabels(desired, root);
   const next = applyCollections(manifest, {baseUrl, collections: canonical});
-  await writeManifest(identifier, next, {waitForIndex});
-  await reconcileQuietly({manifest: next, desired: canonical, previous: [], root});
+  const written = await writeManifest(identifier, next, {skipCollection: true});
+  await reconcileQuietly({
+    manifest: written.manifest,
+    contentHash: written.contentHash,
+    desired: canonical,
+    previous: [],
+  });
   return next;
 }
 
@@ -725,14 +626,9 @@ module.exports = {
   fileNewWork,
   desiredCollectionSlugs,
   refreshShowcase,
-  applyReconciliation,
-  reconcileManifestCollections,
-  reconcileQuietly,
   parseDesiredCollections,
   parseDesiredCollection,
   handleCollectionsRoute,
   handleManifestCollectionRoute,
   reindexCollections,
-  ensureRoot,
-  readRoot,
 };

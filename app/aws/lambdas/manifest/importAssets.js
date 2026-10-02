@@ -7,8 +7,7 @@ const {LambdaClient, InvokeCommand} = require("@aws-sdk/client-lambda");
 // One writer, shared with index.js: a private copy here is how the search
 // index silently stopped tracking imported works.
 const {readManifest, writeManifest} = require("./store");
-const {upsertQuietly, SYNC_NEW} = require("./workIndex");
-const {INTERNAL_PREFIX} = require("../../../shared/space");
+const {importStatusKey} = require("../../../shared/space");
 // The canvas copy itself, shared with the collection import state machine.
 const {copyCanvasAsset, copyManifestThumbnail} = require("../../../shared/assetCopy");
 
@@ -31,12 +30,6 @@ const IMPORT_BUDGET_MS = 600000;
 // finishing always forces a write, so the status never lags behind reality.
 const STATUS_THROTTLE_MS = 400;
 
-// Outside presentation/ so publish can treat working/presentation/** as
-// "everything a site needs" without filtering, and outside the public bucket
-// policy so operational objects are not world-readable.
-function importStatusKey(identifier) {
-  return `${INTERNAL_PREFIX}/import-status/${identifier}.json`;
-}
 
 
 
@@ -49,7 +42,10 @@ function importStatusKey(identifier) {
 // Still not atomic, but the window shrinks from minutes to one S3 round-trip.
 // The principled fix is a conditional write on the ETag, which belongs in its
 // own change because it touches every writer.
-async function writeManifestItems(identifier, manifest) {
+//
+// `skipCollection` stays on for the walk's periodic writes; the last one turns
+// it off, which is the single collection-entry refresh for the whole walk.
+async function writeManifestItems(identifier, manifest, {skipCollection = true} = {}) {
   let current;
   try {
     current = await readManifest(identifier);
@@ -66,9 +62,7 @@ async function writeManifestItems(identifier, manifest) {
   } else {
     delete current.thumbnail;
   }
-  // skipIndex: the walk rewrites this once per canvas. The import indexes
-  // once when it starts and once when it finishes.
-  await writeManifest(identifier, current, {skipIndex: true});
+  await writeManifest(identifier, current, {skipCollection});
 }
 
 async function writeImportStatus(identifier, status) {
@@ -119,14 +113,10 @@ async function triggerAssetImport({identifier, total, skipped = []}) {
     }
     return;
   }
+  // "in-progress" here is what a publish run reads to hold this work back
+  // rather than freeze a half-rewritten manifest, and what the Move route reads
+  // to refuse a move that the walk's next write would revert.
   await writeImportStatus(identifier, {status: "in-progress", total, completed: 0, skipped});
-  // The walk skips indexing per canvas, so the index is stamped here and again
-  // at the end. `importing` is what lets a publish refuse to freeze a
-  // half-rewritten manifest.
-  await upsertQuietly(identifier, await readManifest(identifier), {
-    syncState: SYNC_NEW,
-    importing: true,
-  });
   await invokeSelf({action: "importAssets", identifier, canvasIndex: 0});
 }
 
@@ -180,12 +170,7 @@ async function handleImportFailure(event) {
   });
 }
 
-// `reconcile` is injected by the dispatcher rather than required, because
-// collections.js already requires THIS module (for readImportStatus) and the
-// reverse direction would be a cycle — the same reason fileNewWork takes
-// `writeManifest` as an argument. It is re-supplied on every invocation,
-// including the self-invoked handoffs, so it survives the chain.
-async function handleImportAssets({identifier, canvasIndex, reconcile}) {
+async function handleImportAssets({identifier, canvasIndex}) {
   if (!identifier || typeof canvasIndex !== "number" || canvasIndex > MAX_CANVAS_INDEX) {
     console.error("Import-assets: invalid or runaway payload", {identifier, canvasIndex});
     if (identifier) {
@@ -359,26 +344,14 @@ async function handleImportAssets({identifier, canvasIndex, reconcile}) {
     manifest,
     onPhase: (phase) => writeImportStatus(identifier, {...finishing, phase}).catch(() => {}),
   });
-  await writeManifestItems(identifier, manifest);
-  // The one index write for the whole walk: thumbnails, item count and the
-  // content hash all settle here. Re-read rather than trusting the in-memory
-  // copy, which the walk has been mutating.
-  const finalManifest = await readManifest(identifier);
-  await upsertQuietly(identifier, finalManifest, {
-    bytes: JSON.stringify(finalManifest, null, 2),
-    syncState: SYNC_NEW,
-    importing: false,
-  });
-  // Refresh the collection's cached copy of this work.
+  // The one collection-entry refresh for the whole walk: thumbnails, canvas
+  // count and the content hash all settle here.
   //
   // fileNewWork wrote that entry when the work was FILED, which is before this
-  // walk had copied anything — so the collection cached a label and a thumbnail
-  // still pointing at the source, and nothing ever came back to correct them.
-  // `desired: null` is exactly the "membership unchanged; refresh cached
-  // labels/thumbnails" case reconcileManifestCollections documents.
-  if (reconcile) {
-    await reconcile({manifest: finalManifest});
-  }
+  // walk had copied anything — so it still carries a thumbnail pointing at the
+  // source and a hash of the uncopied manifest. Without this nothing ever came
+  // back to correct them.
+  await writeManifestItems(identifier, manifest, {skipCollection: false});
   // A canvas that failed to copy still points at the source, so the import is
   // not "complete" just because the walk reached the end.
   await writeImportStatus(identifier, {

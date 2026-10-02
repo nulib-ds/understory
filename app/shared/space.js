@@ -20,6 +20,12 @@ const SPACES = [WORKING, PUBLISHED];
 // without filtering, and outside the public bucket policy.
 const INTERNAL_PREFIX = "internal";
 
+// One work's asset-import progress. Here rather than in importAssets.js because
+// the publish run reads it too, to hold back a work that is still importing.
+function importStatusKey(identifier) {
+  return `${INTERNAL_PREFIX}/import-status/${identifier}.json`;
+}
+
 class SpaceError extends Error {}
 
 function assertSpace(space) {
@@ -47,6 +53,7 @@ module.exports = {
   PUBLISHED,
   SPACES,
   INTERNAL_PREFIX,
+  importStatusKey,
   SpaceError,
   assertSpace,
   spaceKey,

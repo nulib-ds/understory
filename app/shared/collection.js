@@ -22,8 +22,8 @@ const ROOT_COLLECTION_LABEL = "All Collections";
 const PRESENTATION_CONTEXT = "http://iiif.io/api/presentation/3/context.json";
 
 // A registered-extension-style namespace, per the IIIF extension guidance. It is
-// an identifier, not a document: nothing has to be served there. publish.js
-// builds its own term from it too, so this is the only place the IRI is written.
+// an identifier, not a document: nothing has to be served there. Every term is
+// built from it here, so this is the only place the IRI is written.
 const EXTENSION_NAMESPACE = "https://nulib-ds.github.io/understory/ns#";
 // Absolute IRIs, not compact ones. A compact IRI needs a prefix declared in
 // @context, and declaring one means putting an object into the @context array —
@@ -31,6 +31,17 @@ const EXTENSION_NAMESPACE = "https://nulib-ds.github.io/understory/ns#";
 // normalizeContext). An absolute IRI expands on its own.
 const MANAGED_KEY = `${EXTENSION_NAMESPACE}managed`;
 const ITEM_COUNT_KEY = `${EXTENSION_NAMESPACE}itemCount`;
+// sha256 of a manifest's stored bytes, on a collection member. In the working
+// leaf it is the hash of the working bytes NOW; in the published leaf it is the
+// hash of the working bytes the published copy was made from. A work is in sync
+// exactly when the two agree, which is the whole of the works list's status
+// column and of the publish run's diff.
+const CONTENT_HASH_KEY = `${EXTENSION_NAMESPACE}contentHash`;
+// The image service the works list draws a row's thumbnail from: the first
+// canvas that has one (canvasThumbnailService). Not the member's `thumbnail`,
+// which is the work's own chosen image and which a work built in the UI does
+// not have — its canvases carry no thumbnail of their own.
+const THUMBNAIL_SERVICE_KEY = `${EXTENSION_NAMESPACE}thumbnailService`;
 
 const MAX_LABEL_LENGTH = 200;
 const MAX_SLUG_LENGTH = 96;
@@ -260,7 +271,11 @@ function applyCollections(manifest, {baseUrl, collections}) {
   return next;
 }
 
-function buildManifestReference({manifestId, label, thumbnail}) {
+// The three extension terms are each written only when known. A missing hash in
+// particular must stay missing rather than defaulting to anything: it reads as
+// "changed", which is the safe direction — a work wrongly shown as unpublished
+// costs a click, one wrongly shown as published is never republished.
+function buildManifestReference({manifestId, label, thumbnail, contentHash, itemCount, thumbnailService}) {
   const reference = {
     id: manifestId,
     type: "Manifest",
@@ -269,7 +284,67 @@ function buildManifestReference({manifestId, label, thumbnail}) {
   if (thumbnail && thumbnail.length) {
     reference.thumbnail = thumbnail;
   }
+  if (typeof contentHash === "string" && contentHash) {
+    reference[CONTENT_HASH_KEY] = contentHash;
+  }
+  if (Number.isInteger(itemCount)) {
+    reference[ITEM_COUNT_KEY] = itemCount;
+  }
+  if (typeof thumbnailService === "string" && thumbnailService) {
+    reference[THUMBNAIL_SERVICE_KEY] = thumbnailService;
+  }
   return reference;
+}
+
+// The inverse of buildManifestReference: a stored member back into the shape
+// the builders take, carrying every term through. Reconciliation rebuilds every
+// leaf it touches from its members, so a term this drops is silently erased
+// from every work in the collection that the save was not about.
+function memberFromReference(item) {
+  return {
+    manifestId: item.id,
+    label: extractLabel(item.label),
+    thumbnail: item.thumbnail || null,
+    contentHash: item[CONTENT_HASH_KEY],
+    itemCount: item[ITEM_COUNT_KEY],
+    thumbnailService: item[THUMBNAIL_SERVICE_KEY],
+  };
+}
+
+// The painting body's image service, or — for an audio/video canvas, whose
+// body has none — its poster's. An imported A/V poster is copied onto our Image
+// API (avCopy.js), so a video work gets a works-list and search thumbnail like
+// any other. An uploaded video's MediaConvert poster has no service, so that
+// one still has none here.
+//
+// Lives here rather than in manifest.js, which re-exports it, because the
+// collection member needs it and manifest.js loads the AWS SDK.
+function canvasThumbnailService(canvas) {
+  const service =
+    canvas?.items?.[0]?.items?.[0]?.body?.service?.[0] || canvas?.thumbnail?.[0]?.service?.[0];
+  return service?.id || null;
+}
+
+// What a working leaf records about one work, derived from the manifest alone
+// plus the hash of the bytes it was stored as — which only the writer knows,
+// because hashing a re-serialization would report changes that are not changes.
+function memberFromManifest(manifest, {contentHash} = {}) {
+  const items = Array.isArray(manifest?.items) ? manifest.items : [];
+  return {
+    manifestId: manifest.id,
+    label: extractLabel(manifest.label),
+    thumbnail: manifestThumbnail(manifest),
+    contentHash,
+    itemCount: items.length,
+    thumbnailService: items.map(canvasThumbnailService).find(Boolean) || null,
+  };
+}
+
+// {space}/presentation/manifest/{workId}/manifest.json -> workId, in either
+// space. The work id is what the two leaves are joined on.
+function workIdFromManifestUrl(url) {
+  const match = /\/presentation\/manifest\/([^/]+)\/manifest\.json$/.exec(url || "");
+  return match ? match[1] : null;
 }
 
 // An entry in the root collection. Carries the item count twice on purpose:
@@ -422,9 +497,10 @@ function canonicalizeCollectionLabels(desired, root) {
 // therefore has to merge with the root rather than rebuild purely from the
 // corpus — see reindexCollections.
 //
-//   member  — {manifestId, label, thumbnail}. manifestId is always required:
-//             it is how a work is found and dropped from a leaf's member list,
+//   member  — memberFromManifest's shape. manifestId is always required: it is
+//             how a work is found and dropped from a leaf's member list,
 //             including on the delete path where there is nothing to re-add.
+//             Every OTHER member keeps its terms as stored (memberFromReference).
 //   removed — the manifest itself is gone; drop it everywhere, add it nowhere
 //   desired — the slugs the work should belong to, as [{slug, label}]
 //   leaves  — {slug: document | null} for every slug in the union of the work's
@@ -439,8 +515,8 @@ function planReconciliation({baseUrl, member, removed = false, desired, root, le
 
   const leafWrites = [];
   // Never populated here any more: reconciliation cannot remove a collection,
-  // only empty it. Kept in the plan's shape because applyReconciliation still
-  // executes deletes for the explicit DELETE /collections/{slug} route.
+  // only empty it. Kept in the plan's shape, and still executed by
+  // reconcileManifestCollections, so a plan that ever needs one can say so.
   const leafDeletes = [];
 
   // Sorted, so the plan is a function of its inputs' *values* and not of the
@@ -449,19 +525,11 @@ function planReconciliation({baseUrl, member, removed = false, desired, root, le
     const existing = leaves[slug];
     const keep = membersOf(existing).filter((item) => item.id !== member.manifestId);
     if (!removed && desiredBySlug.has(slug)) {
-      keep.push({
-        id: member.manifestId,
-        label: {none: [member.label]},
-        ...(member.thumbnail?.length ? {thumbnail: member.thumbnail} : {}),
-      });
+      keep.push(buildManifestReference(member));
     }
 
     const label = summaryBySlug.get(slug)?.label || desiredBySlug.get(slug)?.label || extractLabel(existing?.label) || slug;
-    const members = sortMembers(keep).map((item) => ({
-      manifestId: item.id,
-      label: extractLabel(item.label),
-      thumbnail: item.thumbnail || null,
-    }));
+    const members = sortMembers(keep).map(memberFromReference);
     const document = buildCollectionDocument({baseUrl, slug, label, members});
 
     if (!existing || serializeCollection(existing) !== serializeCollection(document)) {
@@ -500,6 +568,8 @@ module.exports = {
   EXTENSION_NAMESPACE,
   MANAGED_KEY,
   ITEM_COUNT_KEY,
+  CONTENT_HASH_KEY,
+  THUMBNAIL_SERVICE_KEY,
   MAX_LABEL_LENGTH,
   MAX_SLUG_LENGTH,
   MAX_COLLECTIONS_PER_WORK,
@@ -522,6 +592,11 @@ module.exports = {
   stripForeignManagedEntries,
   applyCollections,
   buildManifestReference,
+  memberFromReference,
+  memberFromManifest,
+  canvasThumbnailService,
+  workIdFromManifestUrl,
+  membersOf,
   buildCollectionReference,
   buildCollectionDocument,
   buildRootCollectionDocument,

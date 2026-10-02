@@ -1,10 +1,12 @@
 // Signed HTTP against the OpenSearch domain.
 //
-// Lifted out of the search Lambda so the manifest API (write-through on save,
-// the collection works list) and the publish pipeline share one client. Like
-// manifest.js this loads the AWS SDK, so it cannot be unit-tested from the
-// repo root — keep the naming rules and document shapes in search.js, which is
-// pure, and keep this file to IO.
+// Only the published side uses it: the publish run builds each candidate
+// index, and the flip route moves the alias. The admin works list used to read
+// a working index through here too; it reads the collection documents now
+// (worksList.js), so nothing on the save path talks to OpenSearch. Like
+// manifest.js this loads the AWS SDK, so it cannot be unit-tested from the repo
+// root — keep the naming rules and document shapes in search.js, which is pure,
+// and keep this file to IO.
 //
 // No OpenSearch client library: a signed fetch is the whole requirement, and
 // the SDK v3 signer is already a dependency.
@@ -15,17 +17,6 @@ const {HttpRequest} = require("@smithy/protocol-http");
 const {Sha256} = require("@aws-crypto/sha256-js");
 
 const BULK_BATCH_SIZE = 500;
-
-// OpenSearch is near-real-time: a write is durable immediately but is not
-// visible to search until the next refresh, which is 1s by default. Every
-// write here is followed almost at once by a read that has to see it — the
-// works list after a save, the sync counts the moment a publish run reports
-// itself finished — so those writes ask to become searchable before returning.
-//
-// The cost is up to one refresh interval of added latency, which is the right
-// trade: without it the UI shows stale rows and stale counts until something
-// makes it re-query a second later, which reads as "the button did nothing".
-const WAIT_FOR = {refresh: "wait_for"};
 
 const rawEndpoint = process.env.OPENSEARCH_ENDPOINT || "";
 
@@ -116,76 +107,6 @@ function expectOk(response, what) {
   return response;
 }
 
-// Idempotent: adding a property to an existing mapping is allowed. Note that
-// existing documents only gain a new field when they are next written, so a
-// mapping change is not live until a reindex.
-// refresh_interval is set explicitly, not inherited. Every write here waits
-// for the next refresh (WAIT_FOR, above), so the interval IS the latency of
-// every save — and on a shared domain it is whatever an index template or a
-// cluster default says, which this code does not control. An import request,
-// which makes several such writes, went from comfortably fast to ~30s and past
-// API Gateway's limit. 1s is OpenSearch's own default, and this is a tiny
-// index, so pinning it costs the shared cluster nothing it was not already
-// designed for.
-//
-// It is never part of the create request. A domain can set a floor, and the
-// shared dev domain does (an OR1 domain: cluster.minimum.index.refresh_interval
-// 5s, default 10s). A create asking for less is refused outright, so a new
-// stack got no working index at all: every S3 write succeeded, every index
-// write failed quietly, and every works list came back empty.
-const DEFAULT_INDEX_SETTINGS = {number_of_shards: 1, number_of_replicas: 0, refresh_interval: "1s"};
-
-// Resolves true when this call created the index.
-async function ensureIndex(name, properties, settings = DEFAULT_INDEX_SETTINGS) {
-  const {refresh_interval: refreshInterval, ...createSettings} = settings;
-  let created = false;
-  const head = await osRequest("HEAD", `/${name}`);
-  if (head.status === 200) {
-    expectOk(
-      await osRequest("PUT", `/${name}/_mapping`, JSON.stringify({properties})),
-      `Failed to update mapping for ${name}`,
-    );
-  } else {
-    const response = await osRequest(
-      "PUT",
-      `/${name}`,
-      JSON.stringify({settings: createSettings, mappings: {properties}}),
-    );
-    // Another writer can create it between our HEAD and this PUT: a fresh
-    // stack's first collection import starts five batches at once. Theirs
-    // will do. The opposite of createIndexExclusive, where "already exists"
-    // means a rival publish run owns the candidate.
-    if (response.json?.error?.type !== "resource_already_exists_exception") {
-      expectOk(response, `Failed to create index ${name}`);
-      created = true;
-    }
-  }
-  if (refreshInterval) await pinRefreshInterval(name, refreshInterval);
-  return created;
-}
-
-// refresh_interval is a dynamic setting, so this also brings an index created
-// before it, or given another interval by a template, into line. Best effort:
-// failing here must not stop the write that called ensure, and a permission
-// the shared domain withholds would otherwise do exactly that.
-async function pinRefreshInterval(name, interval) {
-  const put = (value) =>
-    osRequest("PUT", `/${name}/_settings`, JSON.stringify({index: {refresh_interval: value}})).catch(
-      (error) => ({status: 0, text: error.message}),
-    );
-  let response = await put(interval);
-  // Below the domain's floor, settle for the floor. It is named only in the
-  // refusal ("…cannot be smaller than cluster.minimum.index.refresh_interval
-  // [5s]"): reading cluster settings instead needs a permission a scoped
-  // domain policy can withhold.
-  const floor =
-    response.status === 400 && /minimum\.index\.refresh_interval \[([^\]]+)\]/.exec(response.text || "")?.[1];
-  if (floor) response = await put(floor);
-  if (response.status >= 300 || response.status === 0) {
-    console.warn(`Could not set refresh_interval on ${name}: ${response.status} ${response.text}`);
-  }
-}
-
 // Fails if the index already exists, rather than treating that as success.
 // Two publish runs starting in the same instant must not both believe they own
 // the candidate; the loser has to find out.
@@ -209,11 +130,12 @@ function buildBulkBody(lines) {
   return lines.map((line) => JSON.stringify(line)).join("\n") + "\n";
 }
 
-// `update` with doc_as_upsert, NOT `index`. `index` replaces the whole
-// document, so two writers racing on the same work — a save and the publish
-// run's sync-state write — would clobber each other's fields rather than
-// merging.
-async function bulkUpsert(index, docs, idOf = (doc) => doc.workId, {waitFor = true} = {}) {
+// `update` with doc_as_upsert, NOT `index`, so a retried batch merges into
+// what an earlier attempt wrote rather than replacing it.
+//
+// Never asks for a refresh: nothing reads a candidate index until its alias
+// flip, so waiting for one per batch would only slow the run.
+async function bulkUpsert(index, docs, idOf = (doc) => doc.workId) {
   let indexed = 0;
   let failed = 0;
   for (let i = 0; i < docs.length; i += BULK_BATCH_SIZE) {
@@ -223,13 +145,7 @@ async function bulkUpsert(index, docs, idOf = (doc) => doc.workId, {waitFor = tr
       lines.push({update: {_index: index, _id: idOf(doc)}});
       lines.push({doc, doc_as_upsert: true});
     }
-    const response = await osRequest(
-      "POST",
-      "/_bulk",
-      buildBulkBody(lines),
-      "application/x-ndjson",
-      waitFor ? WAIT_FOR : undefined,
-    );
+    const response = await osRequest("POST", "/_bulk", buildBulkBody(lines), "application/x-ndjson");
     if (response.status >= 300) {
       failed += batch.length;
       console.error("Bulk upsert batch failed", response.status, response.text);
@@ -242,107 +158,6 @@ async function bulkUpsert(index, docs, idOf = (doc) => doc.workId, {waitFor = tr
     }
   }
   return {indexed, failed};
-}
-
-// Bulk scripted update. Unlike bulkUpsert this can read the stored document
-// before deciding, which is what makes a guarded write possible: a save that
-// landed while a publish run was walking must stay "changed" rather than being
-// quietly marked published.
-async function bulkScriptedUpdate(index, updates, {waitFor = true} = {}) {
-  if (!updates.length) return {updated: 0, failed: 0};
-  let updated = 0;
-  let failed = 0;
-  for (let i = 0; i < updates.length; i += BULK_BATCH_SIZE) {
-    const batch = updates.slice(i, i + BULK_BATCH_SIZE);
-    const lines = [];
-    for (const entry of batch) {
-      lines.push({update: {_index: index, _id: entry.id}});
-      lines.push({script: entry.script});
-    }
-    const response = await osRequest(
-      "POST",
-      "/_bulk",
-      buildBulkBody(lines),
-      "application/x-ndjson",
-      waitFor ? WAIT_FOR : undefined,
-    );
-    if (response.status >= 300) {
-      failed += batch.length;
-      console.error("Bulk scripted update failed", response.status, response.text);
-      continue;
-    }
-    for (const item of response.json?.items || []) {
-      const result = item.update || {};
-      if (result.status && result.status >= 300) failed += 1;
-      else updated += 1;
-    }
-  }
-  return {updated, failed};
-}
-
-
-async function bulkDelete(index, ids) {
-  if (!ids.length) return 0;
-  let deleted = 0;
-  for (let i = 0; i < ids.length; i += BULK_BATCH_SIZE) {
-    const batch = ids.slice(i, i + BULK_BATCH_SIZE);
-    const lines = batch.map((id) => ({delete: {_index: index, _id: id}}));
-    const response = await osRequest("POST", "/_bulk", buildBulkBody(lines), "application/x-ndjson");
-    if (response.status >= 300) {
-      console.error("Bulk delete batch failed", response.status, response.text);
-      continue;
-    }
-    deleted += batch.length;
-  }
-  return deleted;
-}
-
-async function deleteDocument(index, id) {
-  const response = await osRequest(
-    "DELETE",
-    `/${index}/_doc/${encodeURIComponent(id)}`,
-    undefined,
-    "application/json",
-    WAIT_FOR,
-  );
-  // 404 means it was never indexed, which is the state we wanted anyway.
-  if (response.status >= 300 && response.status !== 404) {
-    throw new OpenSearchError(`Failed to delete ${id}: ${response.status} ${response.text}`, response.status);
-  }
-  return response.status === 200;
-}
-
-async function search(index, body) {
-  const response = await osRequest("POST", `/${index}/_search`, JSON.stringify(body));
-  // A collection whose index has not been written to yet is empty, not broken.
-  if (response.status === 404) return {hits: {hits: [], total: {value: 0}}, aggregations: {}};
-  expectOk(response, `Search on ${index} failed`);
-  return response.json || {};
-}
-
-// Every id in the index, paged with search_after. Used by the repair path to
-// find documents whose work no longer exists in S3.
-async function allDocumentIds(index, filter) {
-  const ids = [];
-  let searchAfter;
-  for (;;) {
-    const body = {
-      size: 1000,
-      sort: [{_id: "asc"}],
-      _source: false,
-      query: filter || {match_all: {}},
-      ...(searchAfter ? {search_after: searchAfter} : {}),
-    };
-    const response = await osRequest("POST", `/${index}/_search`, JSON.stringify(body));
-    if (response.status === 404) break;
-    expectOk(response, `Failed to list ids in ${index}`);
-    const hits = response.json?.hits?.hits || [];
-    if (!hits.length) break;
-    for (const hit of hits) ids.push(hit._id);
-    searchAfter = hits[hits.length - 1].sort;
-    if (hits.length < 1000) break;
-  }
-  return ids;
 }
 
 // A multi-action _aliases POST is atomic on AWS OpenSearch Service: readers
@@ -376,14 +191,8 @@ module.exports = {
   configured,
   OpenSearchError,
   osRequest,
-  ensureIndex,
   createIndexExclusive,
   bulkUpsert,
-  bulkScriptedUpdate,
-  bulkDelete,
-  deleteDocument,
-  search,
-  allDocumentIds,
   updateAliases,
   getAliases,
   deleteIndex,

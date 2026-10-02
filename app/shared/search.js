@@ -4,21 +4,20 @@
 // app/shared/opensearch.js; everything here is a function of its arguments so
 // the naming rules and both document shapes are unit-testable.
 //
-// Topology. One WORKING index per stack, carrying every collection and
-// filtered by a `collection` term at query time. Published indexes are per
-// collection per publish run, behind a stable alias the downstream site points
-// at:
+// Topology. Only the PUBLISHED side has indexes: one per collection per publish
+// run, behind a stable alias the downstream site points at:
 //
-//   {prefix}.working              the admin UI reads this
-//   {prefix}.{slug}.pub.{runId}   one run's frozen output
-//   {prefix}.{slug}               alias -> whichever pub index is live
-//   {prefix}.{slug}.staged        alias -> the candidate awaiting its flip
+//   {prefix}.{slug}._pub.{runId}   one run's frozen output
+//   {prefix}.{slug}                alias -> whichever pub index is live
+//   {prefix}.{slug}._staged        alias -> the candidate awaiting its flip
 //
-// Working is one index rather than one per collection because the OpenSearch
-// domain is shared by every developer's personal stack, and a small domain
-// runs out of shards long before it runs out of disk. Published stays per
-// collection because that is what makes the alias flip atomic for one
+// Per collection because that is what makes the alias flip atomic for one
 // collection without touching another's.
+//
+// There used to be a working index too, {prefix}._working, behind the admin
+// works list. That list is served from the collection documents now
+// (worksList.js), so curators browsing never touch OpenSearch at all. A stack
+// deployed before that still has one; nothing reads or writes it.
 
 const {collectionSlugPattern} = require("./collection");
 
@@ -26,19 +25,19 @@ const {collectionSlugPattern} = require("./collection");
 // staged alias of `my-coll` and the live alias of `my-coll-staged` would be
 // the same string.
 //
-// That alone is not enough. A reserved word sitting in a slug's position is
-// still ambiguous — `{prefix}.working` is both the working index and the live
-// alias of a collection someone named "Working". So every reserved segment
-// starts with "_", which a slug cannot contain, and the segment counts differ
-// too. OpenSearch allows "_" inside an index name; only a LEADING "_", "-",
-// "+" or "." is reserved, and the prefix is always a real name.
+// Every reserved segment also starts with "_", which a slug cannot contain, and
+// the segment counts differ, so no slug can ever be read as a reserved word.
+// That mattered most for the working index, `{prefix}._working`, which without
+// the "_" was also the live alias of a collection named "Working". With it gone
+// the counts alone would do, but these names are live aliases a consuming site
+// points at, so they do not change. OpenSearch allows "_" inside an index name;
+// only a LEADING "_", "-", "+" or "." is reserved, and the prefix is always a
+// real name.
 //
-//   {prefix}._working              2 segments, second is not a slug
 //   {prefix}.{slug}                2 segments, second is a slug
 //   {prefix}.{slug}._staged        3
 //   {prefix}.{slug}._pub.{runId}   4
 const SEP = ".";
-const WORKING_SUFFIX = "_working";
 const PUBLISHED_INFIX = "_pub";
 const STAGED_SUFFIX = "_staged";
 
@@ -72,10 +71,6 @@ function assertRunId(runId) {
     throw new SearchNameError(`Not a run id: ${runId}`);
   }
   return runId;
-}
-
-function workingIndexName(prefix) {
-  return [assertPrefix(prefix), WORKING_SUFFIX].join(SEP);
 }
 
 function publishedIndexName(prefix, slug, runId) {
@@ -113,69 +108,16 @@ function parsePublishedIndexName(prefix, name) {
 
 // --- documents -------------------------------------------------------------
 
-// `_id` is the plain workId. The base64url-of-the-manifest-URL id this used to
-// carry existed only because one global index had to key on something globally
-// unique across collections; scoped per collection, the work's own identifier
-// already is.
-const WORKING_INDEX_PROPERTIES = {
-  title: {type: "text", fields: {keyword: {type: "keyword", ignore_above: 512}}},
-  manifestId: {type: "keyword"},
-  workId: {type: "keyword"},
-  // keyword, not text: the scope filter is a `term` clause, which does not
-  // match an analyzed field.
-  collection: {type: "keyword"},
-  thumbnails: {type: "keyword", index: false},
-  itemCount: {type: "integer"},
-  // sha256 of the exact bytes written to S3, and how the collection page tells
-  // a changed work from a published one.
-  contentHash: {type: "keyword"},
-  syncState: {type: "keyword"},
-  // Publishing a collection with an import in flight would freeze a
-  // half-rewritten manifest, so the precheck needs to be able to ask.
-  importing: {type: "boolean"},
-  updatedAt: {type: "date"},
-};
-
-// Deliberately smaller: this is what a downstream site reads, so it carries no
-// field that is about how THIS app works. thumbnails is the one addition over
-// the old shape — a site rendering a result list otherwise has to fetch every
-// manifest to draw it.
+// What a downstream site reads, so it carries no field that is about how THIS
+// app works: no work id, no sync state, no collection. `_id` is the work id,
+// which is never a field. thumbnails is there because a site rendering a result
+// list would otherwise have to fetch every manifest to draw it.
 const PUBLISHED_INDEX_PROPERTIES = {
   title: {type: "text", fields: {keyword: {type: "keyword", ignore_above: 512}}},
   manifestId: {type: "keyword"},
   thumbnails: {type: "keyword", index: false},
   itemCount: {type: "integer"},
 };
-
-const SYNC_NEW = "new";
-const SYNC_CHANGED = "changed";
-const SYNC_PUBLISHED = "published";
-
-function buildWorkingDocument({
-  workId,
-  manifestUrl,
-  label,
-  collection,
-  thumbnails = [],
-  itemCount = 0,
-  contentHash = null,
-  syncState = SYNC_NEW,
-  importing = false,
-  updatedAt = null,
-}) {
-  return {
-    workId,
-    manifestId: manifestUrl,
-    title: label || "",
-    collection: collection || null,
-    thumbnails,
-    itemCount,
-    contentHash,
-    syncState,
-    importing,
-    updatedAt: updatedAt || new Date().toISOString(),
-  };
-}
 
 function buildPublishedDocument({manifestUrl, label, thumbnails = [], itemCount = 0}) {
   return {
@@ -191,17 +133,11 @@ module.exports = {
   SearchNameError,
   indexPrefixPattern,
   runIdPattern,
-  workingIndexName,
   publishedIndexName,
   liveAliasName,
   stagedAliasName,
   isOwnIndexName,
   parsePublishedIndexName,
-  WORKING_INDEX_PROPERTIES,
   PUBLISHED_INDEX_PROPERTIES,
-  SYNC_NEW,
-  SYNC_CHANGED,
-  SYNC_PUBLISHED,
-  buildWorkingDocument,
   buildPublishedDocument,
 };

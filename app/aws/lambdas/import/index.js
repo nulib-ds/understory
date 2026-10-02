@@ -15,7 +15,7 @@
 // That resolves because every function shares one esbuild code root
 // (`CodeUri: ../`), and for store.js it is mandatory rather than convenient:
 // that module is THE single manifest writer, and a private copy here is exactly
-// how the search index once silently stopped tracking imported works.
+// how a read model once silently stopped tracking imported works.
 const crypto = require("node:crypto");
 const {
   ImportError,
@@ -30,20 +30,30 @@ const {
   stripForeignManagedEntries,
   buildCollectionDocument,
   buildRootCollectionDocument,
+  buildManifestReference,
+  memberFromManifest,
+  memberFromReference,
+  membersOf,
   collectionObjectKey,
   rootCollectionKey,
   rootCollectionSummaries,
-  manifestThumbnail,
   sortMembers,
 } = require("../../../shared/collection");
 const {INTERNAL_PREFIX} = require("../../../shared/space");
 const {copyCanvasAsset, copyManifestThumbnail} = require("../../../shared/assetCopy");
 const {readJson, putJson, listKeys} = require("../publish/s3io");
-// store.js's readManifest/writeManifest, NOT shared/manifest.js's — the shared
-// one takes its own {s3, bucket}; these are the wired pair, and writeManifest is
-// the single manifest writer the search index depends on.
-const {readManifest, writeManifest} = require("../manifest/store");
-const {upsertQuietly, SYNC_NEW} = require("../manifest/workIndex");
+// store.js's writeManifest, NOT shared/manifest.js's — the shared one takes its
+// own {s3, bucket}; this is the wired single manifest writer.
+const {writeManifest} = require("../manifest/store");
+// The conditional collection-document writes the manifest API uses, so this
+// run's one write of the leaf and root cannot undo a save landing beside it.
+const {
+  readVersioned,
+  writeVersioned,
+  withWriteRetry,
+  ensureRoot,
+  updateRoot,
+} = require("../manifest/collectionStore");
 
 const baseUrl = (process.env.IIIF_BASE_URL || "").replace(/\/$/, "");
 
@@ -196,35 +206,26 @@ async function importOneWork({slug, collectionLabel, work}) {
     collections: [{slug, label: collectionLabel}],
   });
 
-  // skipIndex on both writes: the walk mutates this manifest once per canvas,
-  // and indexing each time would be one index write per canvas for what is
-  // logically one work. Indexed explicitly below instead — once so the row
-  // appears, once when it is finished.
-  await writeManifest(work.workId, manifest, {skipIndex: true});
-  await upsertQuietly(work.workId, manifest, {syncState: SYNC_NEW, importing: true});
+  // skipCollection on both writes: the collection document is built ONCE, by
+  // WriteCollection, from the task results. Refreshing it per work would be
+  // thousands of read-modify-writes of one object — see writeCollection.
+  await writeManifest(work.workId, manifest, {skipCollection: true});
 
   const failures = await copyCanvases(work.workId, items);
   // The source's designated thumbnail, copied as its own image rather than
   // replaced by a canvas's. Removed if it cannot be copied; see
   // copyManifestThumbnail.
   const thumbnailCopy = await copyManifestThumbnail({identifier: work.workId, manifest});
-  await writeManifest(work.workId, manifest, {skipIndex: true});
-
-  // Re-read rather than trusting the in-memory copy: writeManifest normalizes
-  // @context on the way out, so hashing what we have here would hash something
-  // that was never stored — and that hash is what publish diffs against.
-  const stored = await readManifest(work.workId);
-  await upsertQuietly(work.workId, stored, {
-    bytes: JSON.stringify(stored, null, 2),
-    syncState: SYNC_NEW,
-    importing: false,
-  });
+  // writeManifest hands back what it actually stored, @context normalized, and
+  // the hash of those bytes — which is what publish diffs against, so it must
+  // never be the hash of the in-memory copy.
+  const written = await writeManifest(work.workId, manifest, {skipCollection: true});
 
   return {
     workId: work.workId,
-    manifestId: stored.id,
-    label: extractLabel(stored.label),
-    thumbnail: manifestThumbnail(stored),
+    // manifestId, label, thumbnail, contentHash, itemCount, thumbnailService:
+    // everything WriteCollection needs to build this work's member entry.
+    ...memberFromManifest(written.manifest, {contentHash: written.contentHash}),
     canvases: items.length,
     droppedAV: dropped,
     // A canvas that failed to copy still points at the source, so the work is
@@ -299,46 +300,51 @@ async function readResults(slug, runId) {
 // write failed is simply absent, so the collection can never advertise a
 // manifest that 404s. Lifted from publish's writeCollection for that reason.
 //
-// This is the ONLY writer of the collection document during a run — which is
-// what makes the whole thing free of concurrent-write problems. Per-work
-// reconciliation (fileNewWork) would be thousands of read-modify-writes of these
-// same two objects with lost updates guaranteed.
+// This is the run's ONLY write of the collection document, which is what keeps
+// the run itself free of write contention. Per-work reconciliation (fileNewWork)
+// would be thousands of read-modify-writes of these same two objects, five
+// batches at a time. The cost is that works appear in the works list only once
+// this has run, not one by one as they land; the progress banner covers the
+// wait.
 async function writeCollection({slug, runId}) {
   const results = await readResults(slug, runId);
   const landed = results.filter((r) => r.status === "ok" || r.status === "partial");
+  const landedIds = new Set(landed.map((r) => r.manifestId));
 
-  const root = await readJson(rootCollectionKey());
-  const summaries = rootCollectionSummaries(root?.document || {});
-  const known = summaries.find((entry) => entry.slug === slug);
-  const label = known?.label || slug;
+  const root = await ensureRoot();
+  const label = rootCollectionSummaries(root).find((entry) => entry.slug === slug)?.label || slug;
 
+  // Every work this run landed, plus any member the leaf already has that the
+  // run did not produce: a work moved in on its own page while the run walked,
+  // say. The leaf is what the works list and publish read, so a document built
+  // from the results alone would make such a work vanish from both.
+  //
   // Sorted the way reconciliation sorts, so "first member" — whose thumbnail
   // the collection borrows — means the same thing however the document was
   // produced, and a later reindex does not silently change the picture.
-  const members = sortMembers(
-    landed.map((result) => ({
-      id: result.manifestId,
-      label: {none: [result.label || ""]},
-      thumbnail: result.thumbnail,
-    })),
-  ).map((member) => ({
-    manifestId: member.id,
-    label: extractLabel(member.label),
-    thumbnail: member.thumbnail,
-  }));
-
-  await putJson(collectionObjectKey(slug), buildCollectionDocument({baseUrl, slug, label, members}));
+  // Conditional, because a curator's save can be rewriting this leaf right now.
+  const leaf = await withWriteRetry(async () => {
+    const current = await readVersioned(collectionObjectKey(slug));
+    const others = membersOf(current?.document).filter((item) => !landedIds.has(item.id));
+    const members = sortMembers([...landed.map(buildManifestReference), ...others]).map(memberFromReference);
+    const document = buildCollectionDocument({baseUrl, slug, label, members});
+    await writeVersioned(collectionObjectKey(slug), document, current?.etag || null);
+    return document;
+  });
 
   // Leaf first, then the root — the root must never advertise a collection
   // whose document is not there yet. The collection is already registered (it
   // was created empty when the run started); this only refreshes its count and
   // borrowed thumbnail.
-  const others = summaries.filter((entry) => entry.slug !== slug);
-  const updated = [
-    ...others,
-    {slug, label, itemCount: members.length, thumbnail: members.find((m) => m.thumbnail?.length)?.thumbnail || null},
-  ].sort((a, b) => a.label.localeCompare(b.label) || a.slug.localeCompare(b.slug));
-  await putJson(rootCollectionKey(), buildRootCollectionDocument({baseUrl, collections: updated}));
+  await updateRoot((current) =>
+    buildRootCollectionDocument({
+      baseUrl,
+      collections: [
+        ...rootCollectionSummaries(current).filter((entry) => entry.slug !== slug),
+        {slug, label, itemCount: leaf.items.length, thumbnail: leaf.thumbnail || null},
+      ].sort((a, b) => a.label.localeCompare(b.label) || a.slug.localeCompare(b.slug)),
+    }),
+  );
 
   return {
     imported: landed.length,
@@ -364,33 +370,17 @@ async function finalize({slug, result}) {
   return {ok: true};
 }
 
-// A dead run otherwise leaves every work it reached flagged `importing: true`
-// forever, and that flag is what stops a publish freezing a half-rewritten
-// manifest — so the collection could never be published again. Publish has no
-// equivalent because it writes to a throwaway candidate index; this does not.
-async function clearImportingFlags(slug, runId) {
-  try {
-    const results = await readResults(slug, runId);
-    for (const result of results) {
-      if (result.status === "failed" || result.status === "deferred") continue;
-      try {
-        const stored = await readManifest(result.workId);
-        await upsertQuietly(result.workId, stored, {
-          bytes: JSON.stringify(stored, null, 2),
-          syncState: SYNC_NEW,
-          importing: false,
-        });
-      } catch (error) {
-        console.error(`Collection import: could not clear importing on ${result.workId}`, error);
-      }
-    }
-  } catch (error) {
-    console.error(`Collection import: could not read results to clear importing flags`, error);
-  }
-}
-
+// A run that died part-way has still FILED every work it landed: each one's
+// partOf names this collection, which is the authority. So build the
+// collection document from those results, exactly as WriteCollection would
+// have, or they would be missing from the works list (and from publishing)
+// until a reindex. Best effort: recording the failure matters more.
 async function recordFailure({slug, runId, error}) {
-  await clearImportingFlags(slug, runId);
+  try {
+    await writeCollection({slug, runId});
+  } catch (writeError) {
+    console.error(`Collection import: could not write ${slug} from a failed run's results`, writeError);
+  }
   await patchStatus(slug, {
     status: "failed",
     error: error?.Cause || error?.Error || "The import run did not complete",

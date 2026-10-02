@@ -9,7 +9,7 @@
 //   2. "Publish search index" is then a single atomic alias flip.
 //
 // The candidate is built in step 1 on purpose. Building it at flip time would
-// index whatever the working index holds by then — including edits made while
+// index whatever the working documents hold by then — including edits made while
 // the curator was rebuilding their static site — which re-opens exactly the
 // drift the two-step flow exists to close.
 
@@ -33,8 +33,9 @@ const {
   rootCollectionSummaries,
   createRootCollectionTemplate,
   manifestThumbnail,
+  workIdFromManifestUrl,
 } = require("../../../shared/collection");
-const {WORKING, PUBLISHED, INTERNAL_PREFIX, spaceBase} = require("../../../shared/space");
+const {WORKING, PUBLISHED, INTERNAL_PREFIX, importStatusKey, spaceBase} = require("../../../shared/space");
 const {
   CONTENT_HASH_KEY,
   contentHash,
@@ -48,15 +49,12 @@ const {
   publishedIndexName,
   liveAliasName,
   stagedAliasName,
-  workingIndexName,
-  SYNC_PUBLISHED,
   PUBLISHED_INDEX_PROPERTIES,
   buildPublishedDocument,
 } = require("../../../shared/search");
 const {
   createIndexExclusive,
   bulkUpsert,
-  bulkScriptedUpdate,
   updateAliases,
   getAliases,
   deleteIndex,
@@ -95,15 +93,27 @@ async function plan({slug, runId, requestedBy}) {
   }
 
   // Each working member needs its current hash, which means reading it. The
-  // read is not wasted: the batch that publishes it reads it again only if it
-  // has changed.
+  // working leaf records one too, and the works list trusts it, but the run
+  // does not: a leaf write that failed quietly would leave it stale, and here
+  // a stale hash would mean publishing the wrong thing.
+  //
+  // Its import status is read alongside. A work whose asset import is still
+  // walking is HELD (planPublish): the walk rewrites the manifest as it goes,
+  // so publishing it now would freeze a half-copied work.
   const workingMembers = [];
   for (const item of workingLeaf.document.items || []) {
     const workId = workIdFromManifestUrl(item.id);
     if (!workId) continue;
-    const stored = await readJson(manifestObjectKey(workId, WORKING));
+    const [stored, importStatus] = await Promise.all([
+      readJson(manifestObjectKey(workId, WORKING)),
+      readJson(importStatusKey(workId)).catch(() => null),
+    ]);
     if (!stored) continue;
-    workingMembers.push({workId, contentHash: contentHash(stored.bytes)});
+    workingMembers.push({
+      workId,
+      contentHash: contentHash(stored.bytes),
+      ...(importStatus?.document?.status === "in-progress" ? {importing: true} : {}),
+    });
   }
 
   const publishedMembers = (publishedLeaf?.document.items || []).map((item) => ({
@@ -113,13 +123,18 @@ async function plan({slug, runId, requestedBy}) {
 
   const diff = planPublish({workingMembers, publishedMembers});
   const toWrite = [...diff.adds, ...diff.changes];
+  // A held member carries the hash its live copy was made from, so the batch
+  // can keep that copy in the published collection exactly as it was.
+  const heldHash = new Map(diff.held.map((member) => [member.workId, member.publishedHash]));
 
   // The plan is an S3 object, not the state payload: a Step Functions state is
   // capped at 256KB and a large collection blows straight past it.
   await putJson(planKeyFor(slug, runId), {
     slug,
     runId,
-    members: workingMembers,
+    members: workingMembers.map((member) =>
+      member.importing ? {...member, publishedHash: heldHash.get(member.workId)} : member,
+    ),
     write: toWrite.map((member) => member.workId),
     removes: diff.removes.map((member) => member.workId),
   });
@@ -151,11 +166,6 @@ async function plan({slug, runId, requestedBy}) {
   };
 }
 
-function workIdFromManifestUrl(url) {
-  const match = /\/presentation\/manifest\/([^/]+)\/manifest\.json$/.exec(url || "");
-  return match ? match[1] : null;
-}
-
 // --- batch -----------------------------------------------------------------
 
 // One slice of the plan. Writes its OWN result object rather than updating a
@@ -172,6 +182,12 @@ async function batch({slug, runId, indexName, batchIndex}) {
   const searchDocs = [];
   for (const member of slice) {
     try {
+      if (member.importing) {
+        const kept = await keepHeldWork(member);
+        results.push(kept.result);
+        if (kept.searchDoc) searchDocs.push(kept.searchDoc);
+        continue;
+      }
       const stored = await readJson(manifestObjectKey(member.workId, WORKING));
       if (!stored) {
         // Deleted while the run was walking. Drop it from the member list
@@ -188,10 +204,14 @@ async function batch({slug, runId, indexName, batchIndex}) {
       if (replacements === 0) {
         throw new Error("No self-referential URLs found — is this manifest under the working base?");
       }
-      if (toWrite.has(member.workId)) {
+      // Also written when it was planned as unchanged but has been edited
+      // since Plan read it. Its result records the hash of THESE bytes, and the
+      // published leaf takes that as the record of what is live — so recording
+      // it without writing them would claim a version that was never published,
+      // and the next diff would see nothing to do.
+      if (toWrite.has(member.workId) || hash !== member.contentHash) {
         await putJson(manifestObjectKey(member.workId, PUBLISHED), document);
       }
-      const items = Array.isArray(document.items) ? document.items : [];
       results.push({
         workId: member.workId,
         status: "ok",
@@ -201,15 +221,7 @@ async function batch({slug, runId, indexName, batchIndex}) {
         thumbnail: manifestThumbnail(document) || null,
         external: externalImageServices(document, imageApiBase).length,
       });
-      searchDocs.push({
-        workId: member.workId,
-        ...buildPublishedDocument({
-          manifestUrl: document.id,
-          label: extractLabel(document.label),
-          thumbnails: items.map(canvasThumbnailService).filter(Boolean).slice(0, 5),
-          itemCount: items.length,
-        }),
-      });
+      searchDocs.push(searchDocumentFor(member.workId, document));
     } catch (error) {
       console.error(`Publish failed for ${member.workId}`, error);
       results.push({workId: member.workId, status: "failed", error: error.message});
@@ -217,19 +229,53 @@ async function batch({slug, runId, indexName, batchIndex}) {
   }
 
   if (searchDocs.length) {
-    // No wait_for here: nothing reads the candidate index until the alias
-    // flip, so paying a refresh interval per batch would only slow the run.
-    await bulkUpsert(indexName, searchDocs, undefined, {waitFor: false});
+    await bulkUpsert(indexName, searchDocs);
   }
   await putJson(batchKeyFor(slug, runId, batchIndex), {batchIndex, results});
   return {batchIndex, count: results.length};
+}
+
+function searchDocumentFor(workId, document) {
+  const items = Array.isArray(document.items) ? document.items : [];
+  return {
+    workId,
+    ...buildPublishedDocument({
+      manifestUrl: document.id,
+      label: extractLabel(document.label),
+      thumbnails: items.map(canvasThumbnailService).filter(Boolean).slice(0, 5),
+      itemCount: items.length,
+    }),
+  };
+}
+
+// A held work (still importing) keeps whatever is live: its published copy is
+// carried into this run's collection and candidate index unchanged, under the
+// hash it was made from, so the next run that finds it finished publishes it
+// as a change. One never published before stays unpublished.
+async function keepHeldWork(member) {
+  const live = await readJson(manifestObjectKey(member.workId, PUBLISHED));
+  if (!live) return {result: {workId: member.workId, status: "held"}};
+  const document = live.document;
+  return {
+    result: {
+      workId: member.workId,
+      status: "ok",
+      held: true,
+      contentHash: member.publishedHash || null,
+      manifestId: document.id,
+      label: extractLabel(document.label),
+      thumbnail: manifestThumbnail(document) || null,
+      external: externalImageServices(document, imageApiBase).length,
+    },
+    searchDoc: searchDocumentFor(member.workId, document),
+  };
 }
 
 // --- write the published collection ----------------------------------------
 
 // Built from what the batches ACTUALLY did, never from the plan. A work whose
 // manifest write failed is simply absent, so the published collection can
-// never advertise a document that 404s — the invariant applyReconciliation
+// never advertise a document that 404s — the invariant reconciliation
 // protects in the working space, held here too.
 async function writeCollection({slug, runId}) {
   const keys = await listKeys(`${runPrefix(slug, runId)}/batches/`);
@@ -285,30 +331,12 @@ async function writeCollection({slug, runId}) {
   );
 
 
-  // Mark each published work as in sync — guarded on the hash actually
-  // published. A save that landed while this run was walking has a different
-  // hash by now, so the guard leaves it "changed" instead of quietly claiming
-  // it is published. That guard is what lets the run take no lock at all.
-  //
-  // Painless `==` on a String is null-safe .equals(), not reference identity.
-  const marked = await bulkScriptedUpdate(
-    workingIndexName(prefix),
-    published.map((result) => ({
-      id: result.workId,
-      script: {
-        source:
-          "if (ctx._source.contentHash == params.hash) { ctx._source.syncState = params.state }",
-        lang: "painless",
-        params: {hash: result.contentHash, state: SYNC_PUBLISHED},
-      },
-    })),
-  );
-
   return {
     slug,
     runId,
-    published: published.length,
-    marked: marked.updated,
+    published: published.filter((r) => !r.held).length,
+    // Still importing: left as they were, live or not. See keepHeldWork.
+    held: results.filter((r) => r.held || r.status === "held").length,
     failed: results.filter((r) => r.status === "failed").length,
     gone: results.filter((r) => r.status === "gone").length,
     external: published.reduce((sum, r) => sum + (r.external || 0), 0),
