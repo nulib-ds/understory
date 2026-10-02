@@ -1,5 +1,5 @@
 import {useEffect, useState} from "react";
-import {Code, Heading, IconButton, Text} from "@radix-ui/themes";
+import {Code, IconButton, Text} from "@radix-ui/themes";
 import {CheckIcon, CopyIcon} from "@radix-ui/react-icons";
 
 // These values exist to be pasted into someone else's config, so copying them
@@ -68,7 +68,8 @@ function ConsumesRow({label, value, placeholder = "—"}) {
 }
 
 // The collection's public face: the addresses a site is pointed at. The
-// actions that put them there are PublishPanel's buttons, below this one.
+// actions that put them there are PublishPanel's buttons, below this one, and
+// the panel's heading is PublishPanel's too: it is the button that opens it.
 //
 // The two steps light up independently because they are independent: a
 // completed run leaves a candidate index (staged, or live once flipped), and
@@ -80,24 +81,15 @@ export default function ConsumesAside({status}) {
 
   return (
     <div className="collection-aside__panel">
-      {/* A real h3, and Radix's Heading rather than Text: Text's `as` accepts
-          only span/div/p/label and silently renders anything else as a span,
-          which is how a heading stops being one. The page heading is the h2,
-          so a panel inside it is an h3. */}
-      <Heading as="h3" size="3">
-        Share &amp; publish
-      </Heading>
       <ConsumesRow
         label="IIIF Collection"
         value={iiifPublished ? status?.consumes?.collection : null}
       />
-      <ConsumesRow
-        label="Amazon OpenSearch Endpoint"
-        value={indexLive ? status?.consumes?.searchEndpoint : null}
-        // A live alias with no endpoint is a misconfigured stack, not an
-        // unpublished one, and says so rather than showing a dash.
-        placeholder={indexLive ? "not configured" : "—"}
-      />
+      {/* Never a value, for now. The stack's search endpoint only answers
+          requests signed by its own role, so a site handed it could not
+          query anything; it comes back with the public search route. The
+          row stays so the panel still shows everything a site will need. */}
+      <ConsumesRow label="Amazon OpenSearch Endpoint" value={null} placeholder="Not available yet" />
       <ConsumesRow
         label="Search Index ID"
         value={indexLive ? status?.consumes?.searchAlias : null}

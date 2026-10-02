@@ -172,6 +172,7 @@ reload on a cached session.
 | `/collections` | redirect to `/` (`ui/next.config.mjs`) | for older links |
 | `/collection/[slug]` | `CollectionWorksPage` | Built — list served from the collection documents, filter, publish panel |
 | `/collection/[slug]/work/[workId]` | `WorkPage` | Built |
+| `/collection/[slug]/search` | `CollectionSearchPage` | Built — **unlinked**; queries the live search index through the API |
 | `/users` | `UsersPage` | Built — admin only |
 
 Anything else lands on `/` (`ui/src/app/not-found.jsx`).
@@ -189,7 +190,14 @@ reached through its collection.
   the Collections section below.
 - **A collection's works** (`/collection/:slug`) — create/manage the IIIF
   Presentation manifests in one collection (the `working/presentation/manifest/` prefix
-  in the IIIF bucket). The page heading is the collection's title.
+  in the IIIF bucket). The page heading is the collection's title. The
+  **Share & publish** panel in the aside starts closed: its heading is the
+  button that opens it, and its body (status, addresses, the two publish
+  buttons) mounts on the first open and then only hides. Mounting is what
+  fetches the publish status, so a visit that never opens it never asks, and
+  staying mounted keeps a running publish polling, so its finish still refreshes
+  the list with the panel shut. The page header's unpublished count is the
+  at-a-glance summary, and comes from the works list, not the panel.
 - **A work** (`/collection/:slug/work/:workId`) — edit one work and preview it
   via Clover Viewer. Assets are uploaded per-work through `AssetDropzone`, which
   writes to the `image/` prefix of the **source** bucket (not the IIIF/output
@@ -225,7 +233,9 @@ the body does, and a spinner appears only past 400ms.
 
 - The page passes its own first load as `ready`. Anything nested that fetches
   on mount calls `useReportReady(settled)` (`ui/src/lib/pageReady.js`) —
-  `PublishPanel`, `CollectionImportBanner` and `AssetDropzone` do today.
+  `CollectionImportBanner` and `AssetDropzone` do today, and `PublishPanel`'s
+  body does too, though it mounts on first open, after the gate has opened, so
+  it never holds the page.
 - Report the **first** load settling, success *or* failure: an error is
   content. The gate opens once and never closes, so refreshes after that must
   keep the old content up until the new arrives rather than flipping back to
@@ -374,9 +384,107 @@ The published document carries only `manifestId`, `title`, `thumbnails` and
 site rendering a result list would otherwise have to fetch every manifest to
 draw it.
 
-The domain is not provisioned by this repo, and its resource-based policy is not owned by this template. The shared dev domain's policy grants `es:*` to the whole account (`arn:aws:iam::<account>:root`, checked 2026-10-01), so a dev stack's role needs nothing beyond its own IAM policy. A domain whose policy names roles one by one needs the `OpenSearchAccessRoleArn` stack output added to it after a deploy. It is one ARN: `PublishFunction` shares `ManifestFunction`'s role precisely so it stays one.
+### OpenSearch Serverless (NextGen)
 
-> If the shared domain has **fine-grained access control** enabled, an IAM resource-policy grant is not sufficient — the role must also be mapped as a backend role in the security plugin, and `indices:admin/aliases` is a cluster-level permission there. Not verified against this deployment.
+Every stack provisions its own collection (`SearchCollectionGroup`,
+`SearchCollection` and three policies in `template.yml`) rather than borrowing a
+shared domain. Each stack is isolated, there is no shard budget to share, and no
+post-deploy policy edits are needed on someone else's resource.
+
+**It scales to zero.** After ten minutes with no request, indexing and search
+capacity each drop to 0 OCUs. The next request waits about 10s while capacity
+comes back, queued rather than refused. Billing is per OCU-second
+($0.24/OCU-hour for indexing and for search in us-east-1, checked 2026-10-02),
+plus storage. `SearchMaxOcu` caps capacity, and so caps spend.
+
+**What wakes it:** a publish run, the alias flip, and the unlinked search page
+(`/collection/{slug}/search`, below). No other page load touches it. The publish panel's status read (`GET /collections/{slug}/publish`)
+used to ask OpenSearch which index each alias named. On a scaled-to-zero
+collection that billed ten minutes of capacity per page view, and held the page
+through the cold start. It now reads a copy in S3,
+`internal/publish/{slug}/aliases.json` (`aliasStateKey`), written by the only
+two things that move an alias, each from what it just read or did: `Finalize`
+records the candidate it staged, before the status says "succeeded", and the
+flip route records the live index it made. OpenSearch stays the truth: the flip
+reads the aliases there, never the copy, before acting, and rewrites the copy
+from that read even when it then refuses. So a copy left stale by a write that
+failed after its alias moved is corrected by the next flip attempt, and can
+only ever have shown a stale message, never caused a wrong flip. `Finalize`
+retries twice for the same reason. A stack with live aliases but no copy (one
+published before this) shows nothing staged or live until its next publish.
+
+**Seeing what is in an index:** `/collection/{slug}/search`, a deliberately plain
+page linked from nowhere, queries the collection's LIVE alias through
+`GET /collections/{slug}/search?q=` (`searchRoutes.js`). The route runs as the
+stack's own role, so nobody needs access to the search collection themselves:
+being an IAM admin is not enough on Serverless, whose data access policy names
+only that role. It builds the query itself from a plain string
+(`buildPublishedSearch`), never accepting query DSL. Its empty search lists
+every document with the total, which answers "did it publish?", and it says
+which run's index answered. Each query can wake the collection, so the page
+searches on submit, not per keystroke. **Next step:** a proper way to see into the indexes and administer them
+(list, count, remove leftovers), designed deliberately rather than by granting
+each developer access to the collection.
+
+**The endpoint is not shown to curators.** The status route no longer returns
+it (`consumes` carries only the collection URL and the alias), and the panel's
+"Amazon OpenSearch Endpoint" row reads "Not available yet". The collection only
+answers requests signed by this stack's own role, so a site handed the address
+could not query it. It comes back with the public search route.
+
+**Access needs three things, and each alone gets a 403:**
+
+- the IAM actions `aoss:APIAccessAll` *and* `aoss:DashboardsAccessAll` on the
+  collection;
+- a data access policy naming the role (`SearchDataAccessPolicy`). It names one
+  principal, `ManifestFunctionRole`, which `PublishFunction` shares for exactly
+  that reason;
+- a network policy (`SearchNetworkPolicy`). It is public-routable, but every
+  request is SigV4-signed and checked against the other two.
+
+A new or changed data access policy can take a minute to apply, so a publish
+straight after the first deploy may 403 once.
+
+**Requests:** `OPENSEARCH_ENDPOINT` is the per-collection endpoint
+(`{collection-id}.aoss.{region}.on.aws`, `!GetAtt SearchCollection.CollectionEndpoint`),
+so the hostname names the collection. The per-account endpoint would need a
+signed `x-amz-aoss-collection-name` header on every request instead. The signer
+uses service `aoss`, and adds the `x-amz-content-sha256` header Serverless
+requires. Index creation sends no shard or replica settings, because Serverless
+manages both.
+
+**Names are capped.** The collection is named after the stack (3–28
+characters), and the group and policies after the stack plus a suffix (at most
+32). Keep stack names to 27 characters or fewer.
+
+> **Not yet verified against a live collection** (`CollectionEndpoint` returning the
+> `on.aws` hostname is: checked on `kdid-dev-understory`, 2026-10-02):
+> - that a multi-action `_aliases` call is still atomic on Serverless (the call
+>   itself works, and so does the `GET /_alias/{prefix}.{slug}*` wildcard read:
+>   a live flip succeeded on `kdid-dev-understory`, 2026-10-02);
+> - that a duplicate create still reports `resource_already_exists_exception`,
+>   which `createIndexExclusive` relies on to refuse a rival run;
+>
+> The first publish and flip on a deployed stack is the test.
+
+**Moving a stack off the shared domain:**
+
+1. Drop `OpenSearchDomainName` and `OpenSearchEndpoint` from
+   `parameter_overrides` in `samconfig.toml`. They no longer exist, and
+   CloudFormation refuses overrides for parameters a template does not declare.
+2. Deploy.
+3. Run one IIIF publish, then one search-index flip, per collection. The new
+   collection starts empty, while the published S3 documents are untouched. A
+   run re-indexes every member whether or not it changed, so one run rebuilds
+   the whole candidate.
+4. Delete the stack's `{prefix}.*` indexes (`_working` included) from the shared
+   domain. Nothing reads them any more.
+
+**Linting:** the cfn-lint bundled with SAM CLI 1.148 predates collection groups,
+so `sam validate --lint` reports `AWS::OpenSearchServerless::CollectionGroup` as
+nonexistent and `CollectionGroupName` as invalid. Both exist in the
+CloudFormation registry (`aws cloudformation describe-type`). Lint with a
+current cfn-lint instead: `uvx cfn-lint@latest app/aws/template.yml`.
 
 ## Publishing
 
@@ -402,7 +510,7 @@ Load-bearing, not incidental:
 - **Garbage collection only ever deletes an index nothing points at any more**, and never one carrying an alias — so a concurrent run's candidate is safe and a flip is safe to retry. That happens in exactly two places: the flip route deletes the index that just stopped being live, and `Finalize` deletes the candidates its own is replacing (best effort, after the status write).
 - **`_staged` names one index, never several.** `Finalize` moves it with `stageActions` — off every earlier candidate and onto the new one in a single atomic call. It used to be a bare `add`, and an alias may name any number of indexes, so every IIIF publish not followed by a flip stacked another candidate behind it. The status route reported whichever OpenSearch listed last, the panel read "IIIF assets published…" after every flip, and each flip moved live search *backwards* onto an older run. Stacks deployed before the fix heal on their next IIIF publish; **do not flip one before that**, or it may go backwards once more.
 - A conditional S3 write on `internal/publish/{slug}/status.json` is the run mutex.
-- Alias state is read through `/_alias`, never `/_cat/indices`: the latter is a cluster-monitor API a scoped resource policy can deny.
+- Alias state is read through `/_alias`, never `/_cat/indices`. On the old managed domain the latter was a cluster-monitor API a scoped policy could deny, and on Serverless its response omits fields.
 
 **Publishing never re-copies images.** A pyramid TIFF is the same object for a draft and a live work, and the Image API is one endpoint. Publishing moves presentation JSON only.
 
@@ -573,8 +681,10 @@ The project is **Understory** everywhere: the UI, the repo
 
 Every AWS name derives from the stack name — the buckets (`<stack>-iiif`,
 `<stack>-source`), Lambdas, state machines, Cognito pool, Amplify app
-(`<stack>-ui`) and search-index prefix — so `stack_name` in `samconfig.toml` is
-the whole of a stack's identity, and changing it means a new stack. The one
+(`<stack>-ui`), search collection and search-index prefix — so `stack_name` in
+`samconfig.toml` is the whole of a stack's identity, and changing it means a new
+stack. Keep it to 27 characters or fewer: Serverless caps the search
+collection's and its policies' names (see **Search index**). The one
 exception is the custom-domain hostnames, built from `ProjectName`
 (`understory`) and `BaseDomainName`: only one stack per base domain can hold
 them, which is why a dev stack leaves `BaseDomainName` empty. Staging shares an
@@ -1214,6 +1324,7 @@ The empty-filter row survives from the old collection filter, retargeted to the
 header, or the control disappears with the rows and there is no way to undo it.
 
 Routes: `GET /collections` (one GetObject; creates the root if absent),
+`GET /collections/{slug}/search` (the live search index; see **Search index**),
 `GET /collections/{slug}/works` (served from the two leaves; carries the collection label and
 whole-collection sync counts so the page needs one request),
 `PUT /manifests/{id}/collection` (a move), the three publish routes under
@@ -1552,7 +1663,8 @@ Since the Lambdas cannot be unit-tested, the cheap backend checks worth running 
 npm test                                   # 166 pure tests
 cd app && npx esbuild aws/lambdas/manifest/index.js --bundle \
   --platform=node --target=node22 '--external:@aws-sdk/*' --outfile=/dev/null
-cd app/aws && sam validate --lint          # offline; needs no credentials
+cd app/aws && sam validate                # the SAM transform; offline
+uvx cfn-lint@latest app/aws/template.yml   # see "Linting" under Search index
 ```
 
 esbuild resolving the whole graph catches a missing export or a require cycle, and `eslint` in `ui/` has `no-undef` on, which catches a variable that failed to move during a refactor. That config only covers `ui/`; to lint the backend, point `ui/node_modules/.bin/eslint` at `app/` with an inline flat config enabling `no-undef` for CommonJS. Note eslint's `varsIgnorePattern: ^[A-Z_]` means it will **not** flag an unused component or icon import — those have to be found by hand. `npm run build` in `ui/` prerenders the static routes, so it also catches browser-only code reached during a server render.

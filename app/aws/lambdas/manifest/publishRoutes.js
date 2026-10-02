@@ -8,7 +8,7 @@ const crypto = require("node:crypto");
 const {SFNClient, StartExecutionCommand, DescribeExecutionCommand} = require("@aws-sdk/client-sfn");
 const {jsonResponse, parseBody} = require("./http");
 const {canPublish} = require("../../../shared/access");
-const {INTERNAL_PREFIX, PUBLISHED} = require("../../../shared/space");
+const {INTERNAL_PREFIX, PUBLISHED, aliasStateKey} = require("../../../shared/space");
 const {buildCollectionId} = require("../../../shared/collection");
 const {
   publishedIndexName,
@@ -24,17 +24,15 @@ const sfn = new SFNClient({});
 const stateMachineArn = process.env.PUBLISH_STATE_MACHINE_ARN || "";
 const prefix = process.env.SEARCH_INDEX_PREFIX || "";
 const baseUrl = (process.env.IIIF_BASE_URL || "").replace(/\/$/, "");
-const searchEndpoint = (process.env.OPENSEARCH_ENDPOINT || "").replace(/\/$/, "");
 
 const statusKeyFor = (slug) => `${INTERNAL_PREFIX}/publish/${slug}/status.json`;
 const batchesPrefix = (slug, runId) => `${INTERNAL_PREFIX}/publish/${slug}/${runId}/batches/`;
 
 const TERMINAL = new Set(["succeeded", "partial", "failed", "idle"]);
 
-// Which index each of the collection's two aliases points at. Derived from
-// OpenSearch itself, so there is no state file to fall out of step — and read
-// through /_alias rather than /_cat/indices, which is a cluster-monitor API a
-// scoped resource policy can deny.
+// Which index each of the collection's two aliases points at, asked of
+// OpenSearch itself. Only the flip calls this, because it is about to act on
+// the answer. Read through /_alias rather than /_cat/indices (see opensearch.js).
 async function aliasState(slug) {
   const aliases = await getAliases(`${prefix}.${slug}*`);
   const live = liveAliasName(prefix, slug);
@@ -47,6 +45,25 @@ async function aliasState(slug) {
     if (names.includes(staged)) stagedIndex = index;
   }
   return {liveIndex, stagedIndex};
+}
+
+// What the panel shows: the copy in S3 (aliasStateKey), never OpenSearch. A
+// collection page load used to read the aliases live, which woke a
+// scaled-to-zero collection on every visit and held the page through its
+// ~10s cold start. No copy yet means nothing has ever been staged or flipped.
+async function storedAliasState(slug) {
+  const stored = await readJson(aliasStateKey(slug));
+  return {
+    liveIndex: stored?.document?.liveIndex || null,
+    stagedIndex: stored?.document?.stagedIndex || null,
+  };
+}
+
+// The copy is rewritten from a fresh read whenever the flip has one, whether or
+// not it goes on to flip. That is what heals a copy left stale by a write that
+// failed after its alias had moved: the next flip attempt corrects it.
+async function recordAliasState(slug, {liveIndex, stagedIndex}) {
+  await putJson(aliasStateKey(slug), {liveIndex, stagedIndex, updatedAt: new Date().toISOString()});
 }
 
 // The execution name is deterministic (`{slug}-{runId}`), so its ARN is
@@ -112,7 +129,7 @@ async function handlePublishRoute({method, segments, principal, event}) {
   // GET /collections/{slug}/publish — the run's progress.
   if (method === "GET" && segments.length === 3) {
     try {
-      const [status, aliases] = await Promise.all([readStatus(slug), aliasState(slug)]);
+      const [status, aliases] = await Promise.all([readStatus(slug), storedAliasState(slug)]);
       let written = status.written || 0;
       if (status.status === "running" && status.runId) {
         // Progress is a key count, not a shared counter: each batch writes its
@@ -128,12 +145,13 @@ async function handlePublishRoute({method, segments, principal, event}) {
         // What a downstream site actually consumes. Built here because the
         // Lambda knows IIIF_BASE_URL; the UI's VITE_IIIF_BASE_URL is the IMAGE
         // API base, which is a different host entirely.
-        // The three things a downstream site needs: what to crawl, where to
-        // send a query, and what to call the index. The alias is useless
-        // without the endpoint.
+        // What a downstream site needs: what to crawl, and what to call the
+        // index. Where to send a query is deliberately absent: the collection
+        // endpoint takes only signed requests from this stack's own role, so
+        // showing it would hand a curator an address their site cannot use.
+        // It comes back with the public search route.
         consumes: {
           collection: buildCollectionId(baseUrl, slug, PUBLISHED),
-          searchEndpoint,
           searchAlias: liveAliasName(prefix, slug),
         },
         // The second button is only meaningful once a candidate exists that
@@ -192,6 +210,7 @@ async function handlePublishRoute({method, segments, principal, event}) {
     }
     try {
       const {liveIndex, stagedIndex} = await aliasState(slug);
+      await recordAliasState(slug, {liveIndex, stagedIndex});
       if (!stagedIndex) {
         return jsonResponse(409, {error: "Publish the IIIF assets first — there is nothing staged"});
       }
@@ -209,6 +228,8 @@ async function handlePublishRoute({method, segments, principal, event}) {
       // Only now, and only the index that just stopped being live. Never at
       // plan time and never an index carrying an alias, so a concurrent run's
       // candidate is safe.
+      // aliasFlipActions takes the staged alias off the index it makes live.
+      await recordAliasState(slug, {liveIndex: stagedIndex, stagedIndex: null});
       if (liveIndex && parsePublishedIndexName(prefix, liveIndex)) {
         await deleteIndex(liveIndex);
       }
@@ -222,4 +243,4 @@ async function handlePublishRoute({method, segments, principal, event}) {
   return jsonResponse(405, {error: "Method not allowed"});
 }
 
-module.exports = {handlePublishRoute, aliasState, publishedIndexName};
+module.exports = {handlePublishRoute, publishedIndexName};

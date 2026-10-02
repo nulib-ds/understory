@@ -1,4 +1,5 @@
-// Signed HTTP against the OpenSearch domain.
+// Signed HTTP against the stack's OpenSearch Serverless (NextGen) collection,
+// SearchCollection in template.yml.
 //
 // Only the published side uses it: the publish run builds each candidate
 // index, and the flip route moves the alias. The admin works list used to read
@@ -35,9 +36,16 @@ if (rawEndpoint) {
 
 const configured = Boolean(endpoint);
 
+// "aoss", not "es": Serverless signs as its own service. The signer also adds
+// x-amz-content-sha256 (applyChecksum defaults to true), which Serverless
+// requires on every request and a managed domain did not.
+//
+// OPENSEARCH_ENDPOINT is the collection's own endpoint ({id}.aoss.{region}.on.aws),
+// which names the collection in its hostname. The per-account endpoint would
+// need an x-amz-aoss-collection-name header on every request instead, signed.
 const signer = endpoint
   ? new SignatureV4({
-      service: "es",
+      service: "aoss",
       region: process.env.AWS_REGION,
       credentials: defaultProvider(),
       sha256: Sha256,
@@ -110,12 +118,11 @@ function expectOk(response, what) {
 // Fails if the index already exists, rather than treating that as success.
 // Two publish runs starting in the same instant must not both believe they own
 // the candidate; the loser has to find out.
-async function createIndexExclusive(name, properties, settings) {
-  const created = await osRequest(
-    "PUT",
-    `/${name}`,
-    JSON.stringify({settings: settings || {number_of_shards: 1, number_of_replicas: 0}, mappings: {properties}}),
-  );
+//
+// No shard or replica settings: Serverless manages both itself. They were here
+// to keep a shared managed domain's shard count down.
+async function createIndexExclusive(name, properties) {
+  const created = await osRequest("PUT", `/${name}`, JSON.stringify({mappings: {properties}}));
   if (created.status >= 300) {
     const type = created.json?.error?.type;
     if (type === "resource_already_exists_exception") {
@@ -160,8 +167,10 @@ async function bulkUpsert(index, docs, idOf = (doc) => doc.workId) {
   return {indexed, failed};
 }
 
-// A multi-action _aliases POST is atomic on AWS OpenSearch Service: readers
-// never see a moment with the alias on neither index, or on both.
+// A multi-action _aliases POST is atomic in OpenSearch: readers never see a
+// moment with the alias on neither index, or on both. Serverless supports the
+// call (aoss:CreateCollectionItems); that it keeps the atomicity is assumed,
+// not yet verified.
 async function updateAliases(actions) {
   if (!actions.length) return;
   expectOk(
@@ -170,13 +179,22 @@ async function updateAliases(actions) {
   );
 }
 
-// GET /_alias/{pattern}, as JSON. Deliberately not _cat/indices: that is a
-// cluster-monitor API a scoped resource policy or fine-grained access control
-// can deny, and this only needs index-level rights.
+// GET /_alias/{pattern}, as JSON (aoss:DescribeCollectionItems). Not
+// _cat/indices, whose Serverless response omits fields and which was already
+// avoided on the managed domain, where a scoped policy could deny it.
 async function getAliases(pattern) {
   const response = await osRequest("GET", `/_alias/${encodeURIComponent(pattern)}`);
   if (response.status === 404) return {};
   expectOk(response, "Failed to read aliases");
+  return response.json || {};
+}
+
+// A query against an index or alias. Null when it does not exist, which for
+// a live alias means nothing has been flipped live yet: an answer, not a fault.
+async function search(index, body) {
+  const response = await osRequest("POST", `/${index}/_search`, JSON.stringify(body));
+  if (response.status === 404) return null;
+  expectOk(response, `Search on ${index} failed`);
   return response.json || {};
 }
 
@@ -195,5 +213,6 @@ module.exports = {
   bulkUpsert,
   updateAliases,
   getAliases,
+  search,
   deleteIndex,
 };

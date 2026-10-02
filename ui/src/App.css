@@ -460,6 +460,58 @@ main.layout {
   word-break: break-all;
 }
 
+/* The publish panel's disclosure: an h3 holding a button (PublishPanel.jsx).
+   The button is reset to read as the heading it sits in, full width with the
+   chevron at the far edge. Like editable text it has no surface at rest and
+   lights up with the alpha accent on hover and focus, because it sits on the
+   page background. The negative inline margin keeps its text aligned with the
+   panel's content while the highlight extends past it. */
+.publish-panel__heading {
+  margin: 0;
+}
+
+.publish-panel__toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  width: calc(100% + 2 * var(--space-2));
+  margin-inline: calc(-1 * var(--space-2));
+  padding: var(--space-1) var(--space-2);
+  border: 0;
+  border-radius: var(--radius-2);
+  background: none;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+
+.publish-panel__toggle:hover,
+.publish-panel__toggle:focus-visible {
+  background-color: var(--accent-a3);
+}
+
+.publish-panel__toggle:focus-visible {
+  outline: 2px solid var(--focus-8);
+  outline-offset: 1px;
+}
+
+.publish-panel__chevron {
+  flex: none;
+  transition: transform 0.15s ease;
+}
+
+.publish-panel__toggle[aria-expanded="true"] .publish-panel__chevron {
+  transform: rotate(180deg);
+}
+
+.publish-panel__body {
+  margin-top: var(--space-4);
+}
+
 /* The title absorbs the leftover width and ellipsizes rather than wrapping.
    Both declarations are load-bearing under `table-layout: auto`: `width: 100%`
    claims the slack so the other columns stay at their content width, and

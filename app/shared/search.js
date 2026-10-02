@@ -128,6 +128,42 @@ function buildPublishedDocument({manifestUrl, label, thumbnails = [], itemCount 
   };
 }
 
+// GET /collections/{slug}/search, as a query against the live alias. Built here
+// from a plain string rather than accepting query DSL from the browser, so the
+// route can only ever ask the one question it is for. Titles are the only
+// searchable field a published document has.
+//
+// Unfiltered, it lists everything alphabetically; filtered, by relevance.
+const MAX_SEARCH_SIZE = 100;
+
+function buildPublishedSearch({q = "", from = 0, size = 50} = {}) {
+  const term = String(q || "").trim();
+  return {
+    from: Math.max(0, Number(from) || 0),
+    size: Math.min(Math.max(1, Number(size) || 50), MAX_SEARCH_SIZE),
+    track_total_hits: true,
+    query: term ? {match: {title: {query: term, fuzziness: "AUTO"}}} : {match_all: {}},
+    ...(term ? {} : {sort: [{"title.keyword": "asc"}]}),
+  };
+}
+
+// A search response back into rows. `_id` is the work id (the publish run
+// indexes each document under it), which is what lets a row link to its work.
+function publishedSearchResults(response) {
+  const hits = response?.hits?.hits || [];
+  return {
+    total: response?.hits?.total?.value ?? hits.length,
+    hits: hits.map((hit) => ({
+      workId: hit._id,
+      manifestId: hit._source?.manifestId || "",
+      title: hit._source?.title || "",
+      thumbnails: hit._source?.thumbnails || [],
+      itemCount: hit._source?.itemCount ?? 0,
+      score: hit._score ?? null,
+    })),
+  };
+}
+
 module.exports = {
   SEP,
   SearchNameError,
@@ -140,4 +176,6 @@ module.exports = {
   parsePublishedIndexName,
   PUBLISHED_INDEX_PROPERTIES,
   buildPublishedDocument,
+  buildPublishedSearch,
+  publishedSearchResults,
 };

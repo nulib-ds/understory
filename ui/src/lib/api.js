@@ -91,6 +91,16 @@ export function collectionWorksUrl(slug, {q = "", from = 0, size = 50} = {}) {
   return `${COLLECTION_API_BASE}/${encodeURIComponent(slug)}/works?${params}`;
 }
 
+// The collection's LIVE search index, queried through the API (which signs the
+// request as the stack's own role). Backs the unlinked /collection/[slug]/search.
+export function collectionSearchUrl(slug, {q = ""} = {}) {
+  if (!COLLECTION_API_BASE) return null;
+  const params = new URLSearchParams();
+  if (q) params.set("q", q);
+  const query = params.toString();
+  return `${COLLECTION_API_BASE}/${encodeURIComponent(slug)}/search${query ? `?${query}` : ""}`;
+}
+
 // Join the manifests base with a suffix. Both the collection works list and the
 // work page build URLs this way, so it lives here rather than being redefined
 // in each.

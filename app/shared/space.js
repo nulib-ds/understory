@@ -26,6 +26,16 @@ function importStatusKey(identifier) {
   return `${INTERNAL_PREFIX}/import-status/${identifier}.json`;
 }
 
+// A copy of which index each of a collection's two search aliases names
+// ({liveIndex, stagedIndex}), so showing the publish panel never has to ask
+// OpenSearch, and so never wakes a scaled-to-zero collection or waits out its
+// cold start. Written only by the two things that move an alias, from what they
+// just read or did there: the publish run's Finalize, and the flip route.
+// OpenSearch stays the truth: the flip reads it, never this, before acting.
+function aliasStateKey(slug) {
+  return `${INTERNAL_PREFIX}/publish/${slug}/aliases.json`;
+}
+
 class SpaceError extends Error {}
 
 function assertSpace(space) {
@@ -54,6 +64,7 @@ module.exports = {
   SPACES,
   INTERNAL_PREFIX,
   importStatusKey,
+  aliasStateKey,
   SpaceError,
   assertSpace,
   spaceKey,

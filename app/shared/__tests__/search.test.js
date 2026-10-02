@@ -10,6 +10,8 @@ const {
   parsePublishedIndexName,
   PUBLISHED_INDEX_PROPERTIES,
   buildPublishedDocument,
+  buildPublishedSearch,
+  publishedSearchResults,
 } = require("../search");
 
 const PREFIX = "kdid-dev";
@@ -79,4 +81,38 @@ test("mappings: titles are searched, and nothing about this app is mapped", () =
   for (const field of ["collection", "syncState", "contentHash", "workId", "importing"]) {
     assert.equal(PUBLISHED_INDEX_PROPERTIES[field], undefined, field);
   }
+});
+
+// The browser sends a string, never query DSL: the route can only ask this.
+test("an empty search lists everything alphabetically; a term searches titles", () => {
+  const all = buildPublishedSearch({});
+  assert.deepEqual(all.query, {match_all: {}});
+  assert.deepEqual(all.sort, [{"title.keyword": "asc"}]);
+  assert.equal(all.track_total_hits, true, "the total is the document count");
+
+  const some = buildPublishedSearch({q: "  masks "});
+  assert.deepEqual(some.query, {match: {title: {query: "masks", fuzziness: "AUTO"}}});
+  assert.equal("sort" in some, false, "relevance order when searching");
+});
+
+test("paging is clamped, whatever the query string says", () => {
+  assert.equal(buildPublishedSearch({size: "5000"}).size, 100);
+  assert.equal(buildPublishedSearch({size: "0"}).size, 50, "zero falls back to the default");
+  assert.equal(buildPublishedSearch({size: "nope"}).size, 50);
+  assert.equal(buildPublishedSearch({from: "-4"}).from, 0);
+});
+
+test("search hits come back as rows keyed by work id", () => {
+  const {total, hits} = publishedSearchResults({
+    hits: {
+      total: {value: 12},
+      hits: [{_id: "w1", _score: 1.5, _source: {manifestId: "m", title: "Masks", thumbnails: ["t"], itemCount: 3}}],
+    },
+  });
+  assert.equal(total, 12);
+  assert.deepEqual(hits, [{workId: "w1", manifestId: "m", title: "Masks", thumbnails: ["t"], itemCount: 3, score: 1.5}]);
+});
+
+test("no index yet reads as no results", () => {
+  assert.deepEqual(publishedSearchResults(null), {total: 0, hits: []});
 });

@@ -35,7 +35,14 @@ const {
   manifestThumbnail,
   workIdFromManifestUrl,
 } = require("../../../shared/collection");
-const {WORKING, PUBLISHED, INTERNAL_PREFIX, importStatusKey, spaceBase} = require("../../../shared/space");
+const {
+  WORKING,
+  PUBLISHED,
+  INTERNAL_PREFIX,
+  importStatusKey,
+  aliasStateKey,
+  spaceBase,
+} = require("../../../shared/space");
 const {
   CONTENT_HASH_KEY,
   contentHash,
@@ -355,6 +362,14 @@ async function finalize({slug, runId, indexName, result}) {
     getAliases(liveAliasName(prefix, slug)).then(Object.keys),
   ]);
   await updateAliases(stageActions({index: indexName, stagedAlias, previouslyStaged}));
+  // The panel's copy of the aliases, written before the status says
+  // "succeeded" so a poll never sees a finished run with nothing staged. The
+  // live alias did not move, so it is still whatever it named a moment ago.
+  await putJson(aliasStateKey(slug), {
+    liveIndex: live[0] || null,
+    stagedIndex: indexName,
+    updatedAt: new Date().toISOString(),
+  });
   // This write replaces the status whole, so carry over what Invalidate
   // recorded on it rather than dropping the run's only record of the CDN.
   const {cdn} = (await readJson(statusKeyFor(slug)))?.document || {};

@@ -15,18 +15,14 @@ capabilities = "CAPABILITY_IAM CAPABILITY_AUTO_EXPAND"
 #   Generate one at: https://github.com/settings/tokens → Generate new token (classic) → check "repo"
 # GitHub branch to deploy (default: main)
 #
-# OpenSearch parameters are REQUIRED. The collection works list is served by
-# the search index, so a stack without one cannot list anything. Point at an
-# existing shared domain — this repo does not provision one.
+# Search needs no parameters: every stack provisions its own OpenSearch
+# Serverless collection (SearchCollection), which scales to zero when idle.
+# Two optional ones:
+#   SearchMaxOcu       capacity ceiling, the spend cap (2, 4, 8 or 16; default 2)
+#   SearchIndexPrefix  defaults to the stack name; must be lowercase. Index names
+#                      are <prefix>.<slug>._pub.<runId>, with <prefix>.<slug> as
+#                      the alias a consuming site points at.
 #
-# SearchIndexPrefix is optional and defaults to the stack name. It must be
-# lowercase: index names are built as <prefix>._working and
-# <prefix>.<slug>._pub.<runId>, with <prefix>.<slug> as the alias a consuming
-# site points at.
-#
-# The shared dev domain's access policy already trusts this whole account, so a
-# dev stack needs nothing more. For a domain whose policy names roles one by
-# one, read the OpenSearchAccessRoleArn stack output after deploying and add it
-# yourself. It is one ARN — PublishFunction shares ManifestFunction's role so
-# that it stays one.
-parameter_overrides = "GitHubRepo=https://github.com/nulib-ds/understory GitHubOAuthToken=ghp_your_token_here GitHubBranch=main OpenSearchDomainName=your-domain-name OpenSearchEndpoint=https://search-your-domain-xxxx.us-east-1.es.amazonaws.com"
+# Keep stack_name to 27 characters or fewer: the search collection and its
+# policies are named after it, and Serverless caps those names.
+parameter_overrides = "GitHubRepo=https://github.com/nulib-ds/understory GitHubOAuthToken=ghp_your_token_here GitHubBranch=main"

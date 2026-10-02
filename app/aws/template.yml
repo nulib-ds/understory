@@ -16,14 +16,11 @@ Parameters:
     Type: String
     NoEcho: true
     Description: "GitHub personal access token with repo scope (https://github.com/settings/tokens)"
-  OpenSearchDomainName:
-    Type: String
-    NoEcho: true
-    Description: "Bare name of a pre-existing OpenSearch domain (used to build the IAM resource ARN). REQUIRED — see OpenSearchEndpoint."
-  OpenSearchEndpoint:
-    Type: String
-    NoEcho: true
-    Description: "Full https:// endpoint of the OpenSearch domain (used for signed HTTP calls). REQUIRED for publishing: each publish run builds its collection's search index here. The admin works list does not use it."
+  SearchMaxOcu:
+    Type: Number
+    Default: 2
+    AllowedValues: [2, 4, 8, 16]
+    Description: "Ceiling on the search collection's capacity, in OCUs, applied to indexing and to search separately. This is the spend cap: the collection never scales past it. It scales to zero when idle whatever this says. Serverless accepts 2, 4, 8, 16 or multiples of 16."
   SearchIndexPrefix:
     Type: String
     Default: ""
@@ -480,6 +477,81 @@ Resources:
       Roles:
         authenticated: !GetAtt CognitoAuthenticatedRole.Arn
 
+  # --- Search -----------------------------------------------------------------
+  # One OpenSearch Serverless NextGen collection per stack, holding only the
+  # published side: each publish run's candidate index and the per-collection
+  # aliases a consuming site points at. The admin works list does not use it
+  # (it reads the collection documents), so curators browsing never wake it.
+  #
+  # NextGen, not Classic, because it scales to zero: with no request for ten
+  # minutes, indexing and search capacity each drop to 0 OCUs, and the next
+  # request waits ~10s while it comes back, queued rather than refused. Classic
+  # bills a floor of OCUs around the clock. Storage is billed either way.
+  #
+  # Every name here is the stack name, alone or with a suffix: collection names
+  # are 3-28 characters, group and policy names at most 32, all lowercase
+  # letters, digits and hyphens starting with a letter. A stack name longer
+  # than 27 characters will not deploy.
+  SearchCollectionGroup:
+    Type: AWS::OpenSearchServerless::CollectionGroup
+    Properties:
+      Name: !Ref AWS::StackName
+      Description: !Sub "Published search indexes for ${AWS::StackName}"
+      Generation: NEXTGEN
+      # ENABLED is the only value a NEXTGEN group accepts — DISABLED is refused
+      # at create — and the property is required. Unlike Classic, where it
+      # doubled the OCU floor, NextGen has no floor to double: it still scales
+      # to zero.
+      StandbyReplicas: ENABLED
+      CapacityLimits:
+        MinIndexingCapacityInOcu: 0
+        MinSearchCapacityInOcu: 0
+        MaxIndexingCapacityInOcu: !Ref SearchMaxOcu
+        MaxSearchCapacityInOcu: !Ref SearchMaxOcu
+
+  # A collection cannot be created until an encryption policy covers it.
+  # An AWS-owned key: nothing in the index is not already public in published/.
+  SearchEncryptionPolicy:
+    Type: AWS::OpenSearchServerless::SecurityPolicy
+    Properties:
+      Name: !Sub "${AWS::StackName}-enc"
+      Type: encryption
+      Policy: !Sub '{"Rules":[{"ResourceType":"collection","Resource":["collection/${AWS::StackName}"]}],"AWSOwnedKey":true}'
+
+  # Reachable from the internet, but every request is SigV4-signed and checked
+  # against SearchDataAccessPolicy, so "public" here means routable, not open.
+  # The Lambdas run outside any VPC, which is why this is not a VPC endpoint.
+  SearchNetworkPolicy:
+    Type: AWS::OpenSearchServerless::SecurityPolicy
+    Properties:
+      Name: !Sub "${AWS::StackName}-net"
+      Type: network
+      Policy: !Sub '[{"Rules":[{"ResourceType":"collection","Resource":["collection/${AWS::StackName}"]}],"AllowFromPublic":true}]'
+
+  # Serverless checks this AND the role's IAM policy (aoss:APIAccessAll on
+  # ManifestFunction). One principal: every function that signs a request shares
+  # ManifestFunctionRole. Collection-level permissions cover the aliases;
+  # index-level ones cover the candidate indexes.
+  SearchDataAccessPolicy:
+    Type: AWS::OpenSearchServerless::AccessPolicy
+    Properties:
+      Name: !Sub "${AWS::StackName}-data"
+      Type: data
+      Policy: !Sub
+        - '[{"Rules":[{"ResourceType":"collection","Resource":["collection/${AWS::StackName}"],"Permission":["aoss:CreateCollectionItems","aoss:DeleteCollectionItems","aoss:UpdateCollectionItems","aoss:DescribeCollectionItems"]},{"ResourceType":"index","Resource":["index/${AWS::StackName}/*"],"Permission":["aoss:CreateIndex","aoss:DeleteIndex","aoss:UpdateIndex","aoss:DescribeIndex","aoss:ReadDocument","aoss:WriteDocument"]}],"Principal":["${RoleArn}"]}]'
+        - RoleArn: !GetAtt ManifestFunctionRole.Arn
+
+  SearchCollection:
+    Type: AWS::OpenSearchServerless::Collection
+    # The group is named rather than referenced (CollectionGroupName takes a
+    # name, and the group's Ref is its id), so the ordering is explicit.
+    DependsOn: [SearchEncryptionPolicy, SearchNetworkPolicy, SearchCollectionGroup]
+    Properties:
+      Name: !Ref AWS::StackName
+      Type: SEARCH
+      CollectionGroupName: !Ref AWS::StackName
+      Description: !Sub "Published search indexes for ${AWS::StackName}"
+
   ManifestHttpApi:
     Type: AWS::Serverless::HttpApi
     Properties:
@@ -522,7 +594,7 @@ Resources:
       Environment:
         Variables:
           COGNITO_USER_POOL_ID: !Ref CognitoUserPool
-          OPENSEARCH_ENDPOINT: !Ref OpenSearchEndpoint
+          OPENSEARCH_ENDPOINT: !GetAtt SearchCollection.CollectionEndpoint
           SEARCH_INDEX_PREFIX: !If [SearchIndexPrefixProvided, !Ref SearchIndexPrefix, !Ref "AWS::StackName"]
           # Built by hand rather than !Ref: the state machine's role is this
           # function's role, so referencing the machine here would be circular.
@@ -579,14 +651,14 @@ Resources:
               Resource: !Sub "arn:aws:events:${AWS::Region}:${AWS::AccountId}:event-bus/default"
             # The publish routes flip a collection's search alias and drop the
             # index it leaves; PublishFunction shares this role to build them.
+            # Serverless wants BOTH actions, or every request is a 403, plus a
+            # data access policy naming this role (SearchDataAccessPolicy).
+            # Neither alone is enough.
             - Effect: Allow
               Action:
-                - es:ESHttpGet
-                - es:ESHttpPut
-                - es:ESHttpPost
-                - es:ESHttpDelete
-                - es:ESHttpHead
-              Resource: !Sub "arn:aws:es:${AWS::Region}:${AWS::AccountId}:domain/${OpenSearchDomainName}/*"
+                - aoss:APIAccessAll
+                - aoss:DashboardsAccessAll
+              Resource: !GetAtt SearchCollection.Arn
             - Effect: Allow
               Action:
                 - states:StartExecution
@@ -730,6 +802,12 @@ Resources:
             ApiId: !Ref ManifestHttpApi
             Path: /collections/{slug}/works
             Method: GET
+        SearchCollection:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ManifestHttpApi
+            Path: /collections/{slug}/search
+            Method: GET
         ListCollections:
           Type: HttpApi
           Properties:
@@ -813,13 +891,12 @@ Resources:
       Timeout: 900
       Environment:
         Variables:
-          OPENSEARCH_ENDPOINT: !Ref OpenSearchEndpoint
+          OPENSEARCH_ENDPOINT: !GetAtt SearchCollection.CollectionEndpoint
           SEARCH_INDEX_PREFIX: !If [SearchIndexPrefixProvided, !Ref SearchIndexPrefix, !Ref "AWS::StackName"]
           CLOUDFRONT_DISTRIBUTION_ID: !Ref IIIFDistribution
-      # Deliberately the same role as ManifestFunction. Both need es:ESHttp*,
-      # and the domain's resource policy is not owned by this template — so a
-      # second role would mean a second ARN to paste in by hand on every new
-      # personal stack, which is one more thing to forget.
+      # Deliberately the same role as ManifestFunction: both sign requests to
+      # the search collection, and SearchDataAccessPolicy then names one
+      # principal rather than one per function.
       Role: !GetAtt ManifestFunctionRole.Arn
 
   PublishStateMachine:
@@ -928,6 +1005,15 @@ Resources:
               "runId.$": "$.runId"
               "indexName.$": "$.plan.indexName"
               "result.$": "$.result"
+            # Safe to retry: stageActions never unstages its own candidate
+            # (publish.test.js), and every write here replaces a whole object.
+            # Worth it because Finalize moves an alias and then records it, and
+            # failing between the two would leave the panel's copy behind.
+            Retry:
+              - ErrorEquals: ["States.ALL"]
+                IntervalSeconds: 2
+                MaxAttempts: 2
+                BackoffRate: 2
             Catch:
               - ErrorEquals: ["States.ALL"]
                 ResultPath: "$.error"
@@ -972,14 +1058,10 @@ Resources:
       CodeUri: ../
       Handler: index.handler
       Timeout: 900
-      Environment:
-        Variables:
-          OPENSEARCH_ENDPOINT: !Ref OpenSearchEndpoint
-          SEARCH_INDEX_PREFIX: !If [SearchIndexPrefixProvided, !Ref SearchIndexPrefix, !Ref "AWS::StackName"]
-      # Shares ManifestFunction's role for the same reason PublishFunction does:
-      # the OpenSearch domain's access policy is not owned by this template, and
-      # every function that signs a request to it has to be pasted in by hand.
-      # One role keeps that one ARN.
+      # No search settings: since the working index went, an import writes
+      # nothing to OpenSearch. The role is still ManifestFunction's, because
+      # this worker writes manifests and collection documents through the same
+      # store.js and collectionStore.js, and needs the same S3 and Lambda grants.
       Role: !GetAtt ManifestFunctionRole.Arn
 
   ImportStateMachine:
@@ -1429,9 +1511,9 @@ Outputs:
     Value: !Sub "https://${GitHubBranch}.${AmplifyApp.AppId}.amplifyapp.com"
   ManifestApiUrl:
     Value: !Sub "https://${ManifestHttpApi}.execute-api.${AWS::Region}.amazonaws.com"
-  OpenSearchAccessRoleArn:
-    Description: "IAM role ARN to add to the OpenSearch domain's access policy (es:ESHttp* for this stack). The domain's resource-based policy is not owned by this template, so this is a manual post-deploy step."
-    Value: !GetAtt ManifestFunctionRole.Arn
+  SearchEndpoint:
+    Description: "The search collection's endpoint. Every request must be SigV4-signed as service aoss by a principal SearchDataAccessPolicy names, so a consuming site cannot query it anonymously; that needs the public search route, which is not built yet."
+    Value: !GetAtt SearchCollection.CollectionEndpoint
   CognitoUserPoolId:
     Value: !Ref CognitoUserPool
   CognitoClientId:

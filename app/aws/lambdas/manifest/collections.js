@@ -44,6 +44,7 @@ const {
 } = require("./collectionStore");
 const {handlePublishRoute} = require("./publishRoutes");
 const {handleCollectionImportRoute} = require("./importRoutes");
+const {handleSearchRoute} = require("./searchRoutes");
 const {
   canReindex,
   canMoveWork,
@@ -261,6 +262,11 @@ async function handleCollectionsRoute({method, segments, principal, event}) {
   // The publish endpoints live under the collection they act on.
   if (segments.length >= 3 && segments[2] === "publish") {
     return handlePublishRoute({method, segments, principal, event});
+  }
+
+  // GET /collections/{slug}/search — the live search index, through the API.
+  if (segments.length === 3 && segments[2] === "search") {
+    return handleSearchRoute({method, segments, principal, event});
   }
 
   // The import endpoints. Two shapes: /collections/import[/preview], which acts
