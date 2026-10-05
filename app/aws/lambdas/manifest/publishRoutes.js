@@ -6,6 +6,7 @@
 
 const crypto = require("node:crypto");
 const {SFNClient, StartExecutionCommand, DescribeExecutionCommand} = require("@aws-sdk/client-sfn");
+const {CloudFrontClient, CreateInvalidationCommand} = require("@aws-sdk/client-cloudfront");
 const {jsonResponse, parseBody} = require("./http");
 const {canPublish} = require("../../../shared/access");
 const {INTERNAL_PREFIX, PUBLISHED, aliasStateKey} = require("../../../shared/space");
@@ -15,15 +16,19 @@ const {
   liveAliasName,
   stagedAliasName,
   parsePublishedIndexName,
+  publicSearchUrl,
+  publicSearchInvalidationPath,
 } = require("../../../shared/search");
 const {aliasFlipActions} = require("../../../shared/publish");
 const {updateAliases, getAliases, deleteIndex} = require("../../../shared/opensearch");
 const {readJson, putJson, listKeys} = require("./publishStore");
 
 const sfn = new SFNClient({});
+const cloudfront = new CloudFrontClient({});
 const stateMachineArn = process.env.PUBLISH_STATE_MACHINE_ARN || "";
 const prefix = process.env.SEARCH_INDEX_PREFIX || "";
 const baseUrl = (process.env.IIIF_BASE_URL || "").replace(/\/$/, "");
+const distributionId = process.env.CLOUDFRONT_DISTRIBUTION_ID || "";
 
 const statusKeyFor = (slug) => `${INTERNAL_PREFIX}/publish/${slug}/status.json`;
 const batchesPrefix = (slug, runId) => `${INTERNAL_PREFIX}/publish/${slug}/${runId}/batches/`;
@@ -64,6 +69,33 @@ async function storedAliasState(slug) {
 // failed after its alias had moved: the next flip attempt corrects it.
 async function recordAliasState(slug, {liveIndex, stagedIndex}) {
   await putJson(aliasStateKey(slug), {liveIndex, stagedIndex, updatedAt: new Date().toISOString()});
+}
+
+// The public search route's results are cached at the edge
+// (PublicSearchCachePolicy), and a flip is the moment they change, so it drops
+// that collection's. Best effort, like the publish run's invalidation: the
+// alias has already moved, and a stale cache expires on its own within the
+// route's s-maxage. One wildcard path per flip, against the account-wide
+// allowance of 1,000 a month. The new live index names this flip and no other,
+// so it is the caller reference: a retry reuses the invalidation rather than
+// paying for a second path.
+async function invalidatePublicSearch(slug, liveIndex) {
+  if (!distributionId) return {invalidated: false, reason: "no distribution configured"};
+  try {
+    const created = await cloudfront.send(
+      new CreateInvalidationCommand({
+        DistributionId: distributionId,
+        InvalidationBatch: {
+          CallerReference: `flip-${liveIndex}`,
+          Paths: {Quantity: 1, Items: [publicSearchInvalidationPath(slug)]},
+        },
+      }),
+    );
+    return {invalidated: true, invalidationId: created.Invalidation?.Id || null};
+  } catch (error) {
+    console.error("Public search invalidation failed", error);
+    return {invalidated: false, error: error.message};
+  }
 }
 
 // The execution name is deterministic (`{slug}-{runId}`), so its ARN is
@@ -142,17 +174,14 @@ async function handlePublishRoute({method, segments, principal, event}) {
         batchesDone: written,
         liveIndex: aliases.liveIndex,
         stagedIndex: aliases.stagedIndex,
-        // What a downstream site actually consumes. Built here because the
-        // Lambda knows IIIF_BASE_URL; the UI's VITE_IIIF_BASE_URL is the IMAGE
-        // API base, which is a different host entirely.
-        // What a downstream site needs: what to crawl, and what to call the
-        // index. Where to send a query is deliberately absent: the collection
-        // endpoint takes only signed requests from this stack's own role, so
-        // showing it would hand a curator an address their site cannot use.
-        // It comes back with the public search route.
+        // What a downstream site needs: what to crawl, and where to send a
+        // query. Built here because the Lambda knows IIIF_BASE_URL; the UI's
+        // NEXT_PUBLIC_IIIF_BASE_URL is the IMAGE API base, a different host.
+        // The alias is not here: the public route takes the slug and finds the
+        // alias itself, so a site never needs to know it.
         consumes: {
           collection: buildCollectionId(baseUrl, slug, PUBLISHED),
-          searchAlias: liveAliasName(prefix, slug),
+          search: publicSearchUrl(baseUrl, slug),
         },
         // The second button is only meaningful once a candidate exists that
         // the live alias is not already on.
@@ -230,10 +259,12 @@ async function handlePublishRoute({method, segments, principal, event}) {
       // candidate is safe.
       // aliasFlipActions takes the staged alias off the index it makes live.
       await recordAliasState(slug, {liveIndex: stagedIndex, stagedIndex: null});
+      // Before the delete, so the edge drops the old results even if it fails.
+      const cdn = await invalidatePublicSearch(slug, stagedIndex);
       if (liveIndex && parsePublishedIndexName(prefix, liveIndex)) {
         await deleteIndex(liveIndex);
       }
-      return jsonResponse(200, {liveIndex: stagedIndex, previousIndex: liveIndex});
+      return jsonResponse(200, {liveIndex: stagedIndex, previousIndex: liveIndex, cdn});
     } catch (error) {
       console.error("Publish index failed", error);
       return jsonResponse(500, {error: "Unable to publish the search index"});

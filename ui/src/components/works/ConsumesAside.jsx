@@ -38,9 +38,9 @@ function CopyButton({value, label}) {
 }
 
 // One row. A value that does not exist yet shows a dash rather than vanishing:
-// the three things a site needs are the same three before and after
-// publishing, and showing the shape of what publishing will produce is more
-// useful than an empty panel.
+// the things a site needs are the same before and after publishing, and
+// showing the shape of what publishing will produce is more useful than an
+// empty panel.
 function ConsumesRow({label, value, placeholder = "—"}) {
   return (
     <div className="collection-aside__row">
@@ -73,8 +73,11 @@ function ConsumesRow({label, value, placeholder = "—"}) {
 //
 // The two steps light up independently because they are independent: a
 // completed run leaves a candidate index (staged, or live once flipped), and
-// only the flip makes the alias resolvable. Showing the alias before then
-// hands a curator a name that 404s.
+// only the flip gives the search address anything to answer with. Showing it
+// before then hands a curator an address that 404s.
+//
+// Search is one address, not an endpoint plus an index name: the public route
+// takes the collection id and finds the live alias itself.
 export default function ConsumesAside({status}) {
   const iiifPublished = Boolean(status?.stagedIndex || status?.liveIndex);
   const indexLive = Boolean(status?.liveIndex);
@@ -85,15 +88,7 @@ export default function ConsumesAside({status}) {
         label="IIIF Collection"
         value={iiifPublished ? status?.consumes?.collection : null}
       />
-      {/* Never a value, for now. The stack's search endpoint only answers
-          requests signed by its own role, so a site handed it could not
-          query anything; it comes back with the public search route. The
-          row stays so the panel still shows everything a site will need. */}
-      <ConsumesRow label="Amazon OpenSearch Endpoint" value={null} placeholder="Not available yet" />
-      <ConsumesRow
-        label="Search Index ID"
-        value={indexLive ? status?.consumes?.searchAlias : null}
-      />
+      <ConsumesRow label="Search API" value={indexLive ? status?.consumes?.search : null} />
     </div>
   );
 }

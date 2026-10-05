@@ -247,6 +247,53 @@ Resources:
   # All three declared policies turned out to have exact managed equivalents, so
   # this costs no behaviour. What each one is, and why it is the right one, is
   # recorded at the cache behaviour that uses it.
+  #
+  # The one exception is PublicSearchCachePolicy, below: one per stack, because
+  # no managed policy fits. Search results vary by query string, and every
+  # managed policy that keys on query strings also keys on Host, which
+  # CloudFront then forwards — and a Lambda Function URL refuses a request
+  # whose Host is not its own.
+
+  # Signs every request IIIFDistribution sends to PublicSearchFunction's
+  # Function URL, which accepts nothing unsigned (AuthType AWS_IAM). That is
+  # what makes the distribution the only way in, as OAC does for the bucket.
+  PublicSearchOriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub "${AWS::StackName}-search-oac"
+        Description: "Signed requests to the public search function"
+        OriginAccessControlOriginType: lambda
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  # The key is the path plus exactly the three parameters the route reads.
+  # Listing them, rather than keying on every query string, means a junk
+  # parameter cannot split the cache or reach the function: CloudFront forwards
+  # only what is in the key. A new parameter needs a line here.
+  #
+  # TTLs come from the function's Cache-Control (s-maxage=3600 on results). The
+  # flip invalidates /search/{slug}*, so the hour only bounds staleness if that
+  # invalidation fails.
+  PublicSearchCachePolicy:
+    Type: AWS::CloudFront::CachePolicy
+    Properties:
+      CachePolicyConfig:
+        Name: !Sub "${AWS::StackName}-search"
+        Comment: "Public search: path plus q, from and size"
+        MinTTL: 0
+        DefaultTTL: 60
+        MaxTTL: 86400
+        ParametersInCacheKeyAndForwardedToOrigin:
+          EnableAcceptEncodingGzip: true
+          EnableAcceptEncodingBrotli: true
+          CookiesConfig:
+            CookieBehavior: none
+          HeadersConfig:
+            HeaderBehavior: none
+          QueryStringsConfig:
+            QueryStringBehavior: whitelist
+            QueryStrings: [q, from, size]
 
   IIIFDistribution:
     Type: AWS::CloudFront::Distribution
@@ -274,6 +321,13 @@ Resources:
             # is how an S3 origin says "OAC, not the legacy OAI".
             S3OriginConfig:
               OriginAccessIdentity: ""
+          # The Function URL's bare host: FunctionUrl is "https://{host}/".
+          - Id: public-search
+            DomainName: !Select [2, !Split ["/", !GetAtt PublicSearchFunctionUrl.FunctionUrl]]
+            OriginAccessControlId: !GetAtt PublicSearchOriginAccessControl.Id
+            CustomOriginConfig:
+              OriginProtocolPolicy: https-only
+              OriginSSLProtocols: [TLSv1.2]
         DefaultCacheBehavior:
           TargetOriginId: iiif-bucket
           ViewerProtocolPolicy: redirect-to-https
@@ -298,6 +352,18 @@ Resources:
             # followed almost immediately by a read that has to see it, and any
             # TTL here reads as "the save did nothing".
             CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+            ResponseHeadersPolicyId: !Ref IiifCorsPolicy
+          # The public search route, on the same host as the documents a site
+          # already reads. Not a space: nothing under search/ is in the bucket.
+          # Cached, so repeat queries and crawlers are answered here without
+          # waking the search collection.
+          - PathPattern: "search/*"
+            TargetOriginId: public-search
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD]
+            Compress: true
+            CachePolicyId: !Ref PublicSearchCachePolicy
             ResponseHeadersPolicyId: !Ref IiifCorsPolicy
 
   ImagesDistribution:
@@ -529,17 +595,25 @@ Resources:
       Policy: !Sub '[{"Rules":[{"ResourceType":"collection","Resource":["collection/${AWS::StackName}"]}],"AllowFromPublic":true}]'
 
   # Serverless checks this AND the role's IAM policy (aoss:APIAccessAll on
-  # ManifestFunction). One principal: every function that signs a request shares
-  # ManifestFunctionRole. Collection-level permissions cover the aliases;
-  # index-level ones cover the candidate indexes.
+  # ManifestFunction). Two principals, both this stack's own roles and no
+  # person's:
+  #
+  #   - ManifestFunctionRole, shared by every function that builds or flips an
+  #     index. Collection-level permissions cover the aliases; index-level ones
+  #     cover the candidate indexes.
+  #   - PublicSearchFunctionRole, the unauthenticated route's, READ-ONLY: it can
+  #     search and describe, never create, write, delete or move an alias. That
+  #     is what bounds the worst a bug in the public route can do to reading
+  #     data that is already public in published/.
   SearchDataAccessPolicy:
     Type: AWS::OpenSearchServerless::AccessPolicy
     Properties:
       Name: !Sub "${AWS::StackName}-data"
       Type: data
       Policy: !Sub
-        - '[{"Rules":[{"ResourceType":"collection","Resource":["collection/${AWS::StackName}"],"Permission":["aoss:CreateCollectionItems","aoss:DeleteCollectionItems","aoss:UpdateCollectionItems","aoss:DescribeCollectionItems"]},{"ResourceType":"index","Resource":["index/${AWS::StackName}/*"],"Permission":["aoss:CreateIndex","aoss:DeleteIndex","aoss:UpdateIndex","aoss:DescribeIndex","aoss:ReadDocument","aoss:WriteDocument"]}],"Principal":["${RoleArn}"]}]'
+        - '[{"Rules":[{"ResourceType":"collection","Resource":["collection/${AWS::StackName}"],"Permission":["aoss:CreateCollectionItems","aoss:DeleteCollectionItems","aoss:UpdateCollectionItems","aoss:DescribeCollectionItems"]},{"ResourceType":"index","Resource":["index/${AWS::StackName}/*"],"Permission":["aoss:CreateIndex","aoss:DeleteIndex","aoss:UpdateIndex","aoss:DescribeIndex","aoss:ReadDocument","aoss:WriteDocument"]}],"Principal":["${RoleArn}"]},{"Rules":[{"ResourceType":"collection","Resource":["collection/${AWS::StackName}"],"Permission":["aoss:DescribeCollectionItems"]},{"ResourceType":"index","Resource":["index/${AWS::StackName}/*"],"Permission":["aoss:DescribeIndex","aoss:ReadDocument"]}],"Principal":["${PublicSearchRoleArn}"]}]'
         - RoleArn: !GetAtt ManifestFunctionRole.Arn
+          PublicSearchRoleArn: !GetAtt PublicSearchFunctionRole.Arn
 
   SearchCollection:
     Type: AWS::OpenSearchServerless::Collection
@@ -601,6 +675,8 @@ Resources:
           PUBLISH_STATE_MACHINE_ARN: !Sub "arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:stateMachine:${AWS::StackName}-publish"
           # Same story: ImportStateMachine also runs as this function's role.
           IMPORT_STATE_MACHINE_ARN: !Sub "arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:stateMachine:${AWS::StackName}-import"
+          # The flip invalidates the public search route's cached results.
+          CLOUDFRONT_DISTRIBUTION_ID: !Ref IIIFDistribution
       # The import walk hands off to itself when a very large work outruns one
       # invocation's time budget. Lambda's recursive-loop detection treats that
       # as a runaway and TERMINATES the chain after ~16 hops — silently, with
@@ -666,7 +742,8 @@ Resources:
                 - !Sub "arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:stateMachine:${AWS::StackName}-publish"
                 - !Sub "arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:stateMachine:${AWS::StackName}-import"
             # The publish run drops the edge cache for published/ once it has
-            # written it. CloudFront ARNs carry no region segment.
+            # written it, and the flip drops the collection's cached search
+            # results. CloudFront ARNs carry no region segment.
             - Effect: Allow
               Action:
                 - cloudfront:CreateInvalidation
@@ -898,6 +975,82 @@ Resources:
       # the search collection, and SearchDataAccessPolicy then names one
       # principal rather than one per function.
       Role: !GetAtt ManifestFunctionRole.Arn
+
+  # GET /search/{slug} — the search a consuming site calls, and the only
+  # unauthenticated route into the stack. Kept apart from ManifestFunction on
+  # purpose: that role can write S3, delete indexes and manage users, and a
+  # public route on it would expose its whole router. This one has its own role,
+  # read-only in SearchDataAccessPolicy, and no S3 access at all.
+  #
+  # Callable only through IIIFDistribution (search/*): AuthType AWS_IAM, and the
+  # only principal allowed to invoke it is CloudFront on behalf of that
+  # distribution, which signs through PublicSearchOriginAccessControl. So the
+  # edge cache cannot be bypassed.
+  PublicSearchFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Minify: false
+        Target: "node22"
+        Sourcemap: false
+        EntryPoints:
+          - aws/lambdas/public-search/index.js
+        External:
+          - "@aws-sdk/*"
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-public-search"
+      CodeUri: ../
+      Handler: index.handler
+      # A cold search collection takes ~10s to answer; CloudFront gives an
+      # origin 30s.
+      Timeout: 25
+      MemorySize: 256
+      # The ceiling on concurrent public searches, so a flood of cache misses
+      # cannot crowd out the rest of the account or run up the bill. Past it a
+      # request gets a 429 rather than a queue. SearchMaxOcu is the other cap.
+      ReservedConcurrentExecutions: 10
+      FunctionUrlConfig:
+        AuthType: AWS_IAM
+      Environment:
+        Variables:
+          OPENSEARCH_ENDPOINT: !GetAtt SearchCollection.CollectionEndpoint
+          SEARCH_INDEX_PREFIX: !If [SearchIndexPrefixProvided, !Ref SearchIndexPrefix, !Ref "AWS::StackName"]
+          # Overrides the Global, and must: the Global names IIIFDistribution,
+          # which names this function's URL as an origin, so inheriting it is a
+          # CloudFormation cycle. Nothing here builds a document URL.
+          IIIF_BASE_URL: ""
+      Policies:
+        - Statement:
+            # Both, as for ManifestFunction, or every request is a 403. What it
+            # may do once in is SearchDataAccessPolicy's read-only grant.
+            - Effect: Allow
+              Action:
+                - aoss:APIAccessAll
+                - aoss:DashboardsAccessAll
+              Resource: !GetAtt SearchCollection.Arn
+
+  # A Function URL behind OAC needs both: InvokeFunctionUrl for the URL, and
+  # InvokeFunction for the invocation behind it, the latter limited to
+  # invocations that arrive through the URL. SourceArn is what stops any other
+  # account's distribution naming this function as an origin.
+  PublicSearchUrlPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunctionUrl
+      FunctionName: !Ref PublicSearchFunction
+      FunctionUrlAuthType: AWS_IAM
+      Principal: cloudfront.amazonaws.com
+      SourceArn: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${IIIFDistribution}"
+
+  PublicSearchInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref PublicSearchFunction
+      InvokedViaFunctionUrl: true
+      Principal: cloudfront.amazonaws.com
+      SourceArn: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${IIIFDistribution}"
 
   PublishStateMachine:
     Type: AWS::Serverless::StateMachine
@@ -1511,8 +1664,14 @@ Outputs:
     Value: !Sub "https://${GitHubBranch}.${AmplifyApp.AppId}.amplifyapp.com"
   ManifestApiUrl:
     Value: !Sub "https://${ManifestHttpApi}.execute-api.${AWS::Region}.amazonaws.com"
+  PublicSearchUrl:
+    Description: "Where a consuming site sends a search: replace {slug} with the collection id and add ?q= (and optionally from, size). Served through IIIFDistribution only."
+    Value: !If
+      - HasCustomDomain
+      - !Sub "https://iiif-${ProjectName}.${BaseDomainName}/search/{slug}"
+      - !Sub "https://${IIIFDistribution.DomainName}/search/{slug}"
   SearchEndpoint:
-    Description: "The search collection's endpoint. Every request must be SigV4-signed as service aoss by a principal SearchDataAccessPolicy names, so a consuming site cannot query it anonymously; that needs the public search route, which is not built yet."
+    Description: "The search collection's own endpoint. It answers only requests SigV4-signed by a role SearchDataAccessPolicy names, never a consuming site: that is PublicSearchUrl."
     Value: !GetAtt SearchCollection.CollectionEndpoint
   CognitoUserPoolId:
     Value: !Ref CognitoUserPool

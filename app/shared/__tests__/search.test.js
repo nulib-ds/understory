@@ -10,8 +10,13 @@ const {
   parsePublishedIndexName,
   PUBLISHED_INDEX_PROPERTIES,
   buildPublishedDocument,
+  MAX_QUERY_LENGTH,
   buildPublishedSearch,
   publishedSearchResults,
+  publicSearchUrl,
+  publicSearchSlug,
+  publicSearchInvalidationPath,
+  publicSearchResults,
 } = require("../search");
 
 const PREFIX = "kdid-dev";
@@ -100,6 +105,14 @@ test("paging is clamped, whatever the query string says", () => {
   assert.equal(buildPublishedSearch({size: "0"}).size, 50, "zero falls back to the default");
   assert.equal(buildPublishedSearch({size: "nope"}).size, 50);
   assert.equal(buildPublishedSearch({from: "-4"}).from, 0);
+  // Past the result window OpenSearch errors rather than returning nothing.
+  assert.equal(buildPublishedSearch({from: "999999", size: "100"}).from, 9900);
+  assert.equal(buildPublishedSearch({from: "999999"}).from, 9950);
+});
+
+test("an over-long query is cut, not refused", () => {
+  const long = "a".repeat(MAX_QUERY_LENGTH * 5);
+  assert.equal(buildPublishedSearch({q: long}).query.match.title.query.length, MAX_QUERY_LENGTH);
 });
 
 test("search hits come back as rows keyed by work id", () => {
@@ -115,4 +128,52 @@ test("search hits come back as rows keyed by work id", () => {
 
 test("no index yet reads as no results", () => {
   assert.deepEqual(publishedSearchResults(null), {total: 0, hits: []});
+});
+
+// --- the public route ---
+
+test("the public search address sits beside the two spaces", () => {
+  assert.equal(publicSearchUrl("https://iiif.example.org/", "eis"), "https://iiif.example.org/search/eis");
+  assert.equal(publicSearchUrl("https://iiif.example.org", "eis"), "https://iiif.example.org/search/eis");
+  assert.throws(() => publicSearchUrl("https://iiif.example.org", "Not A Slug"), SearchNameError);
+});
+
+test("only /search/{slug} names a collection", () => {
+  assert.equal(publicSearchSlug("/search/eis"), "eis");
+  assert.equal(publicSearchSlug("/search/my-coll/"), "my-coll");
+  for (const path of ["/", "/search", "/search/", "/search/eis/extra", "/other/eis", "", null]) {
+    assert.equal(publicSearchSlug(path), null, String(path));
+  }
+});
+
+// The slug ends up inside an index expression. Each of these would make
+// OpenSearch search something other than one collection's live alias.
+test("a slug that would widen the index expression is refused", () => {
+  for (const slug of ["*", "eis,other", "eis*", "_all", "eis._staged", "EIS", "%2A", "eis%2Cother", "%E0%A4%A"]) {
+    assert.equal(publicSearchSlug(`/search/${slug}`), null, slug);
+  }
+});
+
+test("the flip invalidates every cached variant of one collection's search", () => {
+  assert.equal(publicSearchInvalidationPath("eis"), "/search/eis*");
+  assert.throws(() => publicSearchInvalidationPath("*"), SearchNameError);
+});
+
+test("the public response is our shape, without work ids or scores", () => {
+  const body = publicSearchResults(
+    {
+      hits: {
+        total: {value: 12},
+        hits: [{_id: "w1", _score: 1.5, _source: {manifestId: "m", title: "Masks", thumbnails: ["t"], itemCount: 3}}],
+      },
+    },
+    {q: "masks", from: 0, size: 50},
+  );
+  assert.deepEqual(body, {
+    q: "masks",
+    from: 0,
+    size: 50,
+    total: 12,
+    hits: [{manifestId: "m", title: "Masks", thumbnails: ["t"], itemCount: 3}],
+  });
 });

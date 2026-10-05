@@ -3,7 +3,7 @@
 ## Project Overview
 This project is the admin backend for one or more downstream IIIF sites (Canopy or similar), deployed entirely on AWS. **A collection is the unit of everything**: each downstream site is driven by one curatorial collection, consuming that collection's IIIF documents and its own search index.
 
-A SAM application (`app/aws/template.yml`) provisions a source S3 bucket and an output S3 bucket (`*-iiif`). An S3-triggered Lambda (`app/aws/lambdas/iiif-image/`) converts uploaded source images to pyramid TIFFs (Level 2) for use by `samvera/serverless-iiif` (a nested SAR application). `app/aws/lambdas/manifest/` exposes the whole CRUD and query API behind API Gateway + Cognito. `app/aws/lambdas/publish/` is the task worker for the publish state machine. A Next.js frontend (`ui/`) talks to them, hosted on Amplify Hosting's managed server.
+A SAM application (`app/aws/template.yml`) provisions a source S3 bucket and an output S3 bucket (`*-iiif`). An S3-triggered Lambda (`app/aws/lambdas/iiif-image/`) converts uploaded source images to pyramid TIFFs (Level 2) for use by `samvera/serverless-iiif` (a nested SAR application). `app/aws/lambdas/manifest/` exposes the whole CRUD and query API behind API Gateway + Cognito. `app/aws/lambdas/public-search/` is the one unauthenticated route, the search a consuming site calls, reachable only through `IIIFDistribution` (see **Public search route**). `app/aws/lambdas/publish/` is the task worker for the publish state machine. A Next.js frontend (`ui/`) talks to them, hosted on Amplify Hosting's managed server.
 
 ### The two spaces
 
@@ -94,6 +94,17 @@ way. `working/*` gets a zero-TTL behaviour — every save is followed almost
 immediately by a read that has to see it, so any TTL there reads as "the save
 did nothing". Working documents are fetched by the browser (Clover previews, the raw
 manifest link), not by the admin UI's data layer, which goes through the API.
+
+It also carries **`search/*`**, the public search route, to a second origin:
+`PublicSearchFunction`'s Function URL, signed through its own OAC (type
+`lambda`). That is not a space and nothing under `search/` is in the bucket; it
+is there so a site reads documents and searches from one host. Its cache policy,
+`PublicSearchCachePolicy`, is the stack's **one custom cache policy**. Every
+other behaviour uses a managed one, because custom policies are capped at 20 per
+account (adjustable; 3 in use on 2026-10-05). None fits here: results vary by
+query string, and every managed policy that keys on query strings also keys on
+`Host`, which CloudFront then forwards, and a Function URL refuses a `Host`
+that is not its own.
 
 ### Hostnames
 
@@ -397,8 +408,9 @@ comes back, queued rather than refused. Billing is per OCU-second
 ($0.24/OCU-hour for indexing and for search in us-east-1, checked 2026-10-02),
 plus storage. `SearchMaxOcu` caps capacity, and so caps spend.
 
-**What wakes it:** a publish run, the alias flip, and the unlinked search page
-(`/collection/{slug}/search`, below). No other page load touches it. The publish panel's status read (`GET /collections/{slug}/publish`)
+**What wakes it:** a publish run, the alias flip, the unlinked search page
+(`/collection/{slug}/search`, below), and a public search that misses the edge
+cache (**Public search route**, below). No other page load touches it. The publish panel's status read (`GET /collections/{slug}/publish`)
 used to ask OpenSearch which index each alias named. On a scaled-to-zero
 collection that billed ten minutes of capacity per page view, and held the page
 through the cold start. It now reads a copy in S3,
@@ -418,7 +430,7 @@ page linked from nowhere, queries the collection's LIVE alias through
 `GET /collections/{slug}/search?q=` (`searchRoutes.js`). The route runs as the
 stack's own role, so nobody needs access to the search collection themselves:
 being an IAM admin is not enough on Serverless, whose data access policy names
-only that role. It builds the query itself from a plain string
+only this stack's own roles, never a person's. It builds the query itself from a plain string
 (`buildPublishedSearch`), never accepting query DSL. Its empty search lists
 every document with the total, which answers "did it publish?", and it says
 which run's index answered. Each query can wake the collection, so the page
@@ -426,19 +438,13 @@ searches on submit, not per keystroke. **Next step:** a proper way to see into t
 (list, count, remove leftovers), designed deliberately rather than by granting
 each developer access to the collection.
 
-**The endpoint is not shown to curators.** The status route no longer returns
-it (`consumes` carries only the collection URL and the alias), and the panel's
-"Amazon OpenSearch Endpoint" row reads "Not available yet". The collection only
-answers requests signed by this stack's own role, so a site handed the address
-could not query it. It comes back with the public search route.
-
 **Access needs three things, and each alone gets a 403:**
 
 - the IAM actions `aoss:APIAccessAll` *and* `aoss:DashboardsAccessAll` on the
   collection;
-- a data access policy naming the role (`SearchDataAccessPolicy`). It names one
-  principal, `ManifestFunctionRole`, which `PublishFunction` shares for exactly
-  that reason;
+- a data access policy naming the role (`SearchDataAccessPolicy`). It names two
+  principals: `ManifestFunctionRole`, which `PublishFunction` shares for exactly
+  that reason, and `PublicSearchFunctionRole`, which may only read;
 - a network policy (`SearchNetworkPolicy`). It is public-routable, but every
   request is SigV4-signed and checked against the other two.
 
@@ -486,6 +492,66 @@ nonexistent and `CollectionGroupName` as invalid. Both exist in the
 CloudFormation registry (`aws cloudformation describe-type`). Lint with a
 current cfn-lint instead: `uvx cfn-lint@latest app/aws/template.yml`.
 
+### Public search route
+
+A consuming site searches a collection at
+`{IIIF_BASE_URL}/search/{slug}?q=&from=&size=` (the `PublicSearchUrl` output;
+`consumes.search` on the status route; the panel's **Search API** row once the
+index is live). It is the only unauthenticated way into the stack, so each of
+these is deliberate:
+
+- **The slug, never an alias or index name.** The function builds
+  `{prefix}.{slug}` itself, so the route can only read what a curator has
+  flipped live. Accepting a name would accept any index expression: `*` or
+  `a,b` searches several indexes, and `….slug._staged` reads a candidate before
+  its flip. `publicSearchSlug` validates against the slug pattern before the
+  slug reaches OpenSearch. The alias is no longer shown to curators at all,
+  because no site needs it.
+- **Its own function, `PublicSearchFunction`** (`app/aws/lambdas/public-search/`),
+  not a route on `ManifestFunction`, whose role writes S3, deletes indexes and
+  manages users. Its role is **read-only** in `SearchDataAccessPolicy` and has no
+  S3 access, so the worst a bug there can do is read search data that is
+  already public in `published/`. `ReservedConcurrentExecutions: 10` caps it;
+  past that a request gets a 429.
+- **Only through `IIIFDistribution`.** The Function URL takes `AWS_IAM`, and
+  the only principal allowed to invoke it is CloudFront on behalf of that
+  distribution. A direct request is a 403, so nothing bypasses the cache, the
+  same rule the bucket follows. It needs both `lambda:InvokeFunctionUrl` and
+  `lambda:InvokeFunction` (the latter `InvokedViaFunctionUrl`).
+- **Cached at the edge** by path plus `q`, `from` and `size` only, so junk
+  parameters neither split the cache nor reach the function. Results carry
+  `s-maxage=3600`, and the flip invalidates `/search/{slug}*` (one path, best
+  effort, caller reference `flip-{liveIndex}` so a retry reuses it). A visitor's browser
+  keeps a result for 60s, which no invalidation reaches.
+- **Our response shape, never OpenSearch's:**
+  `{q, from, size, total, hits: [{manifestId, title, thumbnails, itemCount}]}`.
+  No work id, no score. Adding a field is only ever an addition; a site bound
+  to `_source` would break whenever the index changed. A collection that does
+  not exist and one never flipped are the same 404, so the route cannot list
+  collections. Every response is `X-Robots-Tag: noindex`.
+
+Two costs accepted with it:
+
+- **Cold starts are visible to the public.** The first search after ten idle
+  minutes waits ~10s. The fix is paying for capacity around the clock.
+- **Cache misses can keep the collection warm.** Each one can bill ten minutes
+  of capacity. Reserved concurrency and `SearchMaxOcu` are the ceilings; a WAF
+  rate rule on the distribution is the next step if traffic ever needs it.
+
+Only `title` is searchable. Searching more (metadata, summary) is planned, and
+needs no migration: every publish builds a fresh index, so a new mapping takes
+effect on the next run, and the route's contract does not change.
+
+> **`IIIF_BASE_URL: ""` on `PublicSearchFunction` is load-bearing.** It
+> overrides the Global, which names `IIIFDistribution`, which names this
+> function's URL as an origin: inheriting it is a CloudFormation cycle. **cfn-lint
+> does not catch it**, even with the SAM translator installed. Checked by
+> transforming the template with `samtranslator` and walking its references.
+
+> **Not yet run against a live stack.** Verified by the unit tests, esbuild,
+> `sam validate` and cfn-lint only. The first deploy is where the OAC-signed
+> Function URL, the read-only data access grant and the cache policy meet AWS.
+
 ## Publishing
 
 Two deliberate user actions, and the order is the point:
@@ -528,6 +594,7 @@ app/
         collectionStore.js #   collection documents: versioned reads, conditional writes, reconcile
         publishRoutes.js   #   start a run, read its progress, flip the alias
         importRoutes.js    #   collection import: preview, start a run, read its progress
+      public-search/       # Lambda: GET /search/{slug}, the one unauthenticated route
       publish/             # Lambda: PublishStateMachine's task worker
       import/              # Lambda: ImportStateMachine's task worker
       av-transcode/        # Lambda: submits MediaConvert jobs, records their outcome
@@ -1660,7 +1727,7 @@ There are **no UI tests**. A frontend change's test plan is the manual verificat
 Since the Lambdas cannot be unit-tested, the cheap backend checks worth running before a deploy are:
 
 ```
-npm test                                   # 166 pure tests
+npm test                                   # 176 pure tests
 cd app && npx esbuild aws/lambdas/manifest/index.js --bundle \
   --platform=node --target=node22 '--external:@aws-sdk/*' --outfile=/dev/null
 cd app/aws && sam validate                # the SAM transform; offline
