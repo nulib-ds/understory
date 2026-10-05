@@ -1737,4 +1737,6 @@ uvx cfn-lint@latest app/aws/template.yml   # see "Linting" under Search index
 esbuild resolving the whole graph catches a missing export or a require cycle, and `eslint` in `ui/` has `no-undef` on, which catches a variable that failed to move during a refactor. That config only covers `ui/`; to lint the backend, point `ui/node_modules/.bin/eslint` at `app/` with an inline flat config enabling `no-undef` for CommonJS. Note eslint's `varsIgnorePattern: ^[A-Z_]` means it will **not** flag an unused component or icon import — those have to be found by hand. `npm run build` in `ui/` prerenders the static routes, so it also catches browser-only code reached during a server render.
 
 ## Commit & Pull Request Guidelines
+**Only a human developer commits, pushes or opens a pull request.** An agent working in this repo never runs `git commit`, `git push` or `gh pr create`. It leaves its changes uncommitted in the working tree, for a developer to review and commit.
+
 Use Conventional Commits (`feat:`, `fix:`, `chore:`, etc.) from the start. Reference related GitHub issues in the PR body. Include manual verification steps (`npm test`, sample render) so reviewers can reproduce. Keep PRs focused; split unrelated work into separate branches.
