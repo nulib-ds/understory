@@ -4,3 +4,6 @@ output
 .DS_Store
 .claude
 samconfig.toml
+samconfig.*.toml
+samconfig.yaml
+samconfig.*.yaml

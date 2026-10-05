@@ -36,8 +36,8 @@ Understory runs on AWS and deploys as one [SAM](https://aws.amazon.com/serverles
 
 You need an AWS account, the [SAM CLI](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/install-sam-cli.html), Docker, Node 22, and an OpenSearch domain.
 
-1. Copy `app/aws/samconfig.toml.example` to `app/aws/samconfig.toml` and fill it in: a stack name such as `<you>-dev-understory`, a GitHub token for Amplify, and your OpenSearch domain.
-2. Deploy with `cd app/aws && sam build --use-container && sam deploy --guided`.
+1. Copy `samconfig.yaml.example` at the repo root to `samconfig.<you>.yaml` beside it and set a stack name such as `<you>-dev-understory`.
+2. Deploy with `cd app/aws && sam build --use-container && sam deploy --config-file ../../samconfig.<you>.yaml`.
 3. Copy the `ImagesDistributionHost` output into the `ImageApiForceHost` parameter, and deploy again.
 4. Create your user in the stack's Cognito pool and add it to the `admin` group.
 5. Fill in `ui/.env.local` from the stack outputs, following `ui/.env.local.example`, then run `npm install && npm run dev` in `ui/`.

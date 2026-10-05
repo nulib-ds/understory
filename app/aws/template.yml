@@ -6,16 +6,22 @@ Parameters:
   ServerlessIiifVersion:
     Type: String
     Default: "7.0.1"
+  # --- Hosted admin UI ----------------------------------------------------------
+  # All three matter only when GitHubBranch is set. Without a branch the stack
+  # deploys no Amplify app at all, and the UI runs locally with npm run dev.
   GitHubRepo:
     Type: String
-    Description: "URL of the GitHub repo Amplify builds the UI from: https://github.com/nulib-ds/understory, or your fork of it"
+    Default: "https://github.com/nulib-ds/understory"
+    Description: "URL of the GitHub repo Amplify builds the UI from: https://github.com/nulib-ds/understory, or your fork of it. Ignored without GitHubBranch."
   GitHubBranch:
     Type: String
-    Default: main
+    Default: ""
+    Description: "Branch Amplify Hosting builds and serves the admin UI from, e.g. staging, main, or a feature branch on a dev stack. Leave blank to deploy no hosted UI."
   GitHubOAuthToken:
     Type: String
+    Default: ""
     NoEcho: true
-    Description: "GitHub personal access token with repo scope (https://github.com/settings/tokens)"
+    Description: "GitHub personal access token with repo scope (https://github.com/settings/tokens). Required with GitHubBranch, ignored without it."
   SearchMaxOcu:
     Type: Number
     Default: 2
@@ -85,6 +91,21 @@ Conditions:
   ManageDns: !And
     - !Condition HasCustomDomain
     - !Not [!Equals [!Ref HostedZoneId, ""]]
+  # No branch, no Amplify app: a dev stack runs the UI locally instead.
+  HasHostedUI: !Not [!Equals [!Ref GitHubBranch, ""]]
+  HasHostedUIDomain: !And
+    - !Condition HasHostedUI
+    - !Condition HasCustomDomain
+
+# Checked before any resource is touched. Without it a missing token fails at
+# AmplifyApp, part-way through a create, and the rollback leaves the two
+# retained buckets behind to block the next attempt by name.
+Rules:
+  HostedUINeedsToken:
+    RuleCondition: !Not [!Equals [!Ref GitHubBranch, ""]]
+    Assertions:
+      - Assert: !Not [!Equals [!Ref GitHubOAuthToken, ""]]
+        AssertDescription: "GitHubBranch deploys the hosted UI, which needs GitHubOAuthToken."
 
 Resources:
   SourceBucket:
@@ -1479,6 +1500,7 @@ Resources:
   # render in the browser and call the API with the user's own token.
   AmplifyServiceRole:
     Type: AWS::IAM::Role
+    Condition: HasHostedUI
     Properties:
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
@@ -1506,6 +1528,7 @@ Resources:
 
   AmplifyApp:
     Type: AWS::Amplify::App
+    Condition: HasHostedUI
     Properties:
       Name: !Sub "${AWS::StackName}-ui"
       Repository: !Ref GitHubRepo
@@ -1558,6 +1581,7 @@ Resources:
 
   AmplifyBranch:
     Type: AWS::Amplify::Branch
+    Condition: HasHostedUI
     Properties:
       AppId: !GetAtt AmplifyApp.AppId
       BranchName: !Ref GitHubBranch
@@ -1574,7 +1598,7 @@ Resources:
   # HostedZoneId is not consulted either way, so ManageDns does not gate this.
   AmplifyDomain:
     Type: AWS::Amplify::Domain
-    Condition: HasCustomDomain
+    Condition: HasHostedUIDomain
     Properties:
       AppId: !GetAtt AmplifyApp.AppId
       DomainName: !Sub "admin-${ProjectName}.${BaseDomainName}"
@@ -1653,14 +1677,17 @@ Outputs:
   IIIFDistributionId:
     Description: "Invalidated by the publish run."
     Value: !Ref IIIFDistribution
+  # Neither UI output exists without GitHubBranch: there is no hosted UI to name.
   UIEndpoint:
     Description: "Admin UI. The custom hostname once one is configured; the generated Amplify domain otherwise."
+    Condition: HasHostedUI
     Value: !If
       - HasCustomDomain
       - !Sub "https://admin-${ProjectName}.${BaseDomainName}"
       - !Sub "https://${GitHubBranch}.${AmplifyApp.AppId}.amplifyapp.com"
   AmplifyDefaultDomain:
     Description: "The branch's generated Amplify domain, which keeps working alongside the custom one. Attaching a domain takes several minutes and the DNS record may not be this stack's to write, so this stays the way in until the custom hostname resolves."
+    Condition: HasHostedUI
     Value: !Sub "https://${GitHubBranch}.${AmplifyApp.AppId}.amplifyapp.com"
   ManifestApiUrl:
     Value: !Sub "https://${ManifestHttpApi}.execute-api.${AWS::Region}.amazonaws.com"
