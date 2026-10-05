@@ -128,19 +128,32 @@ function buildPublishedDocument({manifestUrl, label, thumbnails = [], itemCount 
   };
 }
 
-// GET /collections/{slug}/search, as a query against the live alias. Built here
-// from a plain string rather than accepting query DSL from the browser, so the
-// route can only ever ask the one question it is for. Titles are the only
-// searchable field a published document has.
+// A query against the live alias, for both search routes: the admin one
+// (GET /collections/{slug}/search) and the public one (GET /search/{slug}).
+// Built here from a plain string rather than accepting query DSL from the
+// browser, so either route can only ever ask the one question it is for.
+// Titles are the only searchable field a published document has.
 //
 // Unfiltered, it lists everything alphabetically; filtered, by relevance.
+//
+// Every number is clamped because the public route takes them from anyone.
+// from + size past OpenSearch's result window (10,000) is an error rather than
+// an empty page, so `from` stops where the window does.
 const MAX_SEARCH_SIZE = 100;
+const MAX_QUERY_LENGTH = 200;
+const RESULT_WINDOW = 10000;
+
+// The term as searched, which the public route echoes back.
+function searchTerm(q) {
+  return String(q || "").trim().slice(0, MAX_QUERY_LENGTH);
+}
 
 function buildPublishedSearch({q = "", from = 0, size = 50} = {}) {
-  const term = String(q || "").trim();
+  const term = searchTerm(q);
+  const pageSize = Math.min(Math.max(1, Number(size) || 50), MAX_SEARCH_SIZE);
   return {
-    from: Math.max(0, Number(from) || 0),
-    size: Math.min(Math.max(1, Number(size) || 50), MAX_SEARCH_SIZE),
+    from: Math.min(Math.max(0, Number(from) || 0), RESULT_WINDOW - pageSize),
+    size: pageSize,
     track_total_hits: true,
     query: term ? {match: {title: {query: term, fuzziness: "AUTO"}}} : {match_all: {}},
     ...(term ? {} : {sort: [{"title.keyword": "asc"}]}),
@@ -164,6 +177,62 @@ function publishedSearchResults(response) {
   };
 }
 
+// --- the public route --------------------------------------------------------
+
+// GET /search/{slug} on IIIFDistribution's host, the address a consuming site
+// is given. It sits beside working/ and published/ under IIIF_BASE_URL, but is
+// not a space: CloudFront sends search/* to PublicSearchFunction, not the
+// bucket.
+const PUBLIC_SEARCH_SEGMENT = "search";
+
+function publicSearchUrl(baseUrl, slug) {
+  return `${String(baseUrl || "").replace(/\/$/, "")}/${PUBLIC_SEARCH_SEGMENT}/${assertSlug(slug)}`;
+}
+
+// The slug from a request path, or null for any path that is not exactly
+// /search/{slug}. Validated here because it becomes part of an index
+// expression: OpenSearch would read `*` or `a,b` as several indexes, and the
+// slug pattern admits neither.
+function publicSearchSlug(path) {
+  const segments = String(path || "").split("/").filter(Boolean);
+  if (segments.length !== 2 || segments[0] !== PUBLIC_SEARCH_SEGMENT) return null;
+  let slug;
+  try {
+    slug = decodeURIComponent(segments[1]);
+  } catch {
+    return null;
+  }
+  return collectionSlugPattern.test(slug) ? slug : null;
+}
+
+// What the flip drops from the edge. The trailing wildcard covers every query
+// string variant, which the cache key keeps apart. It also catches a sibling
+// slug that starts the same way (`art` takes `art-history` with it), which
+// only costs that collection a re-query.
+function publicSearchInvalidationPath(slug) {
+  return `/${PUBLIC_SEARCH_SEGMENT}/${assertSlug(slug)}*`;
+}
+
+// The public response. Our own shape, never OpenSearch's: a site that bound to
+// `_source` or `_score` would break the day the index changes, and this way
+// adding a field (highlights, facets, more searchable text) is only ever an
+// addition. No work id and no score, which are this app's business.
+function publicSearchResults(response, {q, from, size}) {
+  const hits = response?.hits?.hits || [];
+  return {
+    q,
+    from,
+    size,
+    total: response?.hits?.total?.value ?? hits.length,
+    hits: hits.map((hit) => ({
+      manifestId: hit._source?.manifestId || "",
+      title: hit._source?.title || "",
+      thumbnails: hit._source?.thumbnails || [],
+      itemCount: hit._source?.itemCount ?? 0,
+    })),
+  };
+}
+
 module.exports = {
   SEP,
   SearchNameError,
@@ -176,6 +245,12 @@ module.exports = {
   parsePublishedIndexName,
   PUBLISHED_INDEX_PROPERTIES,
   buildPublishedDocument,
+  MAX_QUERY_LENGTH,
+  searchTerm,
   buildPublishedSearch,
   publishedSearchResults,
+  publicSearchUrl,
+  publicSearchSlug,
+  publicSearchInvalidationPath,
+  publicSearchResults,
 };

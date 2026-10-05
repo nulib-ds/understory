@@ -426,8 +426,8 @@ main.layout {
 .collection-aside__panel {
   display: flex;
   flex-direction: column;
-  /* Roomier than the old --space-2: three wrapped URLs stacked tightly read as
-     one block of text rather than three separate values. */
+  /* Roomier than the old --space-2: wrapped URLs stacked tightly read as
+     one block of text rather than separate values. */
   gap: var(--space-4);
   padding: var(--space-4);
   border: 1px solid var(--gray-a5);
@@ -453,7 +453,7 @@ main.layout {
 }
 
 /* min-width: 0 so the code block can shrink inside the flex row; break-all
-   because an OpenSearch endpoint has no spaces to wrap at. */
+   because a long URL has no spaces to wrap at. */
 .collection-aside__value code {
   flex: 1;
   min-width: 0;
