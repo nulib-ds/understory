@@ -3,21 +3,8 @@ import {CSS} from "@dnd-kit/utilities";
 import {Card, Flex, IconButton, Progress, Text, Tooltip} from "@radix-ui/themes";
 import {SpeakerLoudIcon, TrashIcon, VideoIcon} from "@radix-ui/react-icons";
 import InlineTextEditor from "../InlineTextEditor";
+import DragHandleGridIcon from "./DragHandleGridIcon";
 import {buildThumbnailUrlFromInfo} from "../../lib/canvasAssets";
-
-// Radix's DragHandleDots icons are 2 columns wide; this is a 3x3 grid.
-// Sized from CSS (.canvas-drag-handle svg) so it tracks the fluid scale rather
-// than staying 18px inside a control that grew.
-function DragHandleGridIcon() {
-  const positions = [3, 8, 13];
-  return (
-    <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
-      {positions.flatMap((cx) =>
-        positions.map((cy) => <circle key={`${cx}-${cy}`} cx={cx} cy={cy} r="1.4" />),
-      )}
-    </svg>
-  );
-}
 
 // One canvas row. Imported canvases are draggable and removable; canvases the
 // import chain has not reached yet show their own progress instead — reordering

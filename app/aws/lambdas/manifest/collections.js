@@ -28,7 +28,13 @@ const {
   rootCollectionSummaries,
   serializeCollection,
   canonicalizeCollectionLabels,
+  buildManifestReference,
+  memberFromReference,
+  membersOf,
+  arrangeMembers,
+  moveMember,
 } = require("../../../shared/collection");
+const {buildManifestId} = require("../../../shared/manifest");
 const {jsonResponse, parseBody, isNotFound} = require("./http");
 const {WORKING, PUBLISHED, spaceKey} = require("../../../shared/space");
 const {contentHash} = require("../../../shared/publish");
@@ -37,7 +43,10 @@ const {
   s3,
   bucket,
   readJson,
+  readVersioned,
   writeJson,
+  writeVersioned,
+  withWriteRetry,
   ensureRoot,
   updateRoot,
   reconcileQuietly,
@@ -50,6 +59,7 @@ const {
   canMoveWork,
   canViewCollection,
   canManageCollections,
+  canOrderCollection,
 } = require("../../../shared/access");
 const {readImportStatus} = require("./importAssets");
 
@@ -267,6 +277,67 @@ async function handleCollectionsRoute({method, segments, principal, event}) {
   // GET /collections/{slug}/search — the live search index, through the API.
   if (segments.length === 3 && segments[2] === "search") {
     return handleSearchRoute({method, segments, principal, event});
+  }
+
+  // PUT /collections/{slug}/order  {workId, afterWorkId}
+  //
+  // Moves ONE work to sit after another (null: to the front) in the collection's
+  // leaf, which is where its order lives. A move rather than a whole new order:
+  // the page loads works a page at a time, so it knows only a prefix of the list
+  // and could not send the rest — and one work changing place cannot invent,
+  // drop or duplicate another. Conditional on the version read, retried if a save
+  // lands beside it.
+  if (method === "PUT" && segments.length === 3 && segments[2] === "order") {
+    const slug = decodeURIComponent(segments[1]);
+    if (!canOrderCollection(principal, slug)) {
+      return jsonResponse(403, {error: "You do not have permission to reorder this collection"});
+    }
+    const body = parseBody(event) || {};
+    const idPattern = /^[A-Za-z0-9-]+$/;
+    const afterGiven = body.afterWorkId !== undefined && body.afterWorkId !== null;
+    if (typeof body.workId !== "string" || !idPattern.test(body.workId)) {
+      return jsonResponse(400, {error: "workId is required"});
+    }
+    if (afterGiven && (typeof body.afterWorkId !== "string" || !idPattern.test(body.afterWorkId))) {
+      return jsonResponse(400, {error: "afterWorkId must be a work id, or null"});
+    }
+    try {
+      const outcome = await withWriteRetry(async () => {
+        const current = await readVersioned(collectionObjectKey(slug));
+        if (!current) return {missing: true};
+        const moved = moveMember(
+          membersOf(current.document),
+          buildManifestId(baseUrl, body.workId),
+          afterGiven ? buildManifestId(baseUrl, body.afterWorkId) : null,
+        );
+        if (!moved) return {changed: false};
+        const document = buildCollectionDocument({
+          baseUrl,
+          slug,
+          label: extractLabel(current.document.label) || slug,
+          members: moved.map(memberFromReference),
+        });
+        await writeVersioned(collectionObjectKey(slug), document, current.etag);
+        return {changed: true, document};
+      });
+      if (outcome.missing) return jsonResponse(404, {error: `No collection called "${slug}"`});
+      if (outcome.changed) {
+        // The collection borrows its first member's thumbnail, so moving the
+        // first place can change what the register shows. Leaf first, then root.
+        await updateRoot((root) =>
+          buildRootCollectionDocument({
+            baseUrl,
+            collections: rootCollectionSummaries(root).map((entry) =>
+              entry.slug === slug ? {...entry, thumbnail: outcome.document.thumbnail || null} : entry,
+            ),
+          }),
+        );
+      }
+      return jsonResponse(200, {ok: true, changed: outcome.changed});
+    } catch (error) {
+      console.error("Reorder collection failed", error);
+      return jsonResponse(500, {error: "Unable to reorder the collection"});
+    }
   }
 
   // The import endpoints. Two shapes: /collections/import[/preview], which acts
@@ -543,9 +614,14 @@ async function reindexCollections() {
       console.warn(`Collection ${slug} has conflicting labels: ${[...distinct].join(" | ")}`);
     }
     const label = canonical?.label || declared.get(slug) || slug;
-    const members = [...group.members].sort(
-      (a, b) => a.label.localeCompare(b.label) || a.manifestId.localeCompare(b.manifestId),
-    );
+    // The order a curator gave the collection survives a rebuild: the existing
+    // leaf's order is kept for the works still in it, and anything new goes on the
+    // end (label order, if the collection was never ordered by hand). Membership
+    // is still the corpus's alone; only the ORDER is read back from the leaf.
+    const incoming = group.members.map(buildManifestReference);
+    const stillThere = new Set(incoming.map((item) => item.id));
+    const prior = membersOf(await readJson(collectionObjectKey(slug))).filter((item) => stillThere.has(item.id));
+    const members = arrangeMembers(prior, incoming).map(memberFromReference);
 
     const document = buildCollectionDocument({baseUrl, slug, label, members});
     documents.push({slug, document});

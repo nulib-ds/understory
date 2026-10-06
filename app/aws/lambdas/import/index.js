@@ -37,7 +37,7 @@ const {
   collectionObjectKey,
   rootCollectionKey,
   rootCollectionSummaries,
-  sortMembers,
+  arrangeMembers,
 } = require("../../../shared/collection");
 const {INTERNAL_PREFIX} = require("../../../shared/space");
 const {progressKey} = require("../../../shared/importProgress");
@@ -330,7 +330,6 @@ async function readResults(slug, runId) {
 async function writeCollection({slug, runId}) {
   const results = await readResults(slug, runId);
   const landed = results.filter((r) => r.status === "ok" || r.status === "partial");
-  const landedIds = new Set(landed.map((r) => r.manifestId));
 
   const root = await ensureRoot();
   const label = rootCollectionSummaries(root).find((entry) => entry.slug === slug)?.label || slug;
@@ -340,14 +339,17 @@ async function writeCollection({slug, runId}) {
   // say. The leaf is what the works list and publish read, so a document built
   // from the results alone would make such a work vanish from both.
   //
-  // Sorted the way reconciliation sorts, so "first member" — whose thumbnail
-  // the collection borrows — means the same thing however the document was
+  // Arranged the way reconciliation arranges (arrangeMembers): label order for a
+  // collection nobody has ordered by hand, and the curator's order otherwise
+  // with these works on the end. So "first member" — whose thumbnail the
+  // collection borrows — means the same thing however the document was
   // produced, and a later reindex does not silently change the picture.
   // Conditional, because a curator's save can be rewriting this leaf right now.
   const leaf = await withWriteRetry(async () => {
     const current = await readVersioned(collectionObjectKey(slug));
-    const others = membersOf(current?.document).filter((item) => !landedIds.has(item.id));
-    const members = sortMembers([...landed.map(buildManifestReference), ...others]).map(memberFromReference);
+    const members = arrangeMembers(membersOf(current?.document), landed.map(buildManifestReference)).map(
+      memberFromReference,
+    );
     const document = buildCollectionDocument({baseUrl, slug, label, members});
     await writeVersioned(collectionObjectKey(slug), document, current?.etag || null);
     return document;

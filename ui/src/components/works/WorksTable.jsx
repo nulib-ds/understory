@@ -1,27 +1,28 @@
 import {useState} from "react";
 import NextLink from "next/link";
-import {Button, Callout, Flex, Link, Table, Text} from "@radix-ui/themes";
-import PreviewDialog from "./PreviewDialog";
+import {
+  DndContext,
+  KeyboardSensor,
+  PointerSensor,
+  closestCenter,
+  useSensor,
+  useSensors,
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  arrayMove,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
+import {CSS} from "@dnd-kit/utilities";
+import {Callout, Card, Flex, IconButton, Link, Text, Tooltip} from "@radix-ui/themes";
+import {TrashIcon} from "@radix-ui/react-icons";
+import DragHandleGridIcon from "../work/DragHandleGridIcon";
 import DeleteWorkDialog from "./DeleteWorkDialog";
 import SyncStateBadge from "./SyncStateBadge";
 import ImportStateBadge from "./ImportStateBadge";
 import {imageRequestUrl} from "../../lib/canvasAssets";
-
-// When the filter hides every row the table must still render its header, or
-// the control disappears along with the rows and there is no way to undo it.
-// (This guarded the collection filter before; the `q` filter has exactly the
-// same problem.)
-function EmptyFilterRow({colSpan, children}) {
-  return (
-    <Table.Row>
-      <Table.Cell colSpan={colSpan}>
-        <Text as="p" size="2" color="gray">
-          {children}
-        </Text>
-      </Table.Cell>
-    </Table.Row>
-  );
-}
 
 function hideOnError(event) {
   event.currentTarget.style.visibility = "hidden";
@@ -33,45 +34,139 @@ function hideOnError(event) {
 // collections list and the sign-in showcase use.
 //
 // Requested at 2x the rendered size so it stays sharp on a retina display.
-// A work with no image — an audio work, or one mid-import — keeps the empty
-// box, which holds the column's width so the titles beside it stay aligned.
+// A work with no image — an audio work, or one mid-import — keeps an empty box
+// of the same size, so the titles beside it stay aligned.
 function WorkThumbnail({work}) {
   const service = Array.isArray(work.thumbnails) ? work.thumbnails[0] : null;
-  return (
-    <span className="work-thumb">
-      {service && (
-        <img
-          src={imageRequestUrl(service, {region: "square", size: "64,64"})}
-          alt=""
-          loading="lazy"
-          onError={hideOnError}
-        />
-      )}
-    </span>
+  return service ? (
+    <img
+      src={imageRequestUrl(service, {region: "square", size: "80,80"})}
+      alt=""
+      className="asset-dropzone-preview"
+      /* Thousands of works means thousands of requests otherwise; the
+         intrinsic size keeps the row from reflowing as they arrive. */
+      loading="lazy"
+      decoding="async"
+      width="40"
+      height="40"
+      onError={hideOnError}
+    />
+  ) : (
+    <span className="asset-dropzone-preview work-list-thumb--empty" aria-hidden="true" />
   );
 }
 
-// A row drawn from a running import's plan rather than from the collection: it
-// has a state instead of a sync status, and only a work that has landed can be
-// opened, previewed or deleted.
-function landed(work) {
-  return work.importState === "ok" || work.importState === "partial";
+// One row. A work that is still being imported shows only a placeholder, its
+// title and its import state: it has no handle and no trash can, because there
+// is nothing to move or delete yet. Every other row is sortable — or, while a
+// filter hides part of the list, carries an inert handle, so the rows do not
+// shift sideways as soon as someone types.
+function WorkRow({work, workPath, canReorder, reorderable, onDelete}) {
+  const importing = Boolean(work.importState);
+  const openable = !importing || work.importState === "ok" || work.importState === "partial";
+  const sortable = !importing && canReorder && reorderable;
+  const {attributes, listeners, setNodeRef, transform, transition, isDragging} = useSortable({
+    id: work.identifier,
+    disabled: !sortable,
+  });
+  const style = {
+    // Zero out x so a dragged row tracks the pointer vertically only, as the
+    // asset list does.
+    transform: CSS.Transform.toString(transform ? {...transform, x: 0} : null),
+    transition,
+  };
+
+  return (
+    <Card
+      ref={setNodeRef}
+      style={style}
+      size="1"
+      className={["canvas-list-item", isDragging ? "canvas-list-item--dragging" : ""]
+        .filter(Boolean)
+        .join(" ")}
+    >
+      <Flex justify="between" align="center" gap="3">
+        <Flex align="center" gap="3" className={`work-list-info${importing ? "" : " canvas-list-info"}`}>
+          {!importing &&
+            (sortable ? (
+              <button
+                type="button"
+                className="canvas-drag-handle"
+                aria-label="Reorder work"
+                {...attributes}
+                {...listeners}
+              >
+                <DragHandleGridIcon />
+              </button>
+            ) : (
+              <span className="canvas-drag-handle canvas-drag-handle--inert" aria-hidden="true">
+                <DragHandleGridIcon />
+              </span>
+            ))}
+          <WorkThumbnail work={work} />
+          {openable ? (
+            <Link asChild size="3" weight="bold">
+              <NextLink href={workPath(work.identifier)} prefetch={false}>
+                {work.label || work.identifier}
+              </NextLink>
+            </Link>
+          ) : (
+            <Text size="3" className="import-pending-title">
+              {work.label || work.identifier}
+            </Text>
+          )}
+        </Flex>
+        <Flex align="center" gap="3" className="work-list-status">
+          {/* Always visible: a status you have to hover to see is not a status. */}
+          {importing ? (
+            <ImportStateBadge state={work.importState} />
+          ) : (
+            <SyncStateBadge state={work.syncState} />
+          )}
+          {!importing && (
+            <Tooltip content="Delete work">
+              <IconButton
+                type="button"
+                variant="soft"
+                color="red"
+                size="1"
+                onClick={() => onDelete(work)}
+                aria-label="Delete work"
+              >
+                <TrashIcon />
+              </IconButton>
+            </Tooltip>
+          )}
+        </Flex>
+      </Flex>
+    </Card>
+  );
 }
 
-function canvasCountOf(work) {
-  if (Number.isFinite(work.itemCount)) return work.itemCount;
-  return Array.isArray(work.manifest?.items) ? work.manifest.items.length : 0;
-}
-
-// One table for the whole collection, filtered or not. There used to be two —
-// a list and a separate search-results table — because listing and searching
-// were different endpoints returning different shapes. They are one query now,
-// so a filtered view is the same table with fewer rows.
+// The collection's works as a list of cards, the way a work's assets are: a drag
+// handle, a thumbnail, a title, the work's status on the right and a trash can.
+// The order is the collection's own, kept in its leaf document (see "Order" in
+// shared/collection.js), and a drag reports one move: this work, after that one.
+// Only the rows that have loaded can be moved among — the list arrives a page at
+// a time — and nothing is movable while a filter is hiding part of it.
 //
 // There is no Collection column: every row here is in the same collection.
-export default function WorksTable({works, onDelete, workPath, filtered, loading, error}) {
-  const [previewWork, setPreviewWork] = useState(null);
+export default function WorksTable({
+  works,
+  onDelete,
+  onMoveWork,
+  workPath,
+  filtered,
+  canReorder = false,
+  loading,
+  error,
+}) {
   const [pendingDelete, setPendingDelete] = useState(null);
+  const sensors = useSensors(
+    // A small threshold keeps a click on the handle a click.
+    useSensor(PointerSensor, {activationConstraint: {distance: 5}}),
+    useSensor(KeyboardSensor, {coordinateGetter: sortableKeyboardCoordinates}),
+  );
 
   if (loading) {
     return <Text as="p" size="2" color="gray">Loading works…</Text>;
@@ -86,101 +181,44 @@ export default function WorksTable({works, onDelete, workPath, filtered, loading
   }
 
   const rows = works || [];
-  // Only a genuinely empty collection skips the table; a filtered-empty one
-  // keeps its header so the filter can be cleared.
-  if (rows.length === 0 && !filtered) {
-    return <Text as="p" size="2" color="gray" className="tree-empty">No works in this collection yet.</Text>;
+  if (rows.length === 0) {
+    return filtered ? (
+      <Text as="p" size="2" color="gray">No works match that filter.</Text>
+    ) : (
+      <Text as="p" size="2" color="gray" className="tree-empty">No works in this collection yet.</Text>
+    );
   }
+
+  const handleDragEnd = ({active, over}) => {
+    if (!over || active.id === over.id) return;
+    const from = rows.findIndex((work) => work.identifier === active.id);
+    const to = rows.findIndex((work) => work.identifier === over.id);
+    if (from === -1 || to === -1) return;
+    const moved = arrayMove(rows, from, to);
+    onMoveWork?.(active.id, to === 0 ? null : moved[to - 1].identifier);
+  };
 
   return (
     <>
-      <Table.Root variant="ghost" className="manifest-list">
-        <Table.Header>
-          <Table.Row>
-            {/* Deliberately unlabelled: a heading over a 32px image says
-                nothing the image does not, and the column is too narrow for
-                one without forcing the title column over. */}
-            <Table.ColumnHeaderCell className="work-thumb-cell" />
-            <Table.ColumnHeaderCell className="work-title-cell">Title</Table.ColumnHeaderCell>
-            <Table.ColumnHeaderCell>Assets</Table.ColumnHeaderCell>
-            <Table.ColumnHeaderCell>Status</Table.ColumnHeaderCell>
-            <Table.ColumnHeaderCell></Table.ColumnHeaderCell>
-          </Table.Row>
-        </Table.Header>
-        <Table.Body>
-          {rows.length === 0 && (
-            <EmptyFilterRow colSpan={5}>No works match that filter.</EmptyFilterRow>
-          )}
-          {rows.map((work) => {
-            const importing = Boolean(work.importState);
-            const openable = !importing || landed(work);
-            return (
-              <Table.Row key={work.identifier} className="manifest-list-row">
-                <Table.Cell className="work-thumb-cell">
-                  <WorkThumbnail work={work} />
-                </Table.Cell>
-                <Table.RowHeaderCell className="work-title-cell">
-                  {openable ? (
-                    <Link asChild size="2" weight="bold">
-                      <NextLink href={workPath(work.identifier)} prefetch={false}>
-                        {work.label || work.identifier}
-                      </NextLink>
-                    </Link>
-                  ) : (
-                    <Text size="2" className="import-pending-title">
-                      {work.label || work.identifier}
-                    </Text>
-                  )}
-                </Table.RowHeaderCell>
-                <Table.Cell className="assets-cell">
-                  {importing ? (
-                    <Text size="2" color="gray">
-                      —
-                    </Text>
-                  ) : (
-                    <Text size="2">{canvasCountOf(work)}</Text>
-                  )}
-                </Table.Cell>
-                {/* Always visible, unlike the actions cell, which is hidden until
-                    hover — a status you have to hover to see is not a status. */}
-                <Table.Cell>
-                  {importing ? (
-                    <ImportStateBadge state={work.importState} />
-                  ) : (
-                    <SyncStateBadge state={work.syncState} />
-                  )}
-                </Table.Cell>
-                <Table.Cell>
-                  {!importing && (
-                    <Flex gap="3" justify="end" className="manifest-row-actions">
-                      <Link asChild size="2">
-                        <NextLink href={workPath(work.identifier)} prefetch={false}>Edit</NextLink>
-                      </Link>
-                      <Button variant="ghost" size="2" onClick={() => setPreviewWork(work)}>
-                        Preview
-                      </Button>
-                      <Link asChild size="2">
-                        <a href={work.manifestUrl} target="_blank" rel="noreferrer">
-                          IIIF
-                        </a>
-                      </Link>
-                      <Button
-                        variant="ghost"
-                        size="2"
-                        color="red"
-                        onClick={() => setPendingDelete(work)}
-                      >
-                        Delete
-                      </Button>
-                    </Flex>
-                  )}
-                </Table.Cell>
-              </Table.Row>
-            );
-          })}
-        </Table.Body>
-      </Table.Root>
-      <PreviewDialog work={previewWork} onClose={() => setPreviewWork(null)} />
+      <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+        <SortableContext
+          items={rows.map((work) => work.identifier)}
+          strategy={verticalListSortingStrategy}
+        >
+          <Flex direction="column" gap="2" className="work-list">
+            {rows.map((work) => (
+              <WorkRow
+                key={work.identifier}
+                work={work}
+                workPath={workPath}
+                canReorder={canReorder && Boolean(onMoveWork)}
+                reorderable={!filtered}
+                onDelete={setPendingDelete}
+              />
+            ))}
+          </Flex>
+        </SortableContext>
+      </DndContext>
       <DeleteWorkDialog
         work={pendingDelete}
         onCancel={() => setPendingDelete(null)}

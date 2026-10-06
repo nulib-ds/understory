@@ -5,6 +5,7 @@ import NextLink from "next/link";
 import {useParams} from "next/navigation";
 import {Box, Button, Callout, Card, Flex, SegmentedControl, Text} from "@radix-ui/themes";
 import CloverViewer from "../components/CloverViewer";
+import SwapStage from "../components/SwapStage";
 import {arrayMove} from "@dnd-kit/sortable";
 import {COLLECTION_API_BASE, MANIFEST_API_BASE, apiFetch, manifestApiUrl} from "../lib/api";
 import {CLOVER_OPTIONS, CLOVER_THEME} from "../cloverTheme";
@@ -154,17 +155,18 @@ function WorkDetailPanel({
             viewer for that whole round trip. */}
         {manifestDetail ? (
           <Flex direction="column" gap="3" className="viewer">
-            <Box
+            <SwapStage
               className="viewer-stage"
-              style={{width: "100%"}}
-            >
-              <CloverViewer
-                key={`${manifestDetail.identifier}::${viewerRevision}`}
-                iiifContent={viewerContent}
-                customTheme={CLOVER_THEME}
-                options={CLOVER_OPTIONS}
-              />
-            </Box>
+              cardsSelector=".clover-viewer button[role=radio] img"
+              contentKey={`${manifestDetail.identifier}::${viewerRevision}`}
+              render={() => (
+                <CloverViewer
+                  iiifContent={viewerContent}
+                  customTheme={CLOVER_THEME}
+                  options={CLOVER_OPTIONS}
+                />
+              )}
+            />
           </Flex>
         ) : manifestDetailLoading ? (
           <Text as="p" color="gray" className="viewer-placeholder">Loading work…</Text>
