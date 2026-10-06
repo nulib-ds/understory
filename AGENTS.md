@@ -712,6 +712,8 @@ What each kind of config looks like:
         capabilities:
           - CAPABILITY_IAM
           - CAPABILITY_AUTO_EXPAND
+        tags:
+          - Project=understory
         parameter_overrides:
           - GitHubBranch=staging
           - GitHubOAuthToken=<token>
@@ -743,6 +745,35 @@ Things that will bite:
   value, write it empty, which is `Key=""` (SAM refuses a bare `Key=`). So name
   every parameter a stack uses, empty ones included, and the config is the
   whole truth about the stack.
+
+### Tags come from the config, not the template
+
+`tags` in a stack's config (`Project=understory` in the example and the shared
+configs) become stack tags, and CloudFormation copies stack tags onto every
+resource in the stack that takes them, the nested serverless-iiif stack
+included. The template declares no `Tags` anywhere. Doing it there would mean an
+`!If` on each of some forty resources so that a fork could switch them off; this
+way a fork drops the line, or names its own.
+
+- **Unlike a parameter, deleting the `tags` line removes the tags.** With none
+  given, SAM sends CloudFormation an explicit empty tag list (`Tags=`), which
+  clears the stack's tags on the next deploy. The config is the whole truth
+  about tags without any extra effort.
+- **A dev config keeps `tags` under `global`**, with everything else.
+  `sam sync` deploys infrastructure changes with tags too, so a `sam sync` that
+  could not see them would strip them.
+- **Adding tags to a running stack replaces nothing.** This was checked with an
+  unexecuted change set on `kdid-dev-understory` (2026-10-06). Every resource
+  showed as a Modify whose only real change was its tags. The three
+  `Conditional` replacements it lists (`AmplifyBranch` and two
+  `Lambda::Permission`s) happen only if an app id or ARN changes, and adding a
+  tag changes neither. `SearchCollection`'s schema makes its tags create-only,
+  but the change set still treats stack tags there as a plain Modify.
+- **Not tagged:** anything created at run time rather than by CloudFormation.
+  That covers Lambda's own log groups (the template declares none),
+  MediaConvert jobs and Amplify's compute logs. It also misses SAM's artifact
+  bucket (`resolve_s3`), which belongs to the account-wide
+  `aws-sam-cli-managed-default` stack.
 
 ### The hosted UI is opt-in, by `GitHubBranch`
 

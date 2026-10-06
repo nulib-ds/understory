@@ -33,6 +33,12 @@ default:
       capabilities:
         - CAPABILITY_IAM
         - CAPABILITY_AUTO_EXPAND
+      # Stack tags, which CloudFormation copies onto every resource that takes
+      # them. Change or delete them freely: unlike parameter_overrides below, a
+      # deleted line DOES remove the tag on the next deploy. Keep them here in
+      # global, because sam sync redeploys the stack with tags too.
+      tags:
+        - Project=understory
       # One Key=value per line, and an empty value is Key="" (SAM refuses a
       # bare Key=). Keep every line, even empty: on an existing stack a
       # parameter left out keeps its PREVIOUS value, not the template default,
