@@ -1141,3 +1141,18 @@ main.layout {
   background-color: var(--interactive-surface-hover);
   color: var(--interactive-surface-text-hover);
 }
+
+/* A work's import state in the works table: one line, so the status column
+   holds its width as the state changes from waiting, to importing, to a badge. */
+.import-state {
+  white-space: nowrap;
+}
+
+/* A title that is not a link yet: its work has not landed, so it is only a name
+   from the plan. Muted, regular weight and italic, so it reads as pending next
+   to the bold linked titles of works that have. */
+.import-pending-title {
+  color: var(--gray-9);
+  font-style: italic;
+  font-weight: 400;
+}

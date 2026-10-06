@@ -3,7 +3,12 @@ import {Box, Button, Callout, Flex, Progress, Text} from "@radix-ui/themes";
 import {COLLECTION_API_BASE, apiFetch} from "../../lib/api";
 import {useReportReady} from "../../lib/pageReady";
 
-const POLL_MS = 3000;
+// Quicker than the publish panel's 4s: a work is seconds to minutes, and the
+// rows beneath this banner show each one's state, so a slow poll reads as stuck.
+const POLL_MS = 2000;
+
+// One character per work in the status's `states` string (shared/importProgress.js).
+const STATE_NAMES = {q: "queued", i: "importing", o: "ok", w: "partial", f: "failed", d: "deferred"};
 
 // Progress while a collection import runs.
 //
@@ -14,7 +19,12 @@ const POLL_MS = 3000;
 //
 // The works table beneath fills in on its own as rows are indexed — each work is
 // indexed the moment it lands — so `onProgress` just asks the page to re-read it.
-export default function CollectionImportBanner({slug, onProgress}) {
+//
+// While a run is live it also reports every work as a table row through
+// `onImportRows`: the plan (each work's label and id) is fetched once per run,
+// and the per-work `states` string on each poll says where each one is. `null`
+// means no run is live and the page shows its own works list.
+export default function CollectionImportBanner({slug, onProgress, onImportRows}) {
   const [status, setStatus] = useState(null);
   const [sawFinish, setSawFinish] = useState(false);
   const [dismissed, setDismissed] = useState(false);
@@ -25,6 +35,7 @@ export default function CollectionImportBanner({slug, onProgress}) {
   useReportReady(!slug || !COLLECTION_API_BASE || checked);
   const wasRunning = useRef(false);
   const lastDone = useRef(-1);
+  const plan = useRef({runId: null, works: []});
 
   useEffect(() => {
     if (!slug || !COLLECTION_API_BASE) return undefined;
@@ -40,6 +51,38 @@ export default function CollectionImportBanner({slug, onProgress}) {
         if (cancelled) return;
         setStatus(data);
         setChecked(true);
+
+        // The rows for a live run. The plan only changes with the run, so it is
+        // fetched once; a failure to read it just leaves the page on its own
+        // works list, which is what it showed before this existed.
+        if (data.status === "running" && data.runId && data.total > 0) {
+          if (plan.current.runId !== data.runId) {
+            try {
+              const fetched = await apiFetch(
+                `${COLLECTION_API_BASE}/${encodeURIComponent(slug)}/import/plan`,
+                {errorMessage: "Unable to read the import plan"},
+              );
+              plan.current = {runId: fetched.runId, works: fetched.works || []};
+            } catch {
+              plan.current = {runId: data.runId, works: []};
+            }
+          }
+          if (cancelled) return;
+          const states = data.states || "";
+          // No plan (the request failed, or the run has none): leave the page on
+          // its own works list rather than replacing it with an empty table.
+          onImportRows?.(
+            plan.current.works.length
+              ? plan.current.works.map((work, index) => ({
+                  identifier: work.workId,
+                  label: work.label,
+                  importState: STATE_NAMES[states[index]] || "queued",
+                }))
+              : null,
+          );
+        } else {
+          onImportRows?.(null);
+        }
 
         // Refresh the works list when a batch lands, and once more on the way
         // out — not on every tick, which would re-query for nothing.
@@ -72,7 +115,7 @@ export default function CollectionImportBanner({slug, onProgress}) {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [slug, onProgress]);
+  }, [slug, onProgress, onImportRows]);
 
   if (!status || dismissed) return null;
 

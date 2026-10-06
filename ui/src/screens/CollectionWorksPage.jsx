@@ -42,6 +42,7 @@ function WorksListPanel({
   onDeleteManifest,
   workPath,
   onSelectWork,
+  importRows,
   heading,
   collectionId,
 }) {
@@ -116,28 +117,48 @@ function WorksListPanel({
               same question: how much is here, and how much of it is live. The
               publish aside states it too, but only in some of its states. */}
           <Flex align="center" justify="center" gap="2" mb="3">
-            {/* The collection's size, and nothing else — it does not move when
-                the list is filtered. That is why it comes from the sync counts
-                rather than the works response's `total`, which counts only the
-                rows matching the filter ("0 of 0 works match"). Every member
-                lands in exactly one bucket (the server counts an unknown hash
-                as changed), so the three sum to the whole collection. */}
-            {collectionSize !== null && (
-              <Text size="1" color="gray">
-                {collectionSize} work{collectionSize === 1 ? "" : "s"}
-              </Text>
-            )}
-            {counts && counts.new + counts.changed > 0 && (
+            {importRows ? (
+              /* During a run the collection document has nothing in it yet, so
+                 its counts say zero. The plan is the truth: how many works the
+                 run will bring in, and how many have finished. */
               <>
+                <Text size="1" color="gray">
+                  {importRows.length} work{importRows.length === 1 ? "" : "s"}
+                </Text>
                 <Text size="1" color="gray" aria-hidden>
                   ·
                 </Text>
-                <Text size="1" color="orange">
-                  {counts.new + counts.changed} unpublished
-                  {counts.new > 0 && counts.changed > 0
-                    ? ` (${counts.new} new, ${counts.changed} changed)`
-                    : ""}
+                <Text size="1" color="indigo">
+                  {importRows.filter((row) => row.importState !== "queued" && row.importState !== "importing").length}{" "}
+                  of {importRows.length} imported
                 </Text>
+              </>
+            ) : (
+              <>
+                {/* The collection's size, and nothing else — it does not move when
+                    the list is filtered. That is why it comes from the sync counts
+                    rather than the works response's `total`, which counts only the
+                    rows matching the filter ("0 of 0 works match"). Every member
+                    lands in exactly one bucket (the server counts an unknown hash
+                    as changed), so the three sum to the whole collection. */}
+                {collectionSize !== null && (
+                  <Text size="1" color="gray">
+                    {collectionSize} work{collectionSize === 1 ? "" : "s"}
+                  </Text>
+                )}
+                {counts && counts.new + counts.changed > 0 && (
+                  <>
+                    <Text size="1" color="gray" aria-hidden>
+                      ·
+                    </Text>
+                    <Text size="1" color="orange">
+                      {counts.new + counts.changed} unpublished
+                      {counts.new > 0 && counts.changed > 0
+                        ? ` (${counts.new} new, ${counts.changed} changed)`
+                        : ""}
+                    </Text>
+                  </>
+                )}
               </>
             )}
           </Flex>
@@ -218,6 +239,9 @@ export default function CollectionWorksPage() {
   // the rows describe the filter as sent, not the keystroke still in flight.
   const [resultsQuery, setResultsQuery] = useState("");
   const [worksError, setWorksError] = useState(null);
+  // Every work of a live collection import, drawn as a row the moment the run
+  // starts. Null whenever no run is live, and the page shows its real list.
+  const [importRows, setImportRows] = useState(null);
 
   // Cosmetic only: canPublish in app/shared/access.js is what actually decides,
   // and it re-derives from the same token. Group claims can be up to an hour
@@ -439,12 +463,13 @@ export default function CollectionWorksPage() {
     <PageReady ready={worksLoaded}>
       {/* Only renders while a collection import is running, or afterwards if
           it hit trouble or dropped something. Silent the rest of the time. */}
-      <CollectionImportBanner slug={slug} onProgress={refreshWorks} />
+      <CollectionImportBanner slug={slug} onProgress={refreshWorks} onImportRows={setImportRows} />
       <WorksListPanel
         manifestApiAvailable={manifestApiAvailable}
         manifestError={worksError}
         manifestLoading={!worksLoaded}
-        works={works}
+        works={importRows || works}
+        importRows={importRows}
         counts={counts}
         slug={slug}
         canPublish={canPublish}
