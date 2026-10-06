@@ -49,9 +49,14 @@ default:
         - ImageApiForceHost=""
         # Empty means no hosted UI: run cd ui && npm run dev. A branch, such as
         # the feature branch you are on, makes the stack build and host the UI
-        # on Amplify, and then the token is required.
+        # on Amplify, and then the token is required: a classic PAT with the
+        # admin:repo_hook scope, used once to create the app. The Amplify
+        # GitHub App must already be installed on the repo's org.
         - GitHubBranch=""
         - GitHubOAuthToken=""
+        # Amplify rebuilds the UI on every push to GitHubBranch. Only a shared
+        # stack, built by the deploy workflow, sets this to false.
+        - UIAutoBuild="true"
   deploy:
     parameters:
       confirm_changeset: true
