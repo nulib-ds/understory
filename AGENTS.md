@@ -663,6 +663,16 @@ sam build --use-container
 sam deploy --config-file ../../samconfig.staging.yaml
 ```
 
+Branches flow **feature branch → `staging` → `main`**, and each shared stack
+follows its own: `staging-understory` builds the `staging` branch,
+`production-understory` builds `main`. Pull requests from a feature branch
+target `staging`. Deploy a shared stack from a clean checkout of its branch,
+so that what runs is what is merged.
+
+The UI and the backend do not move together. Amplify rebuilds the UI on every
+push to the branch, but the stack changes only when someone runs `sam deploy`.
+When a UI change needs a backend change, deploy the stack before merging.
+
 A relative `--config-file` resolves against the template's directory
 (`app/aws`), whatever directory you run from and whether or not a build has run,
 hence the `../../`.
