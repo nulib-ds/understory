@@ -180,17 +180,17 @@ body {
   margin: 0;
 }
 
-/* Northwestern utility header — modelled on the bar at the top of
+/* The brand bar: the Northwestern utility header, modelled on the bar at the top of
    library.northwestern.edu (background is Purple 120, #401f68 = --accent-10).
 
    The wordmark is the official Northwestern SVG inlined as a data URI, so it
    costs no network request. Its paths already carry fill:#fff. */
-.nu-header {
+.brand-bar {
   background-color: var(--accent-10);
   width: 100%;
 }
 
-.nu-header-inner {
+.brand-bar__inner {
   height: calc(56 * var(--px));
   display: flex;
   align-items: center;
@@ -222,46 +222,42 @@ body {
   white-space: nowrap;
 }
 
-/* The session strip on the purple bar. Sign out is a link rather than a button:
-   it is a quiet utility action sitting in the site chrome, not a call to action
-   competing with the page's own controls. */
-.nu-header-session {
+/* The session strip, in the band beside the wordmark. Sign out is a link
+   rather than a button: it is a quiet utility action sitting in the site chrome,
+   not a call to action competing with the page's own controls. */
+.session-strip {
   display: flex;
   align-items: baseline;
   gap: calc(8 * var(--px));
   min-width: 0;
-  color: #ffffff;
-  font-size: var(--font-size-2);
+  color: var(--gray-11);
+  /* The same size as the section links beside it, which is the app's default
+     body size (--font-size-3). */
+  font-size: var(--font-size-3);
 }
 
 /* An email can be long; it yields before the sign-out link does. */
-.nu-header-session__user {
+.session-strip__user {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.nu-header-session__divider {
-  color: rgba(255, 255, 255, 0.5);
+.session-strip__divider {
+  color: var(--gray-a8);
   flex-shrink: 0;
 }
 
-.nu-header-signout {
+/* Radix's Link (AppShell) supplies the accent colour and the hover-only
+   underline, as it does everywhere else; this only resets the <button> it is
+   drawn on. */
+.session-strip__signout {
   background: none;
   border: 0;
   padding: 0;
-  color: inherit;
   font: inherit;
-  text-decoration: underline;
-  text-underline-offset: 0.18em;
   cursor: pointer;
   flex-shrink: 0;
-  transition: color 0.15s ease;
-}
-
-.nu-header-signout:hover,
-.nu-header-signout:focus-visible {
-  color: rgba(255, 255, 255, 0.75);
 }
 
 /* Section navigation, sharing the wordmark's line. Links rather than a menu:
@@ -273,32 +269,37 @@ body {
   gap: calc(32 * var(--px));
 }
 
+/* Radix's Link supplies the colour and the hover-only underline. */
 .section-link {
   font-size: var(--font-size-3);
-  color: var(--gray-11);
-  text-decoration: none;
   white-space: nowrap;
-  /* The bar is painted on every link, transparent until active, so becoming
-     active never changes the link's height. Left at 2px for the same reason
-     hairlines are: it renders as a crisp rule at any scale. */
-  padding-bottom: calc(3 * var(--px));
-  border-bottom: 2px solid transparent;
-  transition: color 0.15s ease, border-color 0.15s ease;
 }
 
-.section-link:hover {
-  color: var(--accent-11);
+/* The active section is bold, with no underline. Bold is wider than regular, so
+   an invisible bold copy of the label (from data-label, in AppShell) holds the
+   width: without it, switching sections would nudge every link beside it. */
+.section-link::after {
+  content: attr(data-label);
+  display: block;
+  height: 0;
+  overflow: hidden;
+  visibility: hidden;
+  font-family: var(--heading-font-family);
+  font-weight: 800;
 }
 
+/* Heavier than the body face goes: Google Sans stops at 700 and would fake
+   anything above it, so the active link borrows the heading face, which has a
+   real weight axis (see .page-heading). The ::after above must match. */
 .section-link--active {
-  color: var(--accent-11);
-  border-bottom-color: var(--accent-9);
+  font-family: var(--heading-font-family);
+  font-weight: 800;
 }
 
 main.layout {
   min-height: 100vh;
   background-color: #ffffff;
-  padding: calc(24 * var(--px)) 0;
+  padding: calc(48 * var(--px)) 0 calc(24 * var(--px));
 }
 
 /* Wide-screen by default, but capped so content stops stretching on very wide
@@ -307,7 +308,7 @@ main.layout {
    The header bar shares this exact box so every edge on the page lines up: same
    max-width, same auto margins, same horizontal padding. Change one, change both. */
 .layout-container,
-.nu-header-inner {
+.brand-bar__inner {
   width: 100%;
   max-width: calc(1400 * var(--px));
   margin: 0 auto;
@@ -321,14 +322,23 @@ main.layout {
   gap: calc(24 * var(--px));
 }
 
-/* The app wordmark and the session controls (section switcher, sign out) share
-   one line, so identity and controls read as a single band above the page. */
+/* The app wordmark, the session strip and the section switcher share one line,
+   so identity and controls read as a single band above the page. */
 .layout-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: calc(16 * var(--px));
   flex-wrap: wrap;
+}
+
+/* The left-hand group of the band: the wordmark, then who is signed in. */
+.layout-header__identity {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: calc(32 * var(--px));
+  min-width: 0;
 }
 
 /* Radix Card paints its container border as a 1px inset box-shadow on ::after,
@@ -385,44 +395,6 @@ main.layout {
    container, which read as floating under the buttons rather than belonging to
    them. A tinted inset tied to the card's inner width groups it with the alert
    and the buttons above as one panel. */
-/* The collection screen: publish controls and the works table in the main
-   column, the consuming-site reference alongside. Wraps rather than squeezing —
-   below roughly a tablet the aside drops beneath the table at full width, which
-   beats a 200px column of broken URLs.
-
-   align-items: flex-start is load-bearing for the sticky aside below: the
-   default `stretch` would make the aside as tall as the table, leaving it no
-   room to move within its parent. */
-.collection-layout {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-5);
-  flex-wrap: wrap;
-}
-
-/* min-width: 0 so the table can shrink instead of forcing the aside off the
-   row — the usual flex-item overflow default. */
-.collection-main {
-  flex: 1 1 calc(560 * var(--px));
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-5);
-}
-
-/* The aside now carries the publish controls as well as the reference block,
-   so it is a plain column — only the reference block inside it is a tinted
-   box. */
-.collection-aside {
-  flex: 0 1 calc(360 * var(--px));
-  min-width: calc(280 * var(--px));
-  position: sticky;
-  top: var(--space-4);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-4);
-}
-
 .collection-aside__panel {
   display: flex;
   flex-direction: column;
@@ -458,58 +430,6 @@ main.layout {
   flex: 1;
   min-width: 0;
   word-break: break-all;
-}
-
-/* The publish panel's disclosure: an h3 holding a button (PublishPanel.jsx).
-   The button is reset to read as the heading it sits in, full width with the
-   chevron at the far edge. Like editable text it has no surface at rest and
-   lights up with the alpha accent on hover and focus, because it sits on the
-   page background. The negative inline margin keeps its text aligned with the
-   panel's content while the highlight extends past it. */
-.publish-panel__heading {
-  margin: 0;
-}
-
-.publish-panel__toggle {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
-  width: calc(100% + 2 * var(--space-2));
-  margin-inline: calc(-1 * var(--space-2));
-  padding: var(--space-1) var(--space-2);
-  border: 0;
-  border-radius: var(--radius-2);
-  background: none;
-  color: inherit;
-  font: inherit;
-  letter-spacing: inherit;
-  text-align: left;
-  cursor: pointer;
-  transition: background-color 0.15s ease;
-}
-
-.publish-panel__toggle:hover,
-.publish-panel__toggle:focus-visible {
-  background-color: var(--accent-a3);
-}
-
-.publish-panel__toggle:focus-visible {
-  outline: 2px solid var(--focus-8);
-  outline-offset: 1px;
-}
-
-.publish-panel__chevron {
-  flex: none;
-  transition: transform 0.15s ease;
-}
-
-.publish-panel__toggle[aria-expanded="true"] .publish-panel__chevron {
-  transform: rotate(180deg);
-}
-
-.publish-panel__body {
-  margin-top: var(--space-4);
 }
 
 /* The title absorbs the leftover width and ellipsizes rather than wrapping.
@@ -946,7 +866,7 @@ main.layout {
      weight axis, which is the only way to get a true black. */
   font-family: var(--heading-font-family);
   font-weight: 800;
-  font-size: calc(var(--font-size-6) * 1.7);
+  font-size: calc(var(--font-size-6) * 1.45);
   line-height: 1.1;
   letter-spacing: -0.02em;
   text-align: center;
@@ -1098,6 +1018,20 @@ main.layout {
   height: 100% !important;
 }
 
+/* The collection slider borrows the viewer's frame (.viewer-panel +
+   .viewer-stage) so the two read as one family; it only needs to undo the
+   viewer's height and match its inset around the cards. */
+.viewer-panel.slider-panel {
+  min-height: 0;
+}
+
+.viewer-stage.slider-stage {
+  min-height: 0;
+  /* The viewer's own inset around its thumbnail strip: Clover's top padding,
+     and the 1.618rem left that .clover-viewer-media-wrapper gets above. */
+  padding: var(--space-4) 0 0 1.618rem;
+}
+
 .viewer-placeholder {
   text-align: center;
   padding: calc(40 * var(--px)) 0;
@@ -1150,4 +1084,75 @@ main.layout {
    a rendering bug. */
 .role-matrix__option:has(:disabled) {
   color: var(--gray-10);
+}
+
+/* Clover's Slider is styled by its own stylesheet, so it never sees the Radix
+   theme: its caption links come out in the browser's default blue. These
+   restate the app's accent on the stable class names it exposes. Selectors
+   carry two parts (class + element/class) because Clover's generated class
+   names are single-class and would otherwise win. */
+/* Card size is Clover's documented knob: the slider is sized by its cards, so
+   these two variables set how big each thumbnail is and so how many fit.
+   12.5rem is exactly the size of a thumbnail in the work page's viewer (measured
+   at two window widths), and rem is what that viewer scales by, since the root
+   font-size is the app's fluid unit. */
+.clover-slider {
+  --clover-thumbnail-width: 12.5rem;
+  --clover-thumbnail-height: 12.5rem;
+}
+
+.clover-slider a {
+  color: var(--accent-11);
+  text-decoration: none;
+}
+
+.clover-slider a figcaption,
+.clover-slider a figcaption span {
+  color: inherit;
+}
+
+/* The same type as a title in the works table below (Radix Text size 2, bold). */
+.clover-slider a figcaption span {
+  font-size: var(--font-size-2);
+  line-height: var(--line-height-2);
+  font-weight: var(--font-weight-bold);
+}
+
+.clover-slider a:hover figcaption,
+.clover-slider a:focus-visible figcaption {
+  text-decoration: underline;
+}
+
+.clover-slider a:focus-visible {
+  outline: 2px solid var(--focus-8);
+  outline-offset: 2px;
+}
+
+.clover-slider .clover-slider-previous,
+.clover-slider .clover-slider-next {
+  color: var(--interactive-surface-text);
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.clover-slider .clover-slider-previous:hover:not(:disabled),
+.clover-slider .clover-slider-next:hover:not(:disabled),
+.clover-slider .clover-slider-previous:focus-visible,
+.clover-slider .clover-slider-next:focus-visible {
+  background-color: var(--interactive-surface-hover);
+  color: var(--interactive-surface-text-hover);
+}
+
+/* A work's import state in the works table: one line, so the status column
+   holds its width as the state changes from waiting, to importing, to a badge. */
+.import-state {
+  white-space: nowrap;
+}
+
+/* A title that is not a link yet: its work has not landed, so it is only a name
+   from the plan. Muted, regular weight and italic, so it reads as pending next
+   to the bold linked titles of works that have. */
+.import-pending-title {
+  color: var(--gray-9);
+  font-style: italic;
+  font-weight: 400;
 }

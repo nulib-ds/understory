@@ -945,6 +945,12 @@ Resources:
             ApiId: !Ref ManifestHttpApi
             Path: /collections/{slug}/import
             Method: GET
+        GetCollectionImportPlan:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ManifestHttpApi
+            Path: /collections/{slug}/import/plan
+            Method: GET
         DeleteCollection:
           Type: HttpApi
           Properties:

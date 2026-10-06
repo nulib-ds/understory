@@ -4,6 +4,7 @@ import {Button, Callout, Flex, Link, Table, Text} from "@radix-ui/themes";
 import PreviewDialog from "./PreviewDialog";
 import DeleteWorkDialog from "./DeleteWorkDialog";
 import SyncStateBadge from "./SyncStateBadge";
+import ImportStateBadge from "./ImportStateBadge";
 import {imageRequestUrl} from "../../lib/canvasAssets";
 
 // When the filter hides every row the table must still render its header, or
@@ -48,6 +49,13 @@ function WorkThumbnail({work}) {
       )}
     </span>
   );
+}
+
+// A row drawn from a running import's plan rather than from the collection: it
+// has a state instead of a sync status, and only a work that has landed can be
+// opened, previewed or deleted.
+function landed(work) {
+  return work.importState === "ok" || work.importState === "partial";
 }
 
 function canvasCountOf(work) {
@@ -103,51 +111,73 @@ export default function WorksTable({works, onDelete, workPath, filtered, loading
           {rows.length === 0 && (
             <EmptyFilterRow colSpan={5}>No works match that filter.</EmptyFilterRow>
           )}
-          {rows.map((work) => (
-            <Table.Row key={work.identifier} className="manifest-list-row">
-              <Table.Cell className="work-thumb-cell">
-                <WorkThumbnail work={work} />
-              </Table.Cell>
-              <Table.RowHeaderCell className="work-title-cell">
-                <Link asChild size="2" weight="bold">
-                  <NextLink href={workPath(work.identifier)} prefetch={false}>
-                    {work.label || work.identifier}
-                  </NextLink>
-                </Link>
-              </Table.RowHeaderCell>
-              <Table.Cell className="assets-cell">
-                <Text size="2">{canvasCountOf(work)}</Text>
-              </Table.Cell>
-              {/* Always visible, unlike the actions cell, which is hidden until
-                  hover — a status you have to hover to see is not a status. */}
-              <Table.Cell>
-                <SyncStateBadge state={work.syncState} />
-              </Table.Cell>
-              <Table.Cell>
-                <Flex gap="3" justify="end" className="manifest-row-actions">
-                  <Link asChild size="2">
-                    <NextLink href={workPath(work.identifier)} prefetch={false}>Edit</NextLink>
-                  </Link>
-                  <Button variant="ghost" size="2" onClick={() => setPreviewWork(work)}>
-                    Preview
-                  </Button>
-                  <Link asChild size="2">
-                    <a href={work.manifestUrl} target="_blank" rel="noreferrer">
-                      IIIF
-                    </a>
-                  </Link>
-                  <Button
-                    variant="ghost"
-                    size="2"
-                    color="red"
-                    onClick={() => setPendingDelete(work)}
-                  >
-                    Delete
-                  </Button>
-                </Flex>
-              </Table.Cell>
-            </Table.Row>
-          ))}
+          {rows.map((work) => {
+            const importing = Boolean(work.importState);
+            const openable = !importing || landed(work);
+            return (
+              <Table.Row key={work.identifier} className="manifest-list-row">
+                <Table.Cell className="work-thumb-cell">
+                  <WorkThumbnail work={work} />
+                </Table.Cell>
+                <Table.RowHeaderCell className="work-title-cell">
+                  {openable ? (
+                    <Link asChild size="2" weight="bold">
+                      <NextLink href={workPath(work.identifier)} prefetch={false}>
+                        {work.label || work.identifier}
+                      </NextLink>
+                    </Link>
+                  ) : (
+                    <Text size="2" className="import-pending-title">
+                      {work.label || work.identifier}
+                    </Text>
+                  )}
+                </Table.RowHeaderCell>
+                <Table.Cell className="assets-cell">
+                  {importing ? (
+                    <Text size="2" color="gray">
+                      —
+                    </Text>
+                  ) : (
+                    <Text size="2">{canvasCountOf(work)}</Text>
+                  )}
+                </Table.Cell>
+                {/* Always visible, unlike the actions cell, which is hidden until
+                    hover — a status you have to hover to see is not a status. */}
+                <Table.Cell>
+                  {importing ? (
+                    <ImportStateBadge state={work.importState} />
+                  ) : (
+                    <SyncStateBadge state={work.syncState} />
+                  )}
+                </Table.Cell>
+                <Table.Cell>
+                  {!importing && (
+                    <Flex gap="3" justify="end" className="manifest-row-actions">
+                      <Link asChild size="2">
+                        <NextLink href={workPath(work.identifier)} prefetch={false}>Edit</NextLink>
+                      </Link>
+                      <Button variant="ghost" size="2" onClick={() => setPreviewWork(work)}>
+                        Preview
+                      </Button>
+                      <Link asChild size="2">
+                        <a href={work.manifestUrl} target="_blank" rel="noreferrer">
+                          IIIF
+                        </a>
+                      </Link>
+                      <Button
+                        variant="ghost"
+                        size="2"
+                        color="red"
+                        onClick={() => setPendingDelete(work)}
+                      >
+                        Delete
+                      </Button>
+                    </Flex>
+                  )}
+                </Table.Cell>
+              </Table.Row>
+            );
+          })}
         </Table.Body>
       </Table.Root>
       <PreviewDialog work={previewWork} onClose={() => setPreviewWork(null)} />
