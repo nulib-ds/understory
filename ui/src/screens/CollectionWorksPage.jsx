@@ -2,7 +2,7 @@
 
 import {useCallback, useEffect, useRef, useState} from "react";
 import {useParams, usePathname, useRouter, useSearchParams} from "next/navigation";
-import {Box, Button, Callout, Card, Flex, Text, TextField} from "@radix-ui/themes";
+import {Box, Button, Callout, Card, Flex, SegmentedControl, Text, TextField} from "@radix-ui/themes";
 import {PlusIcon} from "@radix-ui/react-icons";
 import {
   COLLECTION_API_BASE,
@@ -15,9 +15,16 @@ import {ROLE_ADMIN, useSession} from "../lib/session";
 import PageHeading from "../components/PageHeading";
 import PageReady from "../components/PageReady";
 import AddWorkModal from "../components/works/AddWorkModal";
+import CloverSlider from "../components/CloverSlider";
 import WorksTable from "../components/works/WorksTable";
 import PublishPanel from "../components/works/PublishPanel";
 import CollectionImportBanner from "../components/collections/CollectionImportBanner";
+
+// A collection member's id is its manifest's address: .../manifest/{workId}/manifest.json.
+function workIdFromManifestId(manifestId) {
+  const match = /\/manifest\/([^/]+)\/manifest\.json$/.exec(manifestId || "");
+  return match ? decodeURIComponent(match[1]) : null;
+}
 
 function WorksListPanel({
   manifestApiAvailable,
@@ -34,7 +41,9 @@ function WorksListPanel({
   onOpenManifestModal,
   onDeleteManifest,
   workPath,
+  onSelectWork,
   heading,
+  collectionId,
 }) {
   const session = useSession();
   const isAdmin = session.role === ROLE_ADMIN;
@@ -42,6 +51,9 @@ function WorksListPanel({
   // admin role nor a single grant gets an empty list. Say why, rather than
   // showing a bare table that looks like the collection is empty.
   const noAccess = !isAdmin && session.collections.length === 0;
+  // Two views of one collection. The publish tab is only offered where the
+  // collection API is configured, as the panel itself is.
+  const [section, setSection] = useState("works");
   const collectionSize = counts ? counts.new + counts.changed + counts.published : null;
 
   return (
@@ -50,40 +62,36 @@ function WorksListPanel({
           collection's identity, so renaming is impossible by construction. */}
       <Flex direction="column" align="center" gap="1">
         <PageHeading>{heading}</PageHeading>
-        {/* Counts are for the whole collection, not the loaded page — a
-            summary computed from the rows on screen would only be right on
-            page one. The unpublished figure rides along because it answers the
-            same question: how much is here, and how much of it is live. The
-            publish aside states it too, but only in some of its states. */}
-        <Flex align="center" gap="2">
-          {/* The collection's size, and nothing else — it does not move when
-              the list is filtered. That is why it comes from the sync counts
-              rather than the works response's `total`, which counts only the
-              rows matching the filter ("0 of 0 works match"). Every member
-              lands in exactly one bucket (the server counts an unknown hash
-              as changed), so the three sum to the whole collection. */}
-          {collectionSize !== null && (
-            <Text size="1" color="gray">
-              {collectionSize} work{collectionSize === 1 ? "" : "s"}
-            </Text>
-          )}
-          {counts && counts.new + counts.changed > 0 && (
-            <>
-              <Text size="1" color="gray" aria-hidden>
-                ·
-              </Text>
-              <Text size="1" color="orange">
-                {counts.new + counts.changed} unpublished
-                {counts.new > 0 && counts.changed > 0
-                  ? ` (${counts.new} new, ${counts.changed} changed)`
-                  : ""}
-              </Text>
-            </>
-          )}
-        </Flex>
       </Flex>
-      <div className="collection-layout">
-        <div className="collection-main">
+      {/* The collection as its own members show it: Clover's Slider reading
+          the working collection document, so it follows every save, framed the
+          way a work's viewer is. Not for
+          an empty collection, which has nothing to show. */}
+      {collectionId && collectionSize > 0 && (
+        <Card size="3" className="panel viewer-panel slider-panel">
+          <Box className="viewer-stage slider-stage" style={{width: "100%"}}>
+            <CloverSlider
+              iiifContent={collectionId}
+              key={`${collectionId}:${collectionSize}`}
+              onItemInteraction={(item) => {
+                const workId = workIdFromManifestId(item?.id);
+                if (workId) onSelectWork(workId);
+              }}
+            />
+          </Box>
+        </Card>
+      )}
+      {/* Spaced like the work page's section control: extra room above it (mt 6)
+          on top of the column's gap. */}
+      {COLLECTION_API_BASE && (
+        <Flex justify="between" align="center" gap="3" mt="6">
+          <SegmentedControl.Root size="3" value={section} onValueChange={setSection}>
+            <SegmentedControl.Item value="works">Works</SegmentedControl.Item>
+            <SegmentedControl.Item value="share">Share &amp; Publish</SegmentedControl.Item>
+          </SegmentedControl.Root>
+        </Flex>
+      )}
+      <div hidden={section !== "works"}>
       <Card size="3" className="panel manifest-panel">
         <Flex justify="between" align="center" gap="3" mb="4">
           <TextField.Root
@@ -102,6 +110,37 @@ function WorksListPanel({
             <PlusIcon /> Add
           </Button>
         </Flex>
+          {/* Counts are for the whole collection, not the loaded page — a
+              summary computed from the rows on screen would only be right on
+              page one. The unpublished figure rides along because it answers the
+              same question: how much is here, and how much of it is live. The
+              publish aside states it too, but only in some of its states. */}
+          <Flex align="center" justify="center" gap="2" mb="3">
+            {/* The collection's size, and nothing else — it does not move when
+                the list is filtered. That is why it comes from the sync counts
+                rather than the works response's `total`, which counts only the
+                rows matching the filter ("0 of 0 works match"). Every member
+                lands in exactly one bucket (the server counts an unknown hash
+                as changed), so the three sum to the whole collection. */}
+            {collectionSize !== null && (
+              <Text size="1" color="gray">
+                {collectionSize} work{collectionSize === 1 ? "" : "s"}
+              </Text>
+            )}
+            {counts && counts.new + counts.changed > 0 && (
+              <>
+                <Text size="1" color="gray" aria-hidden>
+                  ·
+                </Text>
+                <Text size="1" color="orange">
+                  {counts.new + counts.changed} unpublished
+                  {counts.new > 0 && counts.changed > 0
+                    ? ` (${counts.new} new, ${counts.changed} changed)`
+                    : ""}
+                </Text>
+              </>
+            )}
+          </Flex>
         <Box className="panel-body manifest-panel-body">
           {!manifestApiAvailable && (
             <Callout.Root color="red" size="1" mb="3">
@@ -128,19 +167,16 @@ function WorksListPanel({
           />
         </Box>
       </Card>
-        </div>
-        {/* Publishing is about the collection as a whole, not about any one
-            row, so it reads as a sidebar to the works list rather than as a
-            banner above it. */}
-        <aside className="collection-aside">
-          <PublishPanel
-            slug={slug}
-            counts={counts}
-            canPublish={canPublish}
-            onPublished={onPublished}
-          />
-        </aside>
       </div>
+      {/* Publishing is about the collection as a whole, not about any one
+          row, so it is a view of its own beside the works list. */}
+      <PublishPanel
+        active={section === "share"}
+        slug={slug}
+        counts={counts}
+        canPublish={canPublish}
+        onPublished={onPublished}
+      />
     </Flex>
   );
 }
@@ -170,6 +206,7 @@ export default function CollectionWorksPage() {
   const [works, setWorks] = useState([]);
   const [counts, setCounts] = useState(null);
   const [collectionLabel, setCollectionLabel] = useState("");
+  const [collectionId, setCollectionId] = useState("");
   // Whether the first load has settled. Deliberately not a "loading" flag
   // that goes true on every refresh: that swapped the whole table for
   // "Loading works…" on each keystroke of the filter, after every delete and
@@ -216,6 +253,7 @@ export default function CollectionWorksPage() {
       setWorks(Array.isArray(data.works) ? data.works : []);
       setCounts(data.counts || null);
       setCollectionLabel(data.collection?.label || slug);
+      setCollectionId(data.collection?.id || "");
       setResultsQuery(q);
       setWorksError(null);
     } catch (err) {
@@ -417,7 +455,9 @@ export default function CollectionWorksPage() {
         onOpenManifestModal={handleOpenManifestModal}
         onDeleteManifest={handleDeleteManifest}
         workPath={workPath}
+        onSelectWork={selectWork}
         heading={collectionLabel}
+        collectionId={collectionId}
       />
       <AddWorkModal
         open={isManifestModalOpen}

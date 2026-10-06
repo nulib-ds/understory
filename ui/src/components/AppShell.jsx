@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import {usePathname} from "next/navigation";
-import {Box, Heading} from "@radix-ui/themes";
+import {Box, Heading, Link as RadixLink} from "@radix-ui/themes";
 import {ROLE_ADMIN, useSession} from "../lib/session";
 import Wordmark from "./Wordmark";
 
@@ -38,66 +38,78 @@ function SectionNav() {
       {visible.map((section) => {
         const isActive = section.match(pathname);
         return (
-          <Link
+          <RadixLink
             key={section.path}
-            href={section.path}
+            asChild
+            underline="auto"
             className={`section-link${isActive ? " section-link--active" : ""}`}
-            aria-current={isActive ? "page" : undefined}
           >
-            {section.label}
-          </Link>
+            <Link
+              href={section.path}
+              aria-current={isActive ? "page" : undefined}
+              data-label={section.label}
+            >
+              {section.label}
+            </Link>
+          </RadixLink>
         );
       })}
     </nav>
   );
 }
 
-// Every signed-in route renders inside this: the purple bar, the page container
-// and the app wordmark are identical across sections, so they live here once
-// instead of in each screen.
+// Every signed-in route renders inside this: the brand bar, the page container,
+// the app wordmark and the session strip are identical across sections, so
+// they live here once instead of in each screen.
 export default function AppShell({children}) {
   const {signOut, username} = useSession();
   return (
     <>
-      {/* Full-bleed purple utility bar, mirroring the one at the top of
+      {/* The brand bar: a full-bleed purple utility bar, mirroring the one at the top of
           library.northwestern.edu. Its contents align to the same container
           width as the page below it. */}
-      <header className="nu-header">
-        <div className="nu-header-inner">
+      <header className="brand-bar">
+        <div className="brand-bar__inner">
           <a className="nu-wordmark" href="https://www.northwestern.edu/">
             {/* The wordmark is a background image, so keep the name available to
                 screen readers — same approach the Northwestern sites use. */}
             <span className="nu-wordmark-label">Northwestern</span>
           </a>
-          {signOut && (
-            <div className="nu-header-session">
-              {username && (
-                <>
-                  <span className="nu-header-session__user">Signed in as {username}</span>
-                  {/* Decoration, not content — a screen reader reading "vertical
-                      line" between the two is noise. */}
-                  <span className="nu-header-session__divider" aria-hidden>
-                    |
-                  </span>
-                </>
-              )}
-              <button type="button" className="nu-header-signout" onClick={signOut}>
-                Sign out
-              </button>
-            </div>
-          )}
         </div>
       </header>
       <main className="layout">
         <div className="layout-container">
           <div className="layout-header">
-            {/* The link goes inside the h1, not around it: the heading stays
-                the page's h1 and the link is its content. */}
-            <Heading as="h1" size="6" className="app-wordmark">
-              <Link href="/">
-                <Wordmark />
-              </Link>
-            </Heading>
+            {/* Who is signed in sits beside the wordmark, so identity reads as
+                one group and the sections stand alone on the right. */}
+            <div className="layout-header__identity">
+              {/* The link goes inside the h1, not around it: the heading stays
+                  the page's h1 and the link is its content. */}
+              <Heading as="h1" size="6" className="app-wordmark">
+                <Link href="/">
+                  <Wordmark />
+                </Link>
+              </Heading>
+              {signOut && (
+                <div className="session-strip">
+                  {username && (
+                    <>
+                      <span className="session-strip__user">Signed in as {username}</span>
+                      {/* Decoration, not content — a screen reader reading "vertical
+                          line" between the two is noise. */}
+                      <span className="session-strip__divider" aria-hidden>
+                        |
+                      </span>
+                    </>
+                  )}
+                  <RadixLink asChild underline="auto">
+                    <button type="button" className="session-strip__signout" onClick={signOut}>
+                      Sign out
+                    </button>
+                  </RadixLink>
+                </div>
+              )}
+            </div>
             <SectionNav />
           </div>
           <Box pt="2">{children}</Box>
