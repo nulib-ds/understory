@@ -1,0 +1,64 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: "Understory: the role .github/workflows/deploy.yml assumes to deploy one shared stack"
+
+# Deployed by hand, once per account, and never by the workflow:
+#
+#   aws cloudformation deploy --template-file app/aws/deploy-role.yml \
+#     --stack-name understory-github-actions-staging \
+#     --parameter-overrides GitHubEnvironment=staging \
+#     --capabilities CAPABILITY_NAMED_IAM --tags Project=understory
+#
+# It is its own stack, not part of template.yml, so that nothing the workflow
+# deploys can change the role it deploys with. IAM evaluates a role's policy on
+# every request, so a deploy that edited its own role could cut itself off part
+# way through, and deleting the app stack would take CI's way in with it.
+#
+# The account-wide nulib github-actions-role cannot be reused: nulib/infrastructure
+# builds its trust entries as repo:nulib/<repo>:*, which can name neither another
+# org nor the immutable subject below. The OIDC provider is the one that
+# Terraform made there; it is referenced, never created, because an account
+# holds only one provider per URL.
+
+Parameters:
+  GitHubEnvironment:
+    Type: String
+    AllowedValues: [staging, production]
+    Description: "The GitHub environment, and the shared stack, this role deploys: staging-understory or production-understory."
+
+Resources:
+  DeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "understory-github-actions-${GitHubEnvironment}"
+      Description: !Sub "Assumed by nulib-ds/understory's deploy workflow, in its ${GitHubEnvironment} environment only"
+      # The default is an hour. A deploy that waits on CloudFront or OpenSearch
+      # can outlast that, and sam deploy then fails while CloudFormation carries
+      # on. The workflow asks for the same length (role-duration-seconds).
+      MaxSessionDuration: 7200
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Sub "arn:aws:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com"
+            Action: sts:AssumeRoleWithWebIdentity
+            # Exact matches, never a wildcard. The repo is public and the role
+            # is an administrator, so only a job in this one environment may
+            # assume it, and the environment admits only its own branch.
+            # The subject is GitHub's immutable form, which this repo uses:
+            # owner and repo ids beside their names, so a deleted and
+            # re-created repo of the same name cannot inherit the trust.
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                token.actions.githubusercontent.com:sub: !Sub "repo:nulib-ds@79535802/understory@1191898493:environment:${GitHubEnvironment}"
+      # The same grant as nulib's github-actions-role. The stack touches some
+      # fifteen services, and a scoped policy would need widening with each
+      # new one; the trust condition above is what limits who holds it.
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AdministratorAccess
+
+Outputs:
+  DeployRoleArn:
+    Description: "What the deploy workflow assumes. It builds this from the AWSACCOUNT secret and the environment name, so nothing needs copying."
+    Value: !GetAtt DeployRole.Arn

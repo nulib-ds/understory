@@ -92,9 +92,13 @@ jobs:
           version: 1.148.0
           use-installer: true
 
+      # The role is app/aws/deploy-role.yml, deployed by hand in each account.
+      # Two hours, its MaxSessionDuration, so a long CloudFront or OpenSearch
+      # update cannot outlast the credentials sam deploy is polling with.
       - uses: aws-actions/configure-aws-credentials@v6
         with:
-          role-to-assume: arn:aws:iam::${{ secrets.AWSACCOUNT }}:role/github-actions-role
+          role-to-assume: arn:aws:iam::${{ secrets.AWSACCOUNT }}:role/understory-github-actions-${{ env.DEPLOY_ENV }}
+          role-duration-seconds: 7200
           aws-region: us-east-1
 
       - name: Build

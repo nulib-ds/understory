@@ -18,7 +18,7 @@ import Wordmark from "./Wordmark";
 const SECTIONS = [
   {
     path: "/",
-    label: "Collections Edited",
+    label: "Collections",
     match: (p) => p === "/" || p === "/collections" || p.startsWith("/collection/"),
   },
   // Admin-only. Hiding it is a courtesy, not the control: /users is refused by

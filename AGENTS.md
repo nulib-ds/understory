@@ -586,6 +586,7 @@ Load-bearing, not incidental:
 app/
   aws/
     template.yml          # SAM template — all infra (S3, Cognito, API Gateway, Lambdas, Amplify Hosting)
+    deploy-role.yml       # the role the deploy workflow assumes; its own stack, deployed by hand per account
     lambdas/
       iiif-image/          # Lambda: converts source images to pyramid TIFFs (Level 2)
       manifest/            # Lambda: the whole API — works, collections, users, publish routes
@@ -757,7 +758,7 @@ the same name as the stack, `staging` or `production`, and does five things:
 
 1. checks out `nulib/tfvars`;
 2. runs `npm test`;
-3. assumes `github-actions-role` in that environment's account;
+3. assumes `understory-github-actions-<env>` in that environment's account;
 4. runs `sam build --use-container` and `sam deploy` with the tfvars config;
 5. starts the Amplify build for the commit it just deployed, and waits for it.
 
@@ -770,16 +771,31 @@ What has to exist outside this repo, per environment:
 | Where | What |
 |---|---|
 | GitHub environment (`staging`, `production`) | A deployment-branch rule allowing only its own branch, so no other branch can run with its secrets. Secrets `AWSACCOUNT` (the account id) and `TFVARS_DEPLOY_KEY` (the private half of a read-only deploy key on `nulib/tfvars`). |
-| `github-actions-role` in that account | A trust-policy `sub` entry for `repo:nulib-ds@79535802/understory@1191898493:environment:<env>` |
+| That environment's AWS account | The role, `understory-github-actions-<env>`: the stack `understory-github-actions-<env>`, deployed by hand from `app/aws/deploy-role.yml` (the command is at its top) |
 | `nulib/tfvars` | `understory/samconfig.<env>.yaml`, everything under `deploy`, including `UIAutoBuild=false` |
 
 Things that will bite:
 
+- **The role is its own stack, never part of `template.yml`.** IAM evaluates a
+  role's policy on every request. If the workflow's role were in the stack it
+  deploys, a deploy that changed the role could cut itself off part-way, and
+  only a hand deploy could recover it. Deleting the app stack would also delete
+  CI's way in. Nothing the workflow deploys can touch it as a separate stack.
+- **It is not nulib's `github-actions-role`.** `nulib/infrastructure` creates
+  that role's trust entries as `repo:nulib/<repo>:*`, which cannot name another
+  org. The GitHub OIDC provider it trusts is the one that Terraform created in
+  each account. `deploy-role.yml` references it by its fixed ARN and never
+  creates one: an account holds only one provider per URL.
 - **The repo uses GitHub's immutable OIDC subjects**, which carry the owner and
-  repo ids. A trust entry written like its neighbours, `repo:nulib-ds/understory:*`,
-  never matches, and the run fails at assume-role. The entry is scoped to the
-  environment rather than `:*` because the role is `AdministratorAccess` and the
-  repo is public.
+  repo ids: `repo:nulib-ds@79535802/understory@1191898493:environment:<env>`. A
+  trust entry written like nulib's, `repo:nulib-ds/understory:*`, never matches,
+  and the run fails at assume-role. The trust is an exact match on that subject
+  and on the `sts.amazonaws.com` audience, with no wildcard, because the role is
+  `AdministratorAccess` and the repo is public.
+- **Sessions last two hours** (`MaxSessionDuration` on the role, and
+  `role-duration-seconds` in the workflow). A deploy waiting on CloudFront or
+  OpenSearch can outlast the default hour, and `sam deploy` then fails while
+  CloudFormation carries on.
 - **`nulib`'s org-level `TFVARS_DEPLOY_KEY` is not visible here**, because this
   repo is in `nulib-ds`. The key this repo uses is its own.
 - **tfvars is checked out at `.tfvars`, at the repo root, never under `app/`.**
@@ -1977,3 +1993,8 @@ esbuild resolving the whole graph catches a missing export or a require cycle, a
 
 ## Commit & Pull Request Guidelines
 Use Conventional Commits (`feat:`, `fix:`, `chore:`, etc.) from the start. Reference related GitHub issues in the PR body. Include manual verification steps (`npm test`, sample render) so reviewers can reproduce. Keep PRs focused; split unrelated work into separate branches.
+
+## Local Customization & Overrides
+
+If you want to customize Claude's behavior, create a `CLAUDE.local.md` file in the root directory. This file is `.gitignored` and will not affect other developers.
+
