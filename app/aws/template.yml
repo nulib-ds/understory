@@ -7,7 +7,7 @@ Parameters:
     Type: String
     Default: "7.0.1"
   # --- Hosted admin UI ----------------------------------------------------------
-  # All three matter only when GitHubBranch is set. Without a branch the stack
+  # All four matter only when GitHubBranch is set. Without a branch the stack
   # deploys no Amplify app at all, and the UI runs locally with npm run dev.
   GitHubRepo:
     Type: String
@@ -21,7 +21,12 @@ Parameters:
     Type: String
     Default: ""
     NoEcho: true
-    Description: "GitHub personal access token with repo scope (https://github.com/settings/tokens). Required with GitHubBranch, ignored without it."
+    Description: "Classic GitHub personal access token with the admin:repo_hook scope, from an account with admin on the repo (https://github.com/settings/tokens). Amplify uses it once, when the app is created, to connect it through the Amplify GitHub App, which must already be installed on the repo's org. Required with GitHubBranch, ignored without it."
+  UIAutoBuild:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: "Whether Amplify builds the UI on every push to GitHubBranch. Leave true on a dev stack. A shared stack sets false, because the deploy workflow (.github/workflows/deploy.yml) starts the build itself once the stack is deployed."
   SearchMaxOcu:
     Type: Number
     Default: 2
@@ -96,10 +101,16 @@ Conditions:
   HasHostedUIDomain: !And
     - !Condition HasHostedUI
     - !Condition HasCustomDomain
+  UIAutoBuilds: !Equals [!Ref UIAutoBuild, "true"]
+  # Always true wherever AmplifyApp exists, which HostedUINeedsToken ensures.
+  # The !If on AccessToken is for cfn-lint, which resolves the token to its ""
+  # default and then reports it shorter than AccessToken allows.
+  HasGitHubToken: !Not [!Equals [!Ref GitHubOAuthToken, ""]]
 
 # Checked before any resource is touched. Without it a missing token fails at
 # AmplifyApp, part-way through a create, and the rollback leaves the two
-# retained buckets behind to block the next attempt by name.
+# retained buckets behind to block the next attempt by name. Only a create
+# actually uses the token, but the rule cannot tell a create from an update.
 Rules:
   HostedUINeedsToken:
     RuleCondition: !Not [!Equals [!Ref GitHubBranch, ""]]
@@ -1579,7 +1590,12 @@ Resources:
     Properties:
       Name: !Sub "${AWS::StackName}-ui"
       Repository: !Ref GitHubRepo
-      OauthToken: !Ref GitHubOAuthToken
+      # AccessToken connects through the Amplify GitHub App. OauthToken was the
+      # legacy connection: a webhook plus an SSH deploy key per app on the repo,
+      # and the console's "Migrate to our GitHub app" banner. Amplify uses the
+      # token once, at create, and does not store it. An app created with
+      # OauthToken is migrated in the console, not by this property.
+      AccessToken: !If [HasGitHubToken, !Ref GitHubOAuthToken, !Ref AWS::NoValue]
       # Next.js on Amplify Hosting's managed server, not a static site:
       # collection slugs and work ids are created at runtime, so their routes
       # cannot be prerendered. AWS supports Next.js 12-15 here; move to 16 once
@@ -1633,7 +1649,11 @@ Resources:
       AppId: !GetAtt AmplifyApp.AppId
       BranchName: !Ref GitHubBranch
       Framework: "Next.js - SSR"
-      EnableAutoBuild: true
+      # Off on a shared stack, where the deploy workflow starts the build after
+      # the stack has deployed. Building on push races that deploy: the UI can
+      # go live before its API, and a NEXT_PUBLIC_* value the deploy changes
+      # misses the build, since updating an env var never triggers one.
+      EnableAutoBuild: !If [UIAutoBuilds, true, false]
 
   # The admin UI's hostname, alongside iiif-<project> and images-<project>.
   # Unlike those two there is no Route53 RecordSet here. Amplify owns the CNAME
@@ -1736,6 +1756,10 @@ Outputs:
     Description: "The branch's generated Amplify domain, which keeps working alongside the custom one. Attaching a domain takes several minutes and the DNS record may not be this stack's to write, so this stays the way in until the custom hostname resolves."
     Condition: HasHostedUI
     Value: !Sub "https://${GitHubBranch}.${AmplifyApp.AppId}.amplifyapp.com"
+  AmplifyAppId:
+    Description: "The deploy workflow starts the UI build for this app once the stack has deployed."
+    Condition: HasHostedUI
+    Value: !GetAtt AmplifyApp.AppId
   ManifestApiUrl:
     Value: !Sub "https://${ManifestHttpApi}.execute-api.${AWS::Region}.amazonaws.com"
   PublicSearchUrl:

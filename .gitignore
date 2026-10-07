@@ -7,3 +7,8 @@ samconfig.toml
 samconfig.*.toml
 samconfig.yaml
 samconfig.*.yaml
+
+
+# Local AI Agent custom instructions
+CLAUDE.local.md
+AGENTS.override.md
