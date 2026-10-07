@@ -363,34 +363,6 @@ main.layout {
 }
 
 
-.manifest-list {
-  width: 100%;
-}
-
-.manifest-list-row:hover {
-  background-color: var(--gray-a3);
-}
-
-/* A column of counts. Tabular figures so the digits line up down the column
-   rather than drifting with each number's natural width. */
-.assets-cell {
-  font-variant-numeric: tabular-nums;
-}
-
-/* The row's representative image. Narrow, and never wider than its thumbnail,
-   so the title column starts in the same place on every row. */
-.work-thumb-cell {
-  width: calc(32 * var(--px));
-  padding-right: 0;
-}
-
-/* Radix hangs cell content from the top. Every row is a single line now, so
-   centre them instead — otherwise the 32px thumbnail and the 19px title sit on
-   different centres and the image reads as hanging low. */
-.manifest-list .rt-TableCell {
-  vertical-align: middle;
-}
-
 /* What a downstream site consumes. It used to be a bare stack of lines with no
    container, which read as floating under the buttons rather than belonging to
    them. A tinted inset tied to the card's inner width groups it with the alert
@@ -430,33 +402,6 @@ main.layout {
   flex: 1;
   min-width: 0;
   word-break: break-all;
-}
-
-/* The title absorbs the leftover width and ellipsizes rather than wrapping.
-   Both declarations are load-bearing under `table-layout: auto`: `width: 100%`
-   claims the slack so the other columns stay at their content width, and
-   `max-width: 0` is what stops a long title widening the column instead of
-   being clipped — without it the table just grows and the ellipsis never
-   appears. */
-.work-title-cell {
-  width: 100%;
-  max-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.manifest-row-actions {
-  position: relative;
-  z-index: 2;
-  opacity: 0;
-  white-space: nowrap;
-  transition: opacity 0.15s ease;
-}
-
-.manifest-list-row:hover .manifest-row-actions,
-.manifest-list-row:focus-within .manifest-row-actions {
-  opacity: 1;
 }
 
 .asset-picker-list {
@@ -806,7 +751,7 @@ main.layout {
 
 .page-ready[data-revealed] > .page-ready__content {
   visibility: visible;
-  animation: page-ready-in 0.15s ease-out;
+  animation: page-ready-in 0.3s ease-out;
 }
 
 /* Absolute, so it takes no room from the hidden page and nothing shifts when
@@ -820,13 +765,38 @@ main.layout {
   justify-content: center;
 }
 
+/* From fully transparent, not from part-way up: the content is hidden until
+   this starts, so a first frame at any opacity above zero is a jump — the page
+   appearing in one step and then fading — which is the blink this replaces. */
 @keyframes page-ready-in {
   from { opacity: 0; }
   to { opacity: 1; }
 }
 
+/* The spinner fades in as gently as the page does, and out as the page comes up
+   (SPINNER_FADE_MS in PageReady.jsx). */
+.page-ready__spinner {
+  animation: page-ready-spinner-in 0.4s ease-out both;
+}
+
+.page-ready__spinner[data-leaving] {
+  animation: page-ready-spinner-out 0.4s ease-out forwards;
+}
+
+@keyframes page-ready-spinner-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes page-ready-spinner-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .page-ready[data-revealed] > .page-ready__content {
+  .page-ready[data-revealed] > .page-ready__content,
+  .page-ready__spinner,
+  .page-ready__spinner[data-leaving] {
     animation: none;
   }
 }
@@ -1043,8 +1013,7 @@ main.layout {
    ------------------------------------------------------------------------- */
 
 /* Fixed square so a missing or slow thumbnail never reflows the row. */
-.collection-thumb,
-.work-thumb {
+.collection-thumb {
   display: block;
   width: calc(32 * var(--px));
   height: calc(32 * var(--px));
@@ -1054,8 +1023,7 @@ main.layout {
   background-color: var(--gray-3);
 }
 
-.collection-thumb img,
-.work-thumb img {
+.collection-thumb img {
   width: 100%;
   height: 100%;
   object-fit: cover;
@@ -1099,10 +1067,18 @@ main.layout {
 .clover-slider {
   --clover-thumbnail-width: 12.5rem;
   --clover-thumbnail-height: 12.5rem;
+  /* Clover colours a hovered or focused card's caption from these, falling back
+     to its own blue. The viewer gets them through its theme (cloverTheme.js);
+     the slider takes no theme, so they are set here. The accent is the link
+     colour itself, so a hovered caption keeps its colour and gains an underline,
+     as a Radix link does. */
+  --clover-color-accent: var(--accent-a11);
+  --clover-color-accent-muted: var(--accent-8);
+  --clover-color-accent-alt: var(--accent-10);
 }
 
 .clover-slider a {
-  color: var(--accent-11);
+  color: var(--accent-a11);
   text-decoration: none;
 }
 
@@ -1118,9 +1094,14 @@ main.layout {
   font-weight: var(--font-weight-bold);
 }
 
-.clover-slider a:hover figcaption,
-.clover-slider a:focus-visible figcaption {
-  text-decoration: underline;
+/* What a Radix link does on hover (rt-underline-auto): an underline, thin and
+   soft, set a little below the text, and no change of colour. */
+.clover-slider a:hover .clover-slider-figure-title,
+.clover-slider a:focus-visible .clover-slider-figure-title {
+  text-decoration-line: underline;
+  text-decoration-color: var(--accent-a6);
+  text-decoration-thickness: min(2px, max(1px, 0.05em));
+  text-underline-offset: calc(0.025em + 2px);
 }
 
 .clover-slider a:focus-visible {
@@ -1155,4 +1136,37 @@ main.layout {
   color: var(--gray-9);
   font-style: italic;
   font-weight: 400;
+}
+
+/* The works list reuses the asset list's card (.canvas-list-item). Its content
+   needs no strip cleared on the left, since there is no drag handle, and the
+   title may shrink and truncate before the status or the trash can does. */
+.work-list-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.work-list-status {
+  flex-shrink: 0;
+}
+
+/* The box a work with no image keeps (sized by .asset-dropzone-preview), so
+   titles stay aligned. */
+.work-list-thumb--empty {
+  display: inline-block;
+  background-color: var(--gray-3);
+}
+
+/* A Clover frame's replacement copy loads in the same box as the one on screen,
+   then takes over (SwapStage). Out of flow and invisible until then, so the
+   visible copy's size and position never change. */
+.swap-layers {
+  position: relative;
+}
+
+.swap-layer[data-pending] {
+  position: absolute;
+  inset: 0;
+  visibility: hidden;
+  pointer-events: none;
 }

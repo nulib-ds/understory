@@ -462,6 +462,61 @@ function sortMembers(members) {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Order
+// ---------------------------------------------------------------------------
+//
+// A collection's order is the order of its members in the leaf document — what
+// `items` means in IIIF. Two states, told apart by looking, not by a flag:
+//
+//   label order   the members are sorted by label then id. Nobody has ordered
+//                 this collection by hand, so a new or renamed work is put where
+//                 the sort says, exactly as it always was.
+//   hand order    anything else. The members keep the positions they have; a new
+//                 work goes on the end.
+//
+// So a collection nobody has dragged anything in behaves as before, and one that
+// has been ordered keeps its order through every save, import and reindex.
+
+// True when `references` are already in label order (an empty or one-item list
+// is trivially so).
+function isLabelSorted(references) {
+  const list = Array.isArray(references) ? references : [];
+  const sorted = sortMembers(list);
+  return list.every((item, index) => item.id === sorted[index].id);
+}
+
+// `existing` is the leaf's members as stored (references); `incoming` are the
+// references to add or refresh. A member already there keeps its place and takes
+// its new terms; the rest go on the end; and a collection that was in label order
+// is put back in label order.
+function arrangeMembers(existing, incoming) {
+  const current = Array.isArray(existing) ? existing : [];
+  const wasSorted = isLabelSorted(current);
+  const fresh = new Map((incoming || []).map((item) => [item.id, item]));
+  const present = new Set(current.map((item) => item.id));
+  const arranged = [
+    ...current.map((item) => fresh.get(item.id) || item),
+    ...(incoming || []).filter((item) => !present.has(item.id)),
+  ];
+  return wasSorted ? sortMembers(arranged) : arranged;
+}
+
+// Move one member to sit after another, or to the front when `afterId` is null.
+// Returns the new list, or null when there is nothing to do — the member is
+// unknown, `afterId` is unknown, or it is already there. A move can never
+// invent, drop or duplicate a member.
+function moveMember(references, id, afterId) {
+  const list = Array.isArray(references) ? references : [];
+  const from = list.findIndex((item) => item.id === id);
+  if (from === -1 || id === afterId) return null;
+  if (afterId !== null && !list.some((item) => item.id === afterId)) return null;
+  const without = list.filter((item) => item.id !== id);
+  const to = afterId === null ? 0 : without.findIndex((item) => item.id === afterId) + 1;
+  if (to === from) return null;
+  return [...without.slice(0, to), list[from], ...without.slice(to)];
+}
+
 function membersOf(document) {
   return Array.isArray(document?.items) ? document.items.filter((item) => item && item.id) : [];
 }
@@ -523,13 +578,16 @@ function planReconciliation({baseUrl, member, removed = false, desired, root, le
   // order the caller happened to build `leaves` in.
   for (const slug of Object.keys(leaves).sort()) {
     const existing = leaves[slug];
-    const keep = membersOf(existing).filter((item) => item.id !== member.manifestId);
-    if (!removed && desiredBySlug.has(slug)) {
-      keep.push(buildManifestReference(member));
-    }
+    const others = membersOf(existing).filter((item) => item.id !== member.manifestId);
+    const adding = !removed && desiredBySlug.has(slug);
+    // Where the work already stands is kept (see "Order"): re-sorting here would
+    // undo a curator's ordering on every save.
+    const keep = adding
+      ? arrangeMembers(membersOf(existing), [buildManifestReference(member)])
+      : others;
 
     const label = summaryBySlug.get(slug)?.label || desiredBySlug.get(slug)?.label || extractLabel(existing?.label) || slug;
-    const members = sortMembers(keep).map(memberFromReference);
+    const members = keep.map(memberFromReference);
     const document = buildCollectionDocument({baseUrl, slug, label, members});
 
     if (!existing || serializeCollection(existing) !== serializeCollection(document)) {
@@ -611,4 +669,7 @@ module.exports = {
   // borrows) has to mean the same thing however the document was produced,
   // or a reindex would silently change a collection's picture.
   sortMembers,
+  isLabelSorted,
+  arrangeMembers,
+  moveMember,
 };

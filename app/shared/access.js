@@ -218,6 +218,13 @@ function canPublish(principal, slug) {
   return Boolean(slug) && grants(principal).has(slug);
 }
 
+// Putting a collection's works in order. The same people as publish: an admin,
+// or an editor holding the collection. It rewrites exactly that collection's
+// leaf, and changes nothing a curator could not already change by editing.
+function canOrderCollection(principal, slug) {
+  return canPublish(principal, slug);
+}
+
 // The symmetric difference: what this save actually adds or removes. Untouched
 // memberships are none of the check's business, so a work that already sits in a
 // collection the editor cannot see is not a reason to refuse an unrelated edit.
@@ -263,6 +270,7 @@ module.exports = {
   canCreateWork,
   canMoveWork,
   canPublish,
+  canOrderCollection,
   changedSlugs,
   toSlugArray,
 };

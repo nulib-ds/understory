@@ -259,6 +259,41 @@ Resources:
           AccessControlMaxAgeSec: 3600
           OriginOverride: true
 
+  # The CORS policy above plus "never reuse without asking", for working/* only.
+  #
+  # The edge already passes every working request through (CachingDisabled), but
+  # that is the CDN's cache. S3 sends these objects with no Cache-Control, so a
+  # BROWSER caches them heuristically from Last-Modified and keeps handing a page
+  # the document as it was a minute ago: a slider drawn from the collection
+  # document stayed in its old order after a save, and a viewer can do the same
+  # with a manifest. no-cache means "revalidate every time", a conditional
+  # request the edge answers 304 from S3, not a fresh download.
+  #
+  # Its own policy because published/* shares IiifCorsPolicy and must stay
+  # cacheable. Response headers policies are capped per account like cache
+  # policies are; this makes two per stack.
+  IiifWorkingHeadersPolicy:
+    Type: AWS::CloudFront::ResponseHeadersPolicy
+    Properties:
+      ResponseHeadersPolicyConfig:
+        Name: !Sub "${AWS::StackName}-iiif-working"
+        Comment: "IIIF CORS plus Cache-Control: no-cache, for the drafts a save must show at once."
+        CorsConfig:
+          AccessControlAllowCredentials: false
+          AccessControlAllowHeaders:
+            Items: ["*"]
+          AccessControlAllowMethods:
+            Items: [GET, HEAD, OPTIONS]
+          AccessControlAllowOrigins:
+            Items: ["*"]
+          AccessControlMaxAgeSec: 3600
+          OriginOverride: true
+        CustomHeadersConfig:
+          Items:
+            - Header: Cache-Control
+              Value: no-cache
+              Override: true
+
   # Cache policies are the AWS MANAGED ones, referenced by id below rather than
   # declared here. Custom cache policies are capped at 20 per ACCOUNT — shared
   # with every other project in it — and three per stack would put a ceiling of
@@ -373,7 +408,7 @@ Resources:
             # followed almost immediately by a read that has to see it, and any
             # TTL here reads as "the save did nothing".
             CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
-            ResponseHeadersPolicyId: !Ref IiifCorsPolicy
+            ResponseHeadersPolicyId: !Ref IiifWorkingHeadersPolicy
           # The public search route, on the same host as the documents a site
           # already reads. Not a space: nothing under search/ is in the bucket.
           # Cached, so repeat queries and crawlers are answered here without
@@ -945,6 +980,12 @@ Resources:
             ApiId: !Ref ManifestHttpApi
             Path: /collections/{slug}/import
             Method: GET
+        OrderCollection:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ManifestHttpApi
+            Path: /collections/{slug}/order
+            Method: PUT
         GetCollectionImportPlan:
           Type: HttpApi
           Properties:

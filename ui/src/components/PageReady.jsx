@@ -9,6 +9,11 @@ const SPINNER_DELAY_MS = 400;
 // reports at all — a bug, not a slow network. It keeps that bug from being a
 // blank page.
 const REVEAL_ANYWAY_MS = 10000;
+// How long the spinner takes to fade once the page is ready. It crossfades with
+// the page rather than vanishing, because a spinner that cuts out the instant
+// the content starts to appear reads as a blink. Keep in step with
+// page-ready-spinner-out in App.css.
+const SPINNER_FADE_MS = 400;
 
 // Wraps one page's content and holds it hidden until everything on it has
 // loaded, then shows it all at once.
@@ -36,6 +41,7 @@ export default function PageReady({ready = true, children}) {
   const checkQueuedRef = useRef(false);
   const [revealed, setRevealed] = useState(false);
   const [slow, setSlow] = useState(false);
+  const [spinnerGone, setSpinnerGone] = useState(false);
 
   const reveal = useCallback(() => {
     if (revealedRef.current) return;
@@ -89,6 +95,13 @@ export default function PageReady({ready = true, children}) {
     };
   }, [revealed, reveal]);
 
+  // Once revealed, the spinner stays just long enough to fade out.
+  useEffect(() => {
+    if (!revealed || !slow) return undefined;
+    const timer = setTimeout(() => setSpinnerGone(true), SPINNER_FADE_MS);
+    return () => clearTimeout(timer);
+  }, [revealed, slow]);
+
   return (
     <PageReadyContext.Provider value={gate}>
       <div
@@ -96,8 +109,8 @@ export default function PageReady({ready = true, children}) {
         data-revealed={revealed ? "" : undefined}
         aria-busy={revealed ? undefined : true}
       >
-        {!revealed && slow && (
-          <div className="page-ready__spinner">
+        {slow && !spinnerGone && (
+          <div className="page-ready__spinner" data-leaving={revealed ? "" : undefined}>
             <Spinner size="3" />
           </div>
         )}
