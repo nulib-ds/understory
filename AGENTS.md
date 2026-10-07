@@ -134,7 +134,9 @@ stack already paid for when the wildcard was issued. That also rules out
 auto-subdomain: a per-branch name would be `<branch>.admin-<project>.<base>`, two
 labels below the base, which `*.<base>` does not cover.
 
-> **The first staging deploy is where this gets tested.** CloudFormation waits
+> **Seen working on staging and production** (production on 2026-10-07: the
+> association went `AVAILABLE` with the `CUSTOM` certificate, and Amplify wrote
+> `admin-understory`'s record into the zone itself). CloudFormation waits
 > for the domain association to go `AVAILABLE`, and a domain whose CNAME never
 > appears sits in `AWAITING_APP_CNAME` until the stack times out. In practice
 > setting `HostedZoneId` at all means the zone is in this account — a
@@ -813,17 +815,32 @@ Things that will bite:
   first sets `UIAutoBuild=false` is still built by Amplify on its own, as well as
   by the workflow. That happens once, and on that run `start-job` may find a job
   already going. Re-run the workflow if it does.
-- **The workflow does not create a shared stack.** Do the first create by hand
-  from a clean checkout of the branch, so the domain association can be watched
-  (see **Hostnames**), and let the workflow deploy every change after that. It
-  could create the stack, but nothing would be watching it.
+- **The workflow does not create a shared stack.** Do the first create by hand,
+  so the change set can be reviewed and the domain association watched (see
+  **Hostnames**), and let the workflow deploy every change after that. It
+  could create the stack, but nothing would be watching it. Build the create
+  from a clean checkout of exactly what is about to be merged. For production
+  that is `staging`'s head, not `main`: `main` gets the code only by the merge,
+  and the merge starts the workflow. So create first, then merge.
 - **The runner is `ubuntu-24.04-arm`**, the Lambdas' own architecture, so the
   container build needs no emulation. It is free for a public repo.
 
-> **Not yet run.** Checked by actionlint, plus a local dry run of the mask
-> step's extraction against the staging config and the redaction `sed`. The
-> first push to `staging` is where the trust entry, the deploy key and
-> `start-job --commit-id` first meet GitHub and AWS.
+> **First run on `staging`, 2026-10-07**, from the merge that added the
+> workflow. The role's trust, the tfvars deploy key, `sam deploy` and
+> `start-job --commit-id` all worked: Amplify built the commit that had just
+> been deployed. Amplify's own push build of the same commit ran first, and
+> the two did not collide. The public log holds no token and no account id,
+> and the overrides line reads `***** REDACTED *****`.
+>
+> **Production, the same day.** It was created by hand from `staging`'s head,
+> and then the merge into `main` ran the workflow. Things that run confirmed:
+> - The app was created on the GitHub App (`TOKEN`) through `AccessToken`, with
+>   nothing left to migrate.
+> - Auto-build was off from the start, so `main`'s first build was the
+>   workflow's alone.
+> - The workflow run after the create was not a no-op. It updated `IiifServer`,
+>   the nested serverless-iiif stack, which happens on every deploy, dev stacks
+>   included.
 
 ### Tags come from the config, not the template
 
