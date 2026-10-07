@@ -37,9 +37,10 @@ const {
   collectionObjectKey,
   rootCollectionKey,
   rootCollectionSummaries,
-  sortMembers,
+  arrangeMembers,
 } = require("../../../shared/collection");
 const {INTERNAL_PREFIX} = require("../../../shared/space");
+const {progressKey} = require("../../../shared/importProgress");
 const {copyCanvasAsset, copyManifestThumbnail} = require("../../../shared/assetCopy");
 const {readJson, putJson, listKeys} = require("../publish/s3io");
 // store.js's writeManifest, NOT shared/manifest.js's — the shared one takes its
@@ -81,6 +82,9 @@ const BATCH_BUDGET_MS = 540000;
 const runPrefix = (slug, runId) => `${INTERNAL_PREFIX}/collection-import/${slug}/${runId}`;
 const planKeyFor = (slug, runId) => `${runPrefix(slug, runId)}/plan.json`;
 const batchKeyFor = (slug, runId, index) => `${runPrefix(slug, runId)}/works/${index}.json`;
+// A work's marker; see shared/importProgress.js. `index` is its place in the plan.
+const markerKeyFor = (slug, runId, index, state) =>
+  progressKey(`${runPrefix(slug, runId)}/`, index, state);
 const statusKeyFor = (slug) => `${INTERNAL_PREFIX}/collection-import/${slug}/status.json`;
 
 async function patchStatus(slug, patch) {
@@ -246,15 +250,31 @@ async function batch({slug, runId, batchIndex}) {
   const {works = [], collectionLabel = slug} = stored.document;
   const slice = works.slice(batchIndex * BATCH_SIZE, (batchIndex + 1) * BATCH_SIZE);
 
+  // A marker for each work as it starts and as it ends, so the page can show
+  // every work's state rather than only "batch 3 of 7". Best effort: a marker
+  // that fails to write costs a row showing the wrong state for a moment, and
+  // must never fail a work that imported fine.
+  const mark = async (position, state, body = {}) => {
+    try {
+      await putJson(markerKeyFor(slug, runId, batchIndex * BATCH_SIZE + position, state), body);
+    } catch (error) {
+      console.error(`Collection import: could not write a ${state} marker`, error);
+    }
+  };
+
   const deadline = Date.now() + BATCH_BUDGET_MS;
   const results = [];
-  for (const work of slice) {
+  for (const [position, work] of slice.entries()) {
     if (Date.now() > deadline) {
       results.push({workId: work.workId, sourceUrl: work.sourceUrl, status: "deferred"});
+      await mark(position, "deferred");
       continue;
     }
+    await mark(position, "importing");
     try {
-      results.push(await importOneWork({slug, collectionLabel, work}));
+      const result = await importOneWork({slug, collectionLabel, work});
+      results.push(result);
+      await mark(position, result.status);
     } catch (error) {
       // A source that is throttling us or momentarily down is not this work's
       // fault, and recording the rest of the batch as permanently failed because
@@ -272,6 +292,7 @@ async function batch({slug, runId, batchIndex}) {
         status: "failed",
         error: error.message,
       });
+      await mark(position, "failed", {error: error.message});
     }
   }
 
@@ -309,7 +330,6 @@ async function readResults(slug, runId) {
 async function writeCollection({slug, runId}) {
   const results = await readResults(slug, runId);
   const landed = results.filter((r) => r.status === "ok" || r.status === "partial");
-  const landedIds = new Set(landed.map((r) => r.manifestId));
 
   const root = await ensureRoot();
   const label = rootCollectionSummaries(root).find((entry) => entry.slug === slug)?.label || slug;
@@ -319,14 +339,17 @@ async function writeCollection({slug, runId}) {
   // say. The leaf is what the works list and publish read, so a document built
   // from the results alone would make such a work vanish from both.
   //
-  // Sorted the way reconciliation sorts, so "first member" — whose thumbnail
-  // the collection borrows — means the same thing however the document was
+  // Arranged the way reconciliation arranges (arrangeMembers): label order for a
+  // collection nobody has ordered by hand, and the curator's order otherwise
+  // with these works on the end. So "first member" — whose thumbnail the
+  // collection borrows — means the same thing however the document was
   // produced, and a later reindex does not silently change the picture.
   // Conditional, because a curator's save can be rewriting this leaf right now.
   const leaf = await withWriteRetry(async () => {
     const current = await readVersioned(collectionObjectKey(slug));
-    const others = membersOf(current?.document).filter((item) => !landedIds.has(item.id));
-    const members = sortMembers([...landed.map(buildManifestReference), ...others]).map(memberFromReference);
+    const members = arrangeMembers(membersOf(current?.document), landed.map(buildManifestReference)).map(
+      memberFromReference,
+    );
     const document = buildCollectionDocument({baseUrl, slug, label, members});
     await writeVersioned(collectionObjectKey(slug), document, current?.etag || null);
     return document;

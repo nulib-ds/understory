@@ -148,7 +148,8 @@ The generated `<branch>.<appid>.amplifyapp.com` name keeps working alongside the
 custom one and is its own output (`AmplifyDefaultDomain`), because attaching a
 domain takes several minutes and the DNS half may not be this stack's to do.
 `UIEndpoint` is the custom hostname once one is configured, the generated one
-otherwise.
+otherwise. Neither output, nor `AmplifyDomain`, exists on a stack without
+`GitHubBranch` (see **Deploying**).
 
 The key and id builders take a `space` that defaults to `working` (`app/shared/space.js`), so every caller but the publish pipeline is correct without passing one. An unknown space throws rather than building a key nobody serves.
 
@@ -476,7 +477,7 @@ characters), and the group and policies after the stack plus a suffix (at most
 **Moving a stack off the shared domain:**
 
 1. Drop `OpenSearchDomainName` and `OpenSearchEndpoint` from
-   `parameter_overrides` in `samconfig.toml`. They no longer exist, and
+   `parameter_overrides` in the stack's SAM config. They no longer exist, and
    CloudFormation refuses overrides for parameters a template does not declare.
 2. Deploy.
 3. Run one IIIF publish, then one search-index flip, per collection. The new
@@ -585,8 +586,7 @@ Load-bearing, not incidental:
 app/
   aws/
     template.yml          # SAM template — all infra (S3, Cognito, API Gateway, Lambdas, Amplify Hosting)
-    samconfig.toml         # Your personal SAM deployment config (gitignored — copy from samconfig.toml.example)
-    samconfig.toml.example
+    deploy-role.yml       # the role the deploy workflow assumes; its own stack, deployed by hand per account
     lambdas/
       iiif-image/          # Lambda: converts source images to pyramid TIFFs (Level 2)
       manifest/            # Lambda: the whole API — works, collections, users, publish routes
@@ -622,6 +622,11 @@ ui/                        # Next.js frontend — talks to the deployed AWS stac
   .env.local               # Your personal env config (gitignored — copy from .env.local.example)
   .env.local.example
 amplify.yml                # the one build spec for the hosted UI
+.github/workflows/
+  deploy.yml               # deploys staging/production on push to their branch (see Deploying)
+samconfig.yaml.example     # copy to samconfig.<you>.yaml for your dev stack (see Deploying)
+samconfig.staging.yaml     # symlinks into the private config repo; these and yours are gitignored
+samconfig.production.yaml
 ```
 
 > Note: `app/storage/`, if present, is a vestige of an earlier approach and is not used by any current Lambda.
@@ -629,8 +634,8 @@ amplify.yml                # the one build spec for the hosted UI
 ## Build, Test, and Development Commands
 - `npm install` — install root dependencies; run inside `ui/` and any Lambda subdirectory separately.
 - `npm test` — placeholder; replace with your actual test runner as coverage is added.
-- `cd app/aws && sam build --use-container && sam deploy --guided` — one-time build and deploy of your personal dev stack. Docker must be running; `--use-container` is required so SAM installs native dependencies (e.g. sharp) inside a Linux arm64 container matching the Lambda runtime. Requires `app/aws/samconfig.toml` (see Local Development below).
-- `cd app/aws && sam sync --watch` — fast iterative redeploys of Lambda code changes to your personal stack (see Local Development).
+- `cd app/aws && sam build --use-container && sam deploy --config-file ../../samconfig.<you>.yaml` — build and deploy your personal dev stack, or a shared one by its own config (see **Deploying**). Docker must be running; `--use-container` is required so SAM installs native dependencies (e.g. sharp) inside a Linux arm64 container matching the Lambda runtime.
+- `cd app/aws && sam sync --watch --config-file ../../samconfig.<you>.yaml` — fast iterative redeploys of Lambda code changes to your personal stack (see Local Development).
 
 > **Never run a bare `sam build` as a substitute when Docker is down.** It builds *every*
 > function, and `iiif-image` bundles `sharp`'s platform-specific native binary. Off a Mac
@@ -642,6 +647,256 @@ amplify.yml                # the one build spec for the hosted UI
 > sound: `ls app/aws/.aws-sam/build/IIIFImageFunction/node_modules/@img/` should list
 > `sharp-linux-arm64` and no `darwin` entries.
 - `cd ui && npm run dev` — start the Next.js dev server (port 3000) for the frontend, pointed at your personal stack's endpoints via `ui/.env.local`. `npm run build` is the production build Amplify runs.
+
+## Deploying
+
+Every stack is deployed with `sam deploy`, from one YAML config per stack,
+always named with `--config-file`. A dev stack is deployed by hand. A shared
+stack is deployed by `.github/workflows/deploy.yml` on every push to its branch
+(see **Deploying from GitHub Actions**). The configs are all gitignored:
+
+| Config | Stack | Kept |
+|---|---|---|
+| `samconfig.<you>.yaml` | `<you>-dev-understory` | on your machine; start from `samconfig.yaml.example` |
+| `samconfig.staging.yaml` | `staging-understory` | `understory/` in the team's private `nulib/tfvars` repo, symlinked in to deploy by hand |
+| `samconfig.production.yaml` | `production-understory` | likewise |
+
+```
+cd app/aws
+sam build --use-container
+sam deploy --config-file ../../samconfig.<you>.yaml
+```
+
+Branches flow **feature branch → `staging` → `main`**, and each shared stack
+follows its own: `staging-understory` builds the `staging` branch,
+`production-understory` builds `main`. Pull requests from a feature branch
+target `staging`, and merging one is what deploys it. Deploy a shared stack by
+hand only to create it the first time, and then from a clean checkout of its
+branch, so that what runs is what is merged.
+
+On a shared stack the workflow deploys the backend first and then builds the
+UI from the same commit. On a dev stack the two do not move together: Amplify
+rebuilds the UI on every push to the branch, but the stack changes only when
+you run `sam deploy`. When a UI change there needs a backend change, deploy the
+stack before pushing.
+
+A relative `--config-file` resolves against the template's directory
+(`app/aws`), whatever directory you run from and whether or not a build has run,
+hence the `../../`.
+
+**The configs live at the root, not in `app/aws`, because of the container
+build.** Every function but `iiif-image` has `CodeUri: ../`, all of `app/`, and
+the build mounts only that directory in the container and copies everything
+under it. A symlink in `app/aws` points at a file the container cannot see, and
+the build fails with `CopySource - [Errno 2] No such file or directory`.
+`--mount-symlinks` does not help: it mounts only symlinks at the top of `app/`.
+The same applies to anything a CI job checks out.
+
+What each kind of config looks like:
+
+- **A dev config puts everything under `global`**, as the example does.
+  `sam sync` reads only its own section and `global`, never `deploy`, so this is
+  what lets `sam sync --watch` find the stack.
+- **A shared config puts everything under `deploy`.** `sam sync` then has no
+  stack name and refuses, which is the point: it skips changesets, and AWS
+  advises against it outside development.
+
+  ```yaml
+  version: 1.0
+  default:
+    deploy:
+      parameters:
+        stack_name: staging-understory
+        s3_prefix: staging-understory
+        region: us-east-1
+        resolve_s3: true
+        confirm_changeset: true
+        capabilities:
+          - CAPABILITY_IAM
+          - CAPABILITY_AUTO_EXPAND
+        tags:
+          - Project=understory
+        parameter_overrides:
+          - GitHubBranch=staging
+          - GitHubOAuthToken=<token>
+          - UIAutoBuild=false
+          - BaseDomainName=<base>
+          - CertificateArn=arn:aws:acm:us-east-1:<account>:certificate/<id>
+          - HostedZoneId=<zone id>
+  ```
+
+Things that will bite:
+
+- **There is no shared base file.** SAM reads exactly one config per command
+  and files do not inherit. A template `Default` does not fill that gap after
+  the first deploy: it reaches a stack only when the stack is created (see the
+  point about deleted lines below). So changing `ServerlessIiifVersion`'s
+  default upgrades new stacks only. A value every stack must change together
+  is either named in each config or should not be a parameter at all.
+- **Keep no `samconfig.toml` or `samconfig.yaml` in `app/aws`.** Without
+  `--config-file`, SAM falls back to those two there, the TOML winning if both exist.
+  With neither present, a forgotten flag fails for want of a stack name rather
+  than deploying whatever stack the fallback names. Both stay in `.gitignore`,
+  because `sam deploy --guided` with no config creates `samconfig.toml` and
+  writes the token into it.
+- **Never `sam deploy --guided` against a symlinked config.** It writes its
+  answers back into the file, which is the config repo's checkout, reformatted.
+- **Deleting a line from `parameter_overrides` changes nothing on an existing
+  stack.** For every parameter the config does not name, `sam deploy` asks
+  CloudFormation for `UsePreviousValue`, so the stack keeps whatever it was last
+  given. Only a new stack falls back to the template's `Default`. To clear a
+  value, write it empty, which is `Key=""` (SAM refuses a bare `Key=`). So name
+  every parameter a stack uses, empty ones included, and the config is the
+  whole truth about the stack.
+
+### Deploying from GitHub Actions
+
+`.github/workflows/deploy.yml` runs on every push to `staging` or `main`
+(changes to Markdown and `docs/` alone are skipped) and on demand. It follows
+`nulib/dc-api-v2`'s deploy workflow. The job runs in the GitHub environment of
+the same name as the stack, `staging` or `production`, and does five things:
+
+1. checks out `nulib/tfvars`;
+2. runs `npm test`;
+3. assumes `understory-github-actions-<env>` in that environment's account;
+4. runs `sam build --use-container` and `sam deploy` with the tfvars config;
+5. starts the Amplify build for the commit it just deployed, and waits for it.
+
+Runs on one branch queue and are never cancelled. Cancelling the runner would
+leave CloudFormation running, and the next run would fail against a stack still
+`UPDATE_IN_PROGRESS`.
+
+What has to exist outside this repo, per environment:
+
+| Where | What |
+|---|---|
+| GitHub environment (`staging`, `production`) | A deployment-branch rule allowing only its own branch, so no other branch can run with its secrets. Secrets `AWSACCOUNT` (the account id) and `TFVARS_DEPLOY_KEY` (the private half of a read-only deploy key on `nulib/tfvars`). |
+| That environment's AWS account | The role, `understory-github-actions-<env>`: the stack `understory-github-actions-<env>`, deployed by hand from `app/aws/deploy-role.yml` (the command is at its top) |
+| `nulib/tfvars` | `understory/samconfig.<env>.yaml`, everything under `deploy`, including `UIAutoBuild=false` |
+
+Things that will bite:
+
+- **The role is its own stack, never part of `template.yml`.** IAM evaluates a
+  role's policy on every request. If the workflow's role were in the stack it
+  deploys, a deploy that changed the role could cut itself off part-way, and
+  only a hand deploy could recover it. Deleting the app stack would also delete
+  CI's way in. Nothing the workflow deploys can touch it as a separate stack.
+- **It is not nulib's `github-actions-role`.** `nulib/infrastructure` creates
+  that role's trust entries as `repo:nulib/<repo>:*`, which cannot name another
+  org. The GitHub OIDC provider it trusts is the one that Terraform created in
+  each account. `deploy-role.yml` references it by its fixed ARN and never
+  creates one: an account holds only one provider per URL.
+- **The repo uses GitHub's immutable OIDC subjects**, which carry the owner and
+  repo ids: `repo:nulib-ds@79535802/understory@1191898493:environment:<env>`. A
+  trust entry written like nulib's, `repo:nulib-ds/understory:*`, never matches,
+  and the run fails at assume-role. The trust is an exact match on that subject
+  and on the `sts.amazonaws.com` audience, with no wildcard, because the role is
+  `AdministratorAccess` and the repo is public.
+- **Sessions last two hours** (`MaxSessionDuration` on the role, and
+  `role-duration-seconds` in the workflow). A deploy waiting on CloudFront or
+  OpenSearch can outlast the default hour, and `sam deploy` then fails while
+  CloudFormation carries on.
+- **`nulib`'s org-level `TFVARS_DEPLOY_KEY` is not visible here**, because this
+  repo is in `nulib-ds`. The key this repo uses is its own.
+- **tfvars is checked out at `.tfvars`, at the repo root, never under `app/`.**
+  The container build copies all of `app/` into every function but
+  `iiif-image`, and that checkout holds a secret.
+- **The Actions logs are public, like the repo.** GitHub masks only the secrets
+  it stores, not values read from a file, so the workflow masks every `NoEcho`
+  parameter's value from the config before anything reads it. **A new `NoEcho`
+  parameter must be added to that step's list.** SAM also prints `NoEcho` values
+  as `*****`, and a `sed` hides the rest of the overrides line.
+- **`UIAutoBuild=false` is what puts the UI after the backend.** With Amplify
+  building on push, the UI raced the deploy. It could go live before its API, and
+  a `NEXT_PUBLIC_*` value changed by the deploy missed the build entirely,
+  because updating an app's environment never starts a build. The push that
+  first sets `UIAutoBuild=false` is still built by Amplify on its own, as well as
+  by the workflow. That happens once, and on that run `start-job` may find a job
+  already going. Re-run the workflow if it does.
+- **The workflow does not create a shared stack.** Do the first create by hand
+  from a clean checkout of the branch, so the domain association can be watched
+  (see **Hostnames**), and let the workflow deploy every change after that. It
+  could create the stack, but nothing would be watching it.
+- **The runner is `ubuntu-24.04-arm`**, the Lambdas' own architecture, so the
+  container build needs no emulation. It is free for a public repo.
+
+> **Not yet run.** Checked by actionlint, plus a local dry run of the mask
+> step's extraction against the staging config and the redaction `sed`. The
+> first push to `staging` is where the trust entry, the deploy key and
+> `start-job --commit-id` first meet GitHub and AWS.
+
+### Tags come from the config, not the template
+
+`tags` in a stack's config (`Project=understory` in the example and the shared
+configs) become stack tags, and CloudFormation copies stack tags onto every
+resource in the stack that takes them, the nested serverless-iiif stack
+included. The template declares no `Tags` anywhere. Doing it there would mean an
+`!If` on each of some forty resources so that a fork could switch them off; this
+way a fork drops the line, or names its own.
+
+- **Unlike a parameter, deleting the `tags` line removes the tags.** With none
+  given, SAM sends CloudFormation an explicit empty tag list (`Tags=`), which
+  clears the stack's tags on the next deploy. The config is the whole truth
+  about tags without any extra effort.
+- **A dev config keeps `tags` under `global`**, with everything else.
+  `sam sync` deploys infrastructure changes with tags too, so a `sam sync` that
+  could not see them would strip them.
+- **Adding tags to a running stack replaces nothing.** This was checked with an
+  unexecuted change set on `kdid-dev-understory` (2026-10-06). Every resource
+  showed as a Modify whose only real change was its tags. The three
+  `Conditional` replacements it lists (`AmplifyBranch` and two
+  `Lambda::Permission`s) happen only if an app id or ARN changes, and adding a
+  tag changes neither. `SearchCollection`'s schema makes its tags create-only,
+  but the change set still treats stack tags there as a plain Modify.
+- **Not tagged:** anything created at run time rather than by CloudFormation.
+  That covers Lambda's own log groups (the template declares none),
+  MediaConvert jobs and Amplify's compute logs. It also misses SAM's artifact
+  bucket (`resolve_s3`), which belongs to the account-wide
+  `aws-sam-cli-managed-default` stack.
+
+### The hosted UI is opt-in, by `GitHubBranch`
+
+With `GitHubBranch` empty (the default), the stack creates no Amplify app,
+branch, domain or service role, and has no `UIEndpoint` output. Run the UI with
+`npm run dev` instead. Nothing else in the stack depends on Amplify: every CORS
+rule allows `*` and Cognito has no callback URLs.
+
+Set it and Amplify builds and hosts that branch: `staging` and `main` for the
+shared stacks, or the feature branch you are on for a dev stack, at
+`<branch>.<appid>.amplifyapp.com` (`UIEndpoint`). A dev stack never gets the
+`admin-` hostname, because it has no `BaseDomainName`.
+
+A branch needs `GitHubOAuthToken`: a **classic** personal access token with the
+`admin:repo_hook` scope, from an account with admin on the repo. Amplify uses it
+once, when it creates the app, and does not store it. The template passes it as
+`AccessToken`, which connects through the **Amplify GitHub App**
+(`aws-amplify-us-east-1`). That app must already be installed on the repo's org,
+as it is on `nulib-ds`. After the create the app goes through that
+installation, so a token that expires later breaks nothing, as long as its
+value in the config is left alone. A changed value is sent to Amplify again on
+the next deploy. The `HostedUINeedsToken` rule in the template refuses the
+deploy without one, before any resource is touched. Failing later, at
+`AmplifyApp`, would roll back a first create and leave the two retained buckets
+behind to block the next attempt by name. The parameter is `NoEcho`, so
+CloudFormation shows it as `****` and `sam deploy` masks it in its own output.
+
+> **Apps created before 2026-10-06 used `OauthToken`**, Amplify's legacy GitHub
+> connection. Each such app has a webhook and its own read-only SSH deploy key
+> on the repo (`<appId>:amplify@aws`), reports
+> `repositoryCloneMethod: SSH`, and shows "Migrate to our GitHub app" in the
+> console. Changing the template property does not migrate one: AWS supports
+> migration only from the console (**Start migration**, then **Complete
+> installation**). Afterwards `aws amplify get-app --app-id <id> --query
+> app.repositoryCloneMethod` prints `TOKEN`, and the app's deploy key can be
+> deleted under the repo's Settings › Deploy keys.
+
+`UIAutoBuild` says whether Amplify builds on every push. Leave it `true` on a dev
+stack. A shared stack sets it `false`, because the deploy workflow builds the UI
+itself (see **Deploying from GitHub Actions**).
+
+**Setting `GitHubBranch=""` on a stack that had a branch deletes its Amplify
+app.** Removing the line is not enough: the stack keeps its previous branch
+(see above).
 
 ## Local Development
 
@@ -661,16 +916,17 @@ aws sts get-caller-identity         # sanity check — should return your accoun
 SSO sessions expire; re-run `aws sso login` whenever `sam`/`aws` commands start failing with `ExpiredToken`/`ExpiredTokenException`.
 
 ### 2. Stand up (or update) your personal stack
-1. Copy `app/aws/samconfig.toml.example` to `app/aws/samconfig.toml` (gitignored) and set `stack_name` to something unique to you, e.g. `<yourname>-dev-understory` (see Naming).
-2. First time only:
+1. Copy `samconfig.yaml.example` at the repo root to `samconfig.<you>.yaml` beside it (gitignored; see **Deploying** for why not in `app/aws`) and set `stack_name` and `s3_prefix` to something unique to you, e.g. `<yourname>-dev-understory` (see Naming). Leave `GitHubBranch` empty unless you want Amplify to host the UI for you (see **Deploying**).
+2. Build and deploy:
    ```
    cd app/aws
    sam build --use-container
-   sam deploy --guided
+   sam deploy --config-file ../../samconfig.<you>.yaml
    ```
-   `--use-container` is required so SAM installs native dependencies (e.g. sharp) inside a Linux arm64 container matching the Lambda runtime. Answer the guided prompts once; SAM remembers them in `samconfig.toml` for next time.
-3. On later changes: `sam build --use-container && sam deploy` (drop `--guided`). Add `--no-confirm-changeset` to skip the interactive `y/N` prompt if you've already reviewed the changeset shape.
-4. For fast iteration on Lambda code without a full deploy, use `sam sync --watch` (or `sam sync --code` for a one-shot sync) instead.
+   `--use-container` is required so SAM installs native dependencies (e.g. sharp) inside a Linux arm64 container matching the Lambda runtime. Every parameter has a default, so there is nothing to answer and no need for `--guided`.
+3. First time only: copy the `ImagesDistributionHost` output into `ImageApiForceHost` in your config and deploy again, or tiles bypass the CDN (see **CDN**).
+4. On later changes, the same two commands. Add `--no-confirm-changeset` to skip the interactive `y/N` prompt if you've already reviewed the changeset shape.
+5. For fast iteration on Lambda code without a full deploy, use `sam sync --watch --config-file ../../samconfig.<you>.yaml` (or `sam sync --code` with the same flag for a one-shot sync) instead.
    - **Caveat:** `IiifServer`, the nested `AWS::Serverless::Application` wrapping `samvera/serverless-iiif`, does not hot-sync via `sam sync --watch` the way the top-level `ManifestFunction`/`IIIFImageFunction` do. Changes affecting it need a full `sam deploy`. This is a third-party component that rarely changes, so it's a minor caveat in practice.
 
 ### 3. Create `ui/.env.local` from your stack's outputs
@@ -718,7 +974,7 @@ literal `process.env.NEXT_PUBLIC_X`: Next replaces only that exact expression.
 | `NEXT_PUBLIC_STORAGE_IDENTITY_POOL_ID` / `NEXT_PUBLIC_COGNITO_USER_POOL_ID` / `NEXT_PUBLIC_COGNITO_CLIENT_ID` | Cognito identifiers from stack outputs, for `AuthGate` and the sign-in screen. |
 
 ### Amplify deployment
-This is Amplify **Hosting** only — auth, storage and the API are all defined in SAM, not the Amplify backend framework. On a stack with a custom domain, `AmplifyDomain` also attaches `admin-<project>.<base>` to the deploy branch — see **Hostnames** under CDN.
+This is Amplify **Hosting** only — auth, storage and the API are all defined in SAM, not the Amplify backend framework. It exists only on a stack with `GitHubBranch` set (see **Deploying**). On a stack with a custom domain, `AmplifyDomain` also attaches `admin-<project>.<base>` to the deploy branch — see **Hostnames** under CDN.
 
 - **It runs a server.** `AmplifyApp` sets `Platform: WEB_COMPUTE`, Amplify Hosting's managed Next.js server, because collection slugs and work ids are created at runtime and a static export can only serve routes it knew at build time. AWS supports Next.js 12–15 there, which is why `ui/` pins 15.5; move to 16 once AWS lists it. The server does the routing, so the app has no rewrite rules.
 - **`amplify.yml` at the repo root is the one build spec**, in monorepo form (`appRoot: ui`, artifacts `.next`). Amplify reads that file in preference to a spec set on the app, so the template sets none, and the build changes with the code it builds. `AMPLIFY_MONOREPO_APP_ROOT=ui` must match `appRoot`; AWS requires it on an app created by CloudFormation.
@@ -730,10 +986,9 @@ This is Amplify **Hosting** only — auth, storage and the API are all defined i
 - **Deploy the template before the Next.js code reaches the branch Amplify builds.** In the other order, Amplify builds Next.js on the old static platform and publishes `.next` as plain files, and the hosted UI returns 404 until the template lands and a fresh build runs (`aws amplify start-job --app-id <id> --branch-name <branch> --job-type RELEASE`).
 - **Clear the old rewrite rule once:** `aws amplify update-app --app-id <id> --custom-rules '[]'`. The static UI sent every path without a file extension to `/index.html`, which the server does not have, and CloudFormation leaves an existing app's rules in place even with `CustomRules: []` in the template.
 
-Two things CloudFormation does not do, both seen on fresh stacks:
+**Who starts a build.** On a dev stack (`UIAutoBuild=true`), Amplify builds on every push to `GitHubBranch`. On a shared stack (`UIAutoBuild=false`), only the deploy workflow does, once the stack has deployed, by calling `start-job` with the `AmplifyAppId` output and the commit it deployed. A push alone builds nothing there.
 
-- **It never starts the first build.** The app and branch are created, but builds run only on a push to `GitHubBranch`, so a stack created after the latest push shows Amplify's "Welcome" placeholder at `UIEndpoint` until the next push, or until `aws amplify start-job --app-id <id> --branch-name <branch> --job-type RELEASE`. The local dev server is unaffected.
-- **Deleting the stack leaves the app's deploy key on the repo**, a read-only key titled `<appId>:amplify@aws`. Remove it under the repo's Settings › Deploy keys once the app is gone.
+**CloudFormation never starts the first build.** The app and branch are created, but on a dev stack builds run only on a push to `GitHubBranch`, so a stack created after the latest push shows Amplify's "Welcome" placeholder at `UIEndpoint` until the next push, or until `aws amplify start-job --app-id <id> --branch-name <branch> --job-type RELEASE`. On a shared stack the workflow's next run starts it. The local dev server is unaffected.
 
 ## Naming
 
@@ -749,7 +1004,7 @@ The project is **Understory** everywhere: the UI, the repo
 Every AWS name derives from the stack name — the buckets (`<stack>-iiif`,
 `<stack>-source`), Lambdas, state machines, Cognito pool, Amplify app
 (`<stack>-ui`), search collection and search-index prefix — so `stack_name` in
-`samconfig.toml` is the whole of a stack's identity, and changing it means a new
+a stack's SAM config is the whole of a stack's identity, and changing it means a new
 stack. Keep it to 27 characters or fewer: Serverless caps the search
 collection's and its policies' names (see **Search index**). The one
 exception is the custom-domain hostnames, built from `ProjectName`
@@ -1738,3 +1993,8 @@ esbuild resolving the whole graph catches a missing export or a require cycle, a
 
 ## Commit & Pull Request Guidelines
 Use Conventional Commits (`feat:`, `fix:`, `chore:`, etc.) from the start. Reference related GitHub issues in the PR body. Include manual verification steps (`npm test`, sample render) so reviewers can reproduce. Keep PRs focused; split unrelated work into separate branches.
+
+## Local Customization & Overrides
+
+If you want to customize Claude's behavior, create a `CLAUDE.local.md` file in the root directory. This file is `.gitignored` and will not affect other developers.
+

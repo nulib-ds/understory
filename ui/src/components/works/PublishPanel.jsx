@@ -1,8 +1,7 @@
-import {useCallback, useEffect, useId, useRef, useState} from "react";
-import {Button, Callout, Card, Flex, Heading, Progress, Text} from "@radix-ui/themes";
+import {useCallback, useEffect, useRef, useState} from "react";
+import {Button, Callout, Card, Flex, Progress, Text} from "@radix-ui/themes";
 import {
   CheckCircledIcon,
-  ChevronDownIcon,
   ExclamationTriangleIcon,
   InfoCircledIcon,
 } from "@radix-ui/react-icons";
@@ -22,48 +21,31 @@ function publishUrl(slug, suffix = "") {
   return `${COLLECTION_API_BASE}/${encodeURIComponent(slug)}/publish${suffix}`;
 }
 
-// Closed until someone opens it. Most visits to a collection are to work on
-// its works, and the page header already says how many are unpublished, so
-// the panel does not need to be on screen to be useful.
+// The collection page's "Share & publish" tab. Most visits to a collection are
+// to work on its works, and the page header already says how many are
+// unpublished, so the panel does not need to be on screen to be useful.
 //
-// The body mounts on the FIRST open and then stays mounted, only hidden, when
-// closed again. Mounting is what fetches the status, so a visit that never opens
-// the panel never asks; and staying mounted keeps a running publish polling, so
-// its finish still refreshes the works list (onPublished) with the panel shut.
-// Because it mounts after the page has appeared, its useReportReady never holds
-// the page: the gate opens once and stays open.
-export default function PublishPanel(props) {
-  const [open, setOpen] = useState(false);
+// The body mounts on the FIRST time the tab is shown and then stays mounted,
+// only hidden, when the page goes back to Works. Mounting is what fetches the
+// status, so a visit that never opens the tab never asks; and staying mounted
+// keeps a running publish polling, so its finish still refreshes the works
+// list (onPublished) while Works is showing. Because it mounts after the page
+// has appeared, its useReportReady never holds the page: the gate opens once
+// and stays open.
+export default function PublishPanel({active, ...props}) {
   const [opened, setOpened] = useState(false);
-  const bodyId = useId();
 
-  if (!COLLECTION_API_BASE) return null;
+  // Adjusted during render rather than in an effect: it derives from a prop.
+  if (active && !opened) setOpened(true);
 
-  const toggle = () => {
-    setOpen((was) => !was);
-    setOpened(true);
-  };
+  if (!COLLECTION_API_BASE || !opened) return null;
 
   return (
-    <Card size="2" className="panel">
-      {/* The disclosure pattern: a real heading containing a real button, so
-          it is announced as both, and aria-expanded says which way it is. */}
-      <Heading as="h3" size="3" className="publish-panel__heading">
-        <button
-          type="button"
-          className="publish-panel__toggle"
-          aria-expanded={open}
-          aria-controls={bodyId}
-          onClick={toggle}
-        >
-          <span>Share &amp; publish</span>
-          <ChevronDownIcon className="publish-panel__chevron" aria-hidden />
-        </button>
-      </Heading>
-      <div id={bodyId} className="publish-panel__body" hidden={!open}>
-        {opened && <PublishPanelBody {...props} />}
-      </div>
-    </Card>
+    <div hidden={!active}>
+      <Card size="3" className="panel">
+        <PublishPanelBody {...props} />
+      </Card>
+    </div>
   );
 }
 

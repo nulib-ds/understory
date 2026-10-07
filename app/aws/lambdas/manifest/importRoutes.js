@@ -12,6 +12,7 @@ const {SFNClient, StartExecutionCommand, DescribeExecutionCommand} = require("@a
 const {jsonResponse, parseBody} = require("./http");
 const {canManageCollections, canViewCollection} = require("../../../shared/access");
 const {INTERNAL_PREFIX} = require("../../../shared/space");
+const {progressStates} = require("../../../shared/importProgress");
 const {
   CollectionNameError,
   sanitizeCollectionLabel,
@@ -42,6 +43,8 @@ const BATCH_SIZE = 10;
 
 const statusKeyFor = (slug) => `${INTERNAL_PREFIX}/collection-import/${slug}/status.json`;
 const worksPrefix = (slug, runId) => `${INTERNAL_PREFIX}/collection-import/${slug}/${runId}/works/`;
+const progressPrefix = (slug, runId) => `${INTERNAL_PREFIX}/collection-import/${slug}/${runId}/progress/`;
+const planKeyFor = (slug, runId) => `${INTERNAL_PREFIX}/collection-import/${slug}/${runId}/plan.json`;
 
 function executionArnFor(slug, runId) {
   if (!stateMachineArn) return null;
@@ -79,17 +82,32 @@ async function readStatus(slug) {
   }
 }
 
-// Progress is a count of result objects in S3 — one ListObjectsV2, no matter how
-// big the run. Each batch owns a distinct key, so nothing contends and a page
-// reload picks the run back up. Approximate to within one batch, which is all a
-// progress bar needs; the works list itself is exact, because it is index-backed
-// and each work is indexed the moment it lands.
+// Progress comes from two listings in S3, each one ListObjectsV2 per thousand
+// keys however big the run: the batch result objects (one per ten works) and the
+// per-work markers (shared/importProgress.js). Nothing contends, and a page
+// reload picks the run back up.
+//
+// `states` is one character per planned work, in plan order — a few kilobytes
+// for thousands of works, which is why it rides on every poll while the plan
+// itself (labels, ids) is fetched once, from the route below.
 async function readProgress(status) {
   if (!status.runId || !status.total) return status;
   try {
-    const keys = await listKeys(worksPrefix(status.slug, status.runId));
-    const completed = Math.min(keys.length * BATCH_SIZE, status.total);
-    return {...status, batchesDone: keys.length, completed: status.completed ?? completed};
+    const [batchKeys, markerKeys] = await Promise.all([
+      listKeys(worksPrefix(status.slug, status.runId)),
+      listKeys(progressPrefix(status.slug, status.runId)),
+    ]);
+    const states = progressStates(status.total, markerKeys);
+    // A work is finished once it is anything but queued or importing. Exact,
+    // unlike the batch count, which only moves in tens.
+    const finished = [...states].filter((char) => char !== "q" && char !== "i").length;
+    const approximate = Math.min(batchKeys.length * BATCH_SIZE, status.total);
+    return {
+      ...status,
+      batchesDone: batchKeys.length,
+      completed: status.completed ?? (markerKeys.length ? finished : approximate),
+      states,
+    };
   } catch (error) {
     console.error("Read import progress failed", error);
     return status;
@@ -108,6 +126,29 @@ async function handleCollectionImportRoute({method, segments, principal, event, 
     } catch (error) {
       console.error("Read import status failed", error);
       return jsonResponse(500, {error: "Unable to read import status"});
+    }
+  }
+
+  // GET /collections/{slug}/import/plan — the current run's works, in plan order,
+  // so the page can draw every row before any of them has landed. Pairs with the
+  // `states` string on the status route: character N of `states` is work N here.
+  // Only {workId, label}: sourceUrl is the source's business, not the page's.
+  if (method === "GET" && segments.length === 4 && segments[2] === "import" && segments[3] === "plan") {
+    const slug = decodeURIComponent(segments[1]);
+    if (!canViewCollection(principal, slug)) {
+      return jsonResponse(403, {error: "You do not have access to this collection"});
+    }
+    try {
+      const status = (await readJson(statusKeyFor(slug)))?.document;
+      if (!status?.runId) return jsonResponse(200, {runId: null, works: []});
+      const plan = (await readJson(planKeyFor(slug, status.runId)))?.document;
+      return jsonResponse(200, {
+        runId: status.runId,
+        works: (plan?.works || []).map((work) => ({workId: work.workId, label: work.label})),
+      });
+    } catch (error) {
+      console.error("Read import plan failed", error);
+      return jsonResponse(500, {error: "Unable to read the import plan"});
     }
   }
 

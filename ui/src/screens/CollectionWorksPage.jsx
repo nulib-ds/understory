@@ -2,7 +2,7 @@
 
 import {useCallback, useEffect, useRef, useState} from "react";
 import {useParams, usePathname, useRouter, useSearchParams} from "next/navigation";
-import {Box, Button, Callout, Card, Flex, Text, TextField} from "@radix-ui/themes";
+import {Box, Button, Callout, Card, Flex, SegmentedControl, Text, TextField} from "@radix-ui/themes";
 import {PlusIcon} from "@radix-ui/react-icons";
 import {
   COLLECTION_API_BASE,
@@ -10,14 +10,55 @@ import {
   apiFetch,
   manifestApiUrl,
   collectionWorksUrl,
+  collectionOrderUrl,
 } from "../lib/api";
 import {ROLE_ADMIN, useSession} from "../lib/session";
 import PageHeading from "../components/PageHeading";
 import PageReady from "../components/PageReady";
 import AddWorkModal from "../components/works/AddWorkModal";
+import CloverSlider from "../components/CloverSlider";
+import SwapStage from "../components/SwapStage";
 import WorksTable from "../components/works/WorksTable";
 import PublishPanel from "../components/works/PublishPanel";
 import CollectionImportBanner from "../components/collections/CollectionImportBanner";
+
+// A collection member's id is its manifest's address: .../manifest/{workId}/manifest.json.
+function workIdFromManifestId(manifestId) {
+  const match = /\/manifest\/([^/]+)\/manifest\.json$/.exec(manifestId || "");
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
+// Reports when it scrolls near the viewport, so the list can fetch its next page.
+// Remounted (by `key`) after each page: an observer only reports a CHANGE, so a
+// sentinel that is still on screen once new rows arrive would never ask again.
+function LoadMoreSentinel({onLoadMore, loading}) {
+  const observerRef = useRef(null);
+  // A callback ref rather than an effect, as on the work page's asset list: the
+  // node exists only once there is more to load.
+  const attach = useCallback(
+    (node) => {
+      observerRef.current?.disconnect();
+      observerRef.current = null;
+      if (!node) return;
+      const observer = new IntersectionObserver(
+        (entries) => {
+          if (entries.some((entry) => entry.isIntersecting)) onLoadMore();
+        },
+        {rootMargin: "600px"},
+      );
+      observer.observe(node);
+      observerRef.current = observer;
+    },
+    [onLoadMore],
+  );
+  return (
+    <Flex ref={attach} justify="center" py="4">
+      <Text size="2" color="gray">
+        {loading ? "Loading more works…" : " "}
+      </Text>
+    </Flex>
+  );
+}
 
 function WorksListPanel({
   manifestApiAvailable,
@@ -34,7 +75,17 @@ function WorksListPanel({
   onOpenManifestModal,
   onDeleteManifest,
   workPath,
+  onSelectWork,
+  importRows,
+  hasMore,
+  loadingMore,
+  onLoadMore,
+  canReorder,
+  onMoveWork,
+  orderError,
+  orderRevision,
   heading,
+  collectionId,
 }) {
   const session = useSession();
   const isAdmin = session.role === ROLE_ADMIN;
@@ -42,6 +93,9 @@ function WorksListPanel({
   // admin role nor a single grant gets an empty list. Say why, rather than
   // showing a bare table that looks like the collection is empty.
   const noAccess = !isAdmin && session.collections.length === 0;
+  // Two views of one collection. The publish tab is only offered where the
+  // collection API is configured, as the panel itself is.
+  const [section, setSection] = useState("works");
   const collectionSize = counts ? counts.new + counts.changed + counts.published : null;
 
   return (
@@ -50,40 +104,91 @@ function WorksListPanel({
           collection's identity, so renaming is impossible by construction. */}
       <Flex direction="column" align="center" gap="1">
         <PageHeading>{heading}</PageHeading>
-        {/* Counts are for the whole collection, not the loaded page — a
-            summary computed from the rows on screen would only be right on
-            page one. The unpublished figure rides along because it answers the
-            same question: how much is here, and how much of it is live. The
-            publish aside states it too, but only in some of its states. */}
-        <Flex align="center" gap="2">
-          {/* The collection's size, and nothing else — it does not move when
-              the list is filtered. That is why it comes from the sync counts
-              rather than the works response's `total`, which counts only the
-              rows matching the filter ("0 of 0 works match"). Every member
-              lands in exactly one bucket (the server counts an unknown hash
-              as changed), so the three sum to the whole collection. */}
-          {collectionSize !== null && (
-            <Text size="1" color="gray">
-              {collectionSize} work{collectionSize === 1 ? "" : "s"}
-            </Text>
-          )}
-          {counts && counts.new + counts.changed > 0 && (
-            <>
-              <Text size="1" color="gray" aria-hidden>
-                ·
-              </Text>
-              <Text size="1" color="orange">
-                {counts.new + counts.changed} unpublished
-                {counts.new > 0 && counts.changed > 0
-                  ? ` (${counts.new} new, ${counts.changed} changed)`
-                  : ""}
-              </Text>
-            </>
-          )}
-        </Flex>
       </Flex>
-      <div className="collection-layout">
-        <div className="collection-main">
+      {/* The collection as its own members show it: Clover's Slider reading
+          the working collection document, so it follows every save, framed the
+          way a work's viewer is. Not for
+          an empty collection, which has nothing to show. */}
+      {collectionId && collectionSize > 0 && (
+        <Card size="3" className="panel viewer-panel slider-panel">
+          <SwapStage
+            className="viewer-stage slider-stage"
+            cardsSelector=".clover-slider img"
+            contentKey={`${collectionId}:${collectionSize}:${orderRevision}`}
+            render={() => (
+              <CloverSlider
+                iiifContent={collectionId}
+                onItemInteraction={(item) => {
+                  const workId = workIdFromManifestId(item?.id);
+                  if (workId) onSelectWork(workId);
+                }}
+              />
+            )}
+          />
+        </Card>
+      )}
+      {/* Spaced like the work page's section control: extra room above it (mt 6)
+          on top of the column's gap. */}
+      {COLLECTION_API_BASE && (
+        <Flex justify="between" align="center" gap="3" mt="6">
+          <SegmentedControl.Root size="3" value={section} onValueChange={setSection}>
+            <SegmentedControl.Item value="works">Works</SegmentedControl.Item>
+            <SegmentedControl.Item value="share">Share &amp; Publish</SegmentedControl.Item>
+          </SegmentedControl.Root>
+          {/* Counts are for the whole collection, not the loaded page — a
+              summary computed from the rows on screen would only be right on
+              page one. The unpublished figure rides along because it answers the
+              same question: how much is here, and how much of it is live. The
+              publish aside states it too, but only in some of its states. */}
+          <Flex align="center" justify="end" gap="2">
+            {importRows ? (
+              /* During a run the collection document has nothing in it yet, so
+                 its counts say zero. The plan is the truth: how many works the
+                 run will bring in, and how many have finished. */
+              <>
+                <Text size="1" color="gray">
+                  {importRows.length} work{importRows.length === 1 ? "" : "s"}
+                </Text>
+                <Text size="1" color="gray" aria-hidden>
+                  ·
+                </Text>
+                <Text size="1" color="indigo">
+                  {importRows.filter((row) => row.importState !== "queued" && row.importState !== "importing").length}{" "}
+                  of {importRows.length} imported
+                </Text>
+              </>
+            ) : (
+              <>
+                {/* The collection's size, and nothing else — it does not move when
+                    the list is filtered. That is why it comes from the sync counts
+                    rather than the works response's `total`, which counts only the
+                    rows matching the filter ("0 of 0 works match"). Every member
+                    lands in exactly one bucket (the server counts an unknown hash
+                    as changed), so the three sum to the whole collection. */}
+                {collectionSize !== null && (
+                  <Text size="1" color="gray">
+                    {collectionSize} work{collectionSize === 1 ? "" : "s"}
+                  </Text>
+                )}
+                {counts && counts.new + counts.changed > 0 && (
+                  <>
+                    <Text size="1" color="gray" aria-hidden>
+                      ·
+                    </Text>
+                    <Text size="1" color="orange">
+                      {counts.new + counts.changed} unpublished
+                      {counts.new > 0 && counts.changed > 0
+                        ? ` (${counts.new} new, ${counts.changed} changed)`
+                        : ""}
+                    </Text>
+                  </>
+                )}
+              </>
+            )}
+          </Flex>
+        </Flex>
+      )}
+      <div hidden={section !== "works"}>
       <Card size="3" className="panel manifest-panel">
         <Flex justify="between" align="center" gap="3" mb="4">
           <TextField.Root
@@ -118,29 +223,36 @@ function WorksListPanel({
               </Callout.Text>
             </Callout.Root>
           )}
+          {orderError && (
+            <Callout.Root color="red" size="1" mb="3">
+              <Callout.Text>{orderError}</Callout.Text>
+            </Callout.Root>
+          )}
           <WorksTable
             works={works}
             onDelete={onDeleteManifest}
             workPath={workPath}
             filtered={resultsQuery.trim().length > 0}
+            canReorder={canReorder}
+            onMoveWork={onMoveWork}
             loading={manifestLoading}
             error={manifestApiAvailable ? manifestError : null}
           />
+          {hasMore && (
+            <LoadMoreSentinel key={works.length} onLoadMore={onLoadMore} loading={loadingMore} />
+          )}
         </Box>
       </Card>
-        </div>
-        {/* Publishing is about the collection as a whole, not about any one
-            row, so it reads as a sidebar to the works list rather than as a
-            banner above it. */}
-        <aside className="collection-aside">
-          <PublishPanel
-            slug={slug}
-            counts={counts}
-            canPublish={canPublish}
-            onPublished={onPublished}
-          />
-        </aside>
       </div>
+      {/* Publishing is about the collection as a whole, not about any one
+          row, so it is a view of its own beside the works list. */}
+      <PublishPanel
+        active={section === "share"}
+        slug={slug}
+        counts={counts}
+        canPublish={canPublish}
+        onPublished={onPublished}
+      />
     </Flex>
   );
 }
@@ -170,6 +282,7 @@ export default function CollectionWorksPage() {
   const [works, setWorks] = useState([]);
   const [counts, setCounts] = useState(null);
   const [collectionLabel, setCollectionLabel] = useState("");
+  const [collectionId, setCollectionId] = useState("");
   // Whether the first load has settled. Deliberately not a "loading" flag
   // that goes true on every refresh: that swapped the whole table for
   // "Loading works…" on each keystroke of the filter, after every delete and
@@ -181,6 +294,17 @@ export default function CollectionWorksPage() {
   // the rows describe the filter as sent, not the keystroke still in flight.
   const [resultsQuery, setResultsQuery] = useState("");
   const [worksError, setWorksError] = useState(null);
+  // Every work of a live collection import, drawn as a row the moment the run
+  // starts. Null whenever no run is live, and the page shows its real list.
+  const [importRows, setImportRows] = useState(null);
+  // How many works match the filter in all, against how many are loaded: the
+  // list arrives a page at a time, the next one as the end of the table nears.
+  const [worksTotal, setWorksTotal] = useState(0);
+  const [loadingMore, setLoadingMore] = useState(false);
+  // A move that did not take, and a counter that remounts the slider so it shows
+  // the order the collection now has.
+  const [orderError, setOrderError] = useState(null);
+  const [orderRevision, setOrderRevision] = useState(0);
 
   // Cosmetic only: canPublish in app/shared/access.js is what actually decides,
   // and it re-derives from the same token. Group claims can be up to an hour
@@ -214,8 +338,10 @@ export default function CollectionWorksPage() {
     try {
       const data = await apiFetch(endpoint, {errorMessage: "Unable to load works"});
       setWorks(Array.isArray(data.works) ? data.works : []);
+      setWorksTotal(Number.isFinite(data.total) ? data.total : (data.works || []).length);
       setCounts(data.counts || null);
       setCollectionLabel(data.collection?.label || slug);
+      setCollectionId(data.collection?.id || "");
       setResultsQuery(q);
       setWorksError(null);
     } catch (err) {
@@ -225,6 +351,74 @@ export default function CollectionWorksPage() {
       setWorksLoaded(true);
     }
   }, [slug]);
+
+  // The next page of the same filtered list, appended. Refs for what it compares
+  // against, so the callback stays stable for the sentinel's observer.
+  const loadingMoreRef = useRef(false);
+  const loadedRef = useRef({count: 0, total: 0});
+  useEffect(() => {
+    loadedRef.current = {count: works.length, total: worksTotal};
+  }, [works, worksTotal]);
+
+  const loadMoreWorks = useCallback(async () => {
+    const {count, total} = loadedRef.current;
+    if (!slug || loadingMoreRef.current || count >= total) return;
+    const q = queryRef.current;
+    const endpoint = collectionWorksUrl(slug, {q, from: count});
+    if (!endpoint) return;
+    loadingMoreRef.current = true;
+    setLoadingMore(true);
+    try {
+      const data = await apiFetch(endpoint, {errorMessage: "Unable to load more works"});
+      // The filter moved, or the list was refreshed, while this was in flight:
+      // these rows belong to a list that is no longer on screen.
+      if (queryRef.current !== q) return;
+      const more = Array.isArray(data.works) ? data.works : [];
+      setWorks((prev) => {
+        if (prev.length !== count) return prev;
+        const seen = new Set(prev.map((work) => work.identifier));
+        return [...prev, ...more.filter((work) => !seen.has(work.identifier))];
+      });
+    } catch (err) {
+      setWorksError(err.message);
+    } finally {
+      loadingMoreRef.current = false;
+      setLoadingMore(false);
+    }
+  }, [slug]);
+
+  // One work moved after another (null: to the front). The rows move at once and
+  // the move is sent after them; if it does not take, the list is read again, so
+  // the page never keeps an order the server does not have.
+  const moveWork = useCallback(
+    async (identifier, afterIdentifier) => {
+      const endpoint = collectionOrderUrl(slug);
+      if (!endpoint) return;
+      setOrderError(null);
+      setWorks((prev) => {
+        const from = prev.findIndex((work) => work.identifier === identifier);
+        if (from === -1) return prev;
+        const without = prev.filter((work) => work.identifier !== identifier);
+        const to =
+          afterIdentifier === null
+            ? 0
+            : without.findIndex((work) => work.identifier === afterIdentifier) + 1;
+        return [...without.slice(0, to), prev[from], ...without.slice(to)];
+      });
+      try {
+        await apiFetch(endpoint, {
+          method: "PUT",
+          body: {workId: identifier, afterWorkId: afterIdentifier},
+          errorMessage: "Unable to save the new order",
+        });
+        setOrderRevision((count) => count + 1);
+      } catch (err) {
+        setOrderError(err.message);
+        await refreshWorks();
+      }
+    },
+    [slug, refreshWorks],
+  );
 
   const handleDeleteManifest = useCallback(
     async (identifier) => {
@@ -401,12 +595,20 @@ export default function CollectionWorksPage() {
     <PageReady ready={worksLoaded}>
       {/* Only renders while a collection import is running, or afterwards if
           it hit trouble or dropped something. Silent the rest of the time. */}
-      <CollectionImportBanner slug={slug} onProgress={refreshWorks} />
+      <CollectionImportBanner slug={slug} onProgress={refreshWorks} onImportRows={setImportRows} />
       <WorksListPanel
         manifestApiAvailable={manifestApiAvailable}
         manifestError={worksError}
         manifestLoading={!worksLoaded}
-        works={works}
+        works={importRows || works}
+        importRows={importRows}
+        hasMore={!importRows && works.length < worksTotal}
+        loadingMore={loadingMore}
+        onLoadMore={loadMoreWorks}
+        canReorder={canPublish}
+        onMoveWork={moveWork}
+        orderError={orderError}
+        orderRevision={orderRevision}
         counts={counts}
         slug={slug}
         canPublish={canPublish}
@@ -417,7 +619,9 @@ export default function CollectionWorksPage() {
         onOpenManifestModal={handleOpenManifestModal}
         onDeleteManifest={handleDeleteManifest}
         workPath={workPath}
+        onSelectWork={selectWork}
         heading={collectionLabel}
+        collectionId={collectionId}
       />
       <AddWorkModal
         open={isManifestModalOpen}

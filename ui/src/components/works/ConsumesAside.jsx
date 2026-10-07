@@ -67,9 +67,9 @@ function ConsumesRow({label, value, placeholder = "—"}) {
   );
 }
 
-// The collection's public face: the addresses a site is pointed at. The
-// actions that put them there are PublishPanel's buttons, below this one, and
-// the panel's heading is PublishPanel's too: it is the button that opens it.
+// The collection's public face: the addresses a site is pointed at. It is the
+// first block in the publish dock; the actions that put them there follow it
+// (PublishPanel).
 //
 // The two steps light up independently because they are independent: a
 // completed run leaves a candidate index (staged, or live once flipped), and

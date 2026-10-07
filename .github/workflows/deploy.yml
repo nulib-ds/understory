@@ -1,0 +1,164 @@
+# Deploys a shared stack on every push to its branch: staging builds
+# staging-understory, main builds production-understory. Dev stacks are never
+# deployed from here. See "Deploying" in AGENTS.md.
+#
+# The stack's SAM config comes from the private nulib/tfvars repo, as it does
+# for nulib/dc-api-v2. This repo is public, and so are its Actions logs:
+# nothing read from that config may reach the log (see the mask step).
+name: Deploy
+
+on:
+  push:
+    branches:
+      - staging
+      - main
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "samconfig.yaml.example"
+  workflow_dispatch:
+
+# Queue, never cancel. Cancelling the runner does not stop CloudFormation, and
+# the next run would then fail against a stack still UPDATE_IN_PROGRESS.
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy:
+    # The environment's deployment-branch rule is the real gate, since a
+    # branch could edit this condition. This only skips a dispatch from
+    # another branch instead of failing it.
+    if: github.ref == 'refs/heads/staging' || github.ref == 'refs/heads/main'
+    environment:
+      name: ${{ github.ref == 'refs/heads/main' && 'production' || 'staging' }}
+      url: ${{ steps.ui.outputs.url }}
+    # Native arm64, like the Lambdas, so sam build --use-container runs the
+    # arm64 build image (and sharp's linux-arm64 binary) without emulation.
+    runs-on: ubuntu-24.04-arm
+    env:
+      DEPLOY_ENV: ${{ github.ref == 'refs/heads/main' && 'production' || 'staging' }}
+      STACK_NAME: ${{ github.ref == 'refs/heads/main' && 'production' || 'staging' }}-understory
+    defaults:
+      run:
+        # An explicit bash runs with -o pipefail, which the deploy step's sed
+        # pipe depends on to fail when sam deploy does.
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+
+      # At the repo root, never under app/: every function but iiif-image has
+      # CodeUri ../, and the container build copies all of app/ into it.
+      - name: Check out the stack config
+        uses: actions/checkout@v7
+        with:
+          repository: nulib/tfvars
+          ref: main
+          path: .tfvars
+          ssh-key: ${{ secrets.TFVARS_DEPLOY_KEY }}
+          persist-credentials: false
+          sparse-checkout: understory
+
+      # Before anything else reads the config. GitHub masks only the secrets it
+      # stores itself, not values read from a file. Name every NoEcho parameter
+      # in template.yml here.
+      - name: Mask secrets in the stack config
+        run: |
+          config=".tfvars/understory/samconfig.${DEPLOY_ENV}.yaml"
+          if [[ ! -f "$config" ]]; then
+            echo "::error::No $config in nulib/tfvars"
+            exit 1
+          fi
+          for name in GitHubOAuthToken; do
+            value=$(grep -oE "${name}=(\"[^\"]*\"|'[^']*'|[^[:space:]]+)" "$config" | head -n 1 | cut -d= -f2- | sed -E "s/^[\"']//; s/[\"']\$//" || true)
+            if [[ -n "$value" ]]; then
+              echo "::add-mask::$value"
+            fi
+          done
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Test
+        run: npm test
+
+      - uses: aws-actions/setup-sam@v3
+        with:
+          version: 1.148.0
+          use-installer: true
+
+      # The role is app/aws/deploy-role.yml, deployed by hand in each account.
+      # Two hours, its MaxSessionDuration, so a long CloudFront or OpenSearch
+      # update cannot outlast the credentials sam deploy is polling with.
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWSACCOUNT }}:role/understory-github-actions-${{ env.DEPLOY_ENV }}
+          role-duration-seconds: 7200
+          aws-region: us-east-1
+
+      - name: Build
+        working-directory: app/aws
+        run: sam build --use-container
+
+      # SAM already prints NoEcho values as *****. The sed hides the rest of the
+      # overrides too, as dc-api-v2's deploy does.
+      - name: Deploy
+        working-directory: app/aws
+        run: |
+          sam deploy \
+            --config-file "../../.tfvars/understory/samconfig.${DEPLOY_ENV}.yaml" \
+            --no-confirm-changeset \
+            --no-fail-on-empty-changeset \
+            --no-progressbar \
+          | sed -E 's/(Parameter overrides\s*): .*/\1: ***** REDACTED *****/'
+
+      # UIAutoBuild=false on a shared stack, so the UI is built here, after its
+      # backend, and from the commit that was just deployed.
+      - name: Build the UI
+        id: ui
+        run: |
+          output() {
+            aws cloudformation describe-stacks --stack-name "$STACK_NAME" \
+              --query "Stacks[0].Outputs[?OutputKey=='$1'].OutputValue" --output text
+          }
+          app_id=$(output AmplifyAppId)
+          if [[ -z "$app_id" || "$app_id" == "None" ]]; then
+            echo "::notice::$STACK_NAME has no hosted UI (GitHubBranch is empty), so there is nothing to build."
+            exit 0
+          fi
+          echo "url=$(output UIEndpoint)" >> "$GITHUB_OUTPUT"
+
+          job_id=$(aws amplify start-job \
+            --app-id "$app_id" \
+            --branch-name "$GITHUB_REF_NAME" \
+            --job-type RELEASE \
+            --commit-id "$GITHUB_SHA" \
+            --query jobSummary.jobId --output text)
+          echo "Started Amplify job $job_id on app $app_id, branch $GITHUB_REF_NAME"
+
+          deadline=$((SECONDS + 1800))
+          while true; do
+            status=$(aws amplify get-job \
+              --app-id "$app_id" --branch-name "$GITHUB_REF_NAME" --job-id "$job_id" \
+              --query job.summary.status --output text)
+            case "$status" in
+              SUCCEED)
+                echo "Amplify job $job_id succeeded"
+                exit 0
+                ;;
+              FAILED|CANCELLED)
+                echo "::error::Amplify job $job_id ended $status. Its log is in the Amplify console."
+                exit 1
+                ;;
+            esac
+            if (( SECONDS >= deadline )); then
+              echo "::error::Amplify job $job_id is still $status after 30 minutes"
+              exit 1
+            fi
+            sleep 20
+          done

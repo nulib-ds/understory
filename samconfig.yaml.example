@@ -1,0 +1,62 @@
+---
+# A personal dev stack's SAM config. Copy to samconfig.<you>.yaml beside this
+# file, at the repo root (gitignored), and pass it explicitly from app/aws.
+# SAM resolves the path from the template's directory, hence the ../../:
+#
+#   cd app/aws
+#   sam build --use-container
+#   sam deploy --config-file ../../samconfig.<you>.yaml
+#   sam sync --watch --config-file ../../samconfig.<you>.yaml
+#
+# Configs live here rather than in app/aws because most functions' code is all
+# of app/, and a container build copies everything under it: a symlink there
+# pointing outside app/ fails the build.
+#
+# Staging and production keep theirs in the private repo, symlinked in
+# here as samconfig.staging.yaml and samconfig.production.yaml. See "Deploying"
+# in AGENTS.md for how those differ from this one.
+#
+# SAM reads exactly ONE config file per command; files do not inherit from one
+# another. A value every stack shares belongs in the template parameter's
+# Default, not repeated here. "global" below means every sam command reading
+# THIS file, which is what lets sam sync find the stack: it never reads the
+# deploy section.
+version: 1.0
+default:
+  global:
+    parameters:
+      # <owner>-dev-understory, 27 characters or fewer (see Naming in AGENTS.md).
+      stack_name: <you>-dev-understory
+      s3_prefix: <you>-dev-understory
+      region: us-east-1
+      resolve_s3: true
+      capabilities:
+        - CAPABILITY_IAM
+        - CAPABILITY_AUTO_EXPAND
+      # Stack tags, which CloudFormation copies onto every resource that takes
+      # them. Change or delete them freely: unlike parameter_overrides below, a
+      # deleted line DOES remove the tag on the next deploy. Keep them here in
+      # global, because sam sync redeploys the stack with tags too.
+      tags:
+        - Project=understory
+      # One Key=value per line, and an empty value is Key="" (SAM refuses a
+      # bare Key=). Keep every line, even empty: on an existing stack a
+      # parameter left out keeps its PREVIOUS value, not the template default,
+      # so deleting a line changes nothing.
+      parameter_overrides:
+        # Leave empty on the first deploy, then copy the ImagesDistributionHost
+        # output here and deploy again. See ForceHost in template.yml.
+        - ImageApiForceHost=""
+        # Empty means no hosted UI: run cd ui && npm run dev. A branch, such as
+        # the feature branch you are on, makes the stack build and host the UI
+        # on Amplify, and then the token is required: a classic PAT with the
+        # admin:repo_hook scope, used once to create the app. The Amplify
+        # GitHub App must already be installed on the repo's org.
+        - GitHubBranch=""
+        - GitHubOAuthToken=""
+        # Amplify rebuilds the UI on every push to GitHubBranch. Only a shared
+        # stack, built by the deploy workflow, sets this to false.
+        - UIAutoBuild="true"
+  deploy:
+    parameters:
+      confirm_changeset: true

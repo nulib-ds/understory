@@ -91,6 +91,12 @@ export function collectionWorksUrl(slug, {q = "", from = 0, size = 50} = {}) {
   return `${COLLECTION_API_BASE}/${encodeURIComponent(slug)}/works?${params}`;
 }
 
+// Where a collection's works are put in order: PUT {workId, afterWorkId}.
+export function collectionOrderUrl(slug) {
+  if (!COLLECTION_API_BASE) return null;
+  return `${COLLECTION_API_BASE}/${encodeURIComponent(slug)}/order`;
+}
+
 // The collection's LIVE search index, queried through the API (which signs the
 // request as the stack's own role). Backs the unlinked /collection/[slug]/search.
 export function collectionSearchUrl(slug, {q = ""} = {}) {

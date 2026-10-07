@@ -63,8 +63,9 @@ function matchesFilter(label, q) {
 //   working    the working leaf document (or null)
 //   published  the published leaf document (or null: never published)
 //
-// Rows stay in the leaf's own order (label, then id — sortMembers) whether or
-// not a filter is applied.
+// Rows stay in the leaf's own order whether or not a filter is applied: label
+// order until someone orders the collection by hand, then theirs (see "Order" in
+// collection.js).
 function listCollectionWorks({working, published, q = "", from = 0, size = 50}) {
   const items = membersOf(working);
   const rows = items
