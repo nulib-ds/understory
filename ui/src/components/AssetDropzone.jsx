@@ -29,8 +29,12 @@ const SOURCE_BUCKET_TARGET = {bucketName: SOURCE_BUCKET, region: STORAGE_REGION}
 // a pyramid TIFF before serverless-iiif can serve its info.json — poll for it as soon
 // as the upload finishes (rather than waiting for "Add to work") so processing has a
 // head start and the real, always-renderable IIIF thumbnail can replace the local preview.
+//
+// The deadline is the Lambda's own: it times out at 300s (Globals), so an
+// info.json that has not appeared by then never will. It used to be ~20s, which
+// gave up on a 184-megapixel map that converted fine in ~31s.
 const INFO_POLL_INTERVAL_MS = 1500;
-const INFO_POLL_ATTEMPTS = 14; // ~20s of retrying
+const INFO_POLL_DEADLINE_MS = 330 * 1000; // 300s, plus slack for the S3 event
 
 // Audio/video goes through MediaConvert, which takes minutes rather than
 // seconds — roughly real time or faster, plus a queue wait — so it is polled
@@ -68,19 +72,23 @@ function extensionFromFilename(name) {
   return match ? match[0].toLowerCase() : "";
 }
 
-async function waitForImageInfo(key) {
+// Resolves null once `isActive()` goes false, as waitForMediaStatus does: with
+// a deadline of minutes, a poll should not outlive the page or the item.
+async function waitForImageInfo(key, isActive) {
   const infoUrl = buildInfoUrlFromKey(key);
   if (!infoUrl) {
     throw new Error("NEXT_PUBLIC_IIIF_BASE_URL is not configured");
   }
-  for (let attempt = 0; attempt < INFO_POLL_ATTEMPTS; attempt += 1) {
+  const deadline = Date.now() + INFO_POLL_DEADLINE_MS;
+  while (Date.now() < deadline) {
     const response = await fetch(infoUrl).catch(() => null);
     if (response?.ok) {
       return response.json();
     }
     await new Promise((resolve) => setTimeout(resolve, INFO_POLL_INTERVAL_MS));
+    if (!isActive()) return null;
   }
-  throw new Error("Image is still processing — try again in a moment");
+  throw new Error("Unable to process this image");
 }
 
 // A 404 is expected for the first moment after upload, before the Lambda has
@@ -198,8 +206,11 @@ export default function AssetDropzone({workId, manifest, disabled, disabledReaso
   const resolveImageInfo = useCallback(
     async (tempId, key) => {
       try {
-        const info = await waitForImageInfo(key);
-        updatePending(tempId, {status: "ready", imageInfo: info});
+        const info = await waitForImageInfo(
+          key,
+          () => mountedRef.current && pendingRef.current.some((item) => item.tempId === tempId),
+        );
+        if (info) updatePending(tempId, {status: "ready", imageInfo: info});
       } catch (err) {
         updatePending(tempId, {status: "error", errorMessage: err.message || "Unable to process image"});
       }
