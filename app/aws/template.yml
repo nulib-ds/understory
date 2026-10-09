@@ -154,6 +154,11 @@ Resources:
                   - Name: prefix
                     Value: av/
             Function: !GetAtt AVTranscodeFunction.Arn
+      # Amplify's uploadData sends a file over 5MiB as a multipart upload:
+      # POST to start and to complete it, PUT per part, DELETE to abort it on
+      # cancel. Without POST the preflight is refused before a byte is sent,
+      # and the browser surfaces that as a bare "Network Error". ETag must be
+      # exposed because Amplify reads each part's ETag to complete the upload.
       CorsConfiguration:
         CorsRules:
           - AllowedHeaders:
@@ -161,6 +166,8 @@ Resources:
             AllowedMethods:
               - GET
               - PUT
+              - POST
+              - DELETE
               - HEAD
             AllowedOrigins:
               - "*"
@@ -588,9 +595,13 @@ Resources:
             Version: "2012-10-17"
             Statement:
               - Effect: Allow
+                # PutObject covers starting, sending and completing a multipart
+                # upload. Aborting one, which cancelling an upload does, is its
+                # own action.
                 Action:
                   - s3:GetObject
                   - s3:PutObject
+                  - s3:AbortMultipartUpload
                 Resource:
                   - !Sub "arn:aws:s3:::${AWS::StackName}-source/image/*"
                   - !Sub "arn:aws:s3:::${AWS::StackName}-source/av/*"
@@ -1423,6 +1434,12 @@ Resources:
       FunctionName: !Sub "${AWS::StackName}-iiif-image"
       CodeUri: lambdas/iiif-image/
       Handler: index.handler
+      # The conversion runs through /tmp: the source, the pyramid, and libvips'
+      # own temp files for the lower levels while it builds it. A 184MP map
+      # needs ~575MB of that, past the 512MB default. 2GB covers sharp's default
+      # input limit (~268MP), beyond which it refuses the image anyway.
+      EphemeralStorage:
+        Size: 2048
       Policies:
         - Statement:
             - Effect: Allow
@@ -1713,6 +1730,11 @@ Resources:
             - HasCustomDomain
             - !Sub "images-${ProjectName}.${BaseDomainName}"
             - !Ref "AWS::NoValue"
+        # The default is 10s, and every request downloads the whole source
+        # TIFF, so a big image's first tiles could miss it. 30s is also
+        # ImagesDistribution's origin read timeout (the CloudFront default),
+        # so anything longer would only outlast a viewer that has given up.
+        IiifLambdaTimeout: 30
 
 Outputs:
   SourceBucketName:
