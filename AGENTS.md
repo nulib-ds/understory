@@ -3,7 +3,11 @@
 ## Project Overview
 This project is the admin backend for one or more downstream IIIF sites (Canopy or similar), deployed entirely on AWS. **A collection is the unit of everything**: each downstream site is driven by one curatorial collection, consuming that collection's IIIF documents and its own search index.
 
-A SAM application (`app/aws/template.yml`) provisions a source S3 bucket and an output S3 bucket (`*-iiif`). An S3-triggered Lambda (`app/aws/lambdas/iiif-image/`) converts uploaded source images to pyramid TIFFs (Level 2) for use by `samvera/serverless-iiif` (a nested SAR application). `app/aws/lambdas/manifest/` exposes the whole CRUD and query API behind API Gateway + Cognito. `app/aws/lambdas/public-search/` is the one unauthenticated route, the search a consuming site calls, reachable only through `IIIFDistribution` (see **Public search route**). `app/aws/lambdas/publish/` is the task worker for the publish state machine. A Next.js frontend (`ui/`) talks to them, hosted on Amplify Hosting's managed server.
+A SAM application (`app/aws/template.yml`) provisions a source S3 bucket and an output S3 bucket (`*-iiif`). An S3-triggered Lambda (`app/aws/lambdas/iiif-image/`) converts uploaded source images to pyramid TIFFs (Level 2) for use by `samvera/serverless-iiif` (a nested SAR application). serverless-iiif downloads the whole TIFF for every tile, so the TIFFs are JPEG-compressed (quality under 90; the Lambda's comments say why) and carry `width`/`height`/`pages` S3 metadata so it never has to probe them. `app/aws/lambdas/manifest/` exposes the whole CRUD and query API behind API Gateway + Cognito. `app/aws/lambdas/public-search/` is the one unauthenticated route, the search a consuming site calls, reachable only through `IIIFDistribution` (see **Public search route**). `app/aws/lambdas/publish/` is the task worker for the publish state machine. A Next.js frontend (`ui/`) talks to them, hosted on Amplify Hosting's managed server.
+
+### Priorities
+
+When a choice trades them off, this app favours **performance, usability and S3 storage** over the highest possible asset quality. The derivatives it makes are for viewing, not archival masters. The pyramid TIFFs, for example, are JPEG at quality 85 rather than lossless: one 184-megapixel map went from 404MB to 56MB, and its tiles from timing out to loading.
 
 ### The two spaces
 
@@ -217,8 +221,11 @@ reached through its collection.
   writes to the `image/` prefix of the **source** bucket (not the IIIF/output
   bucket) — that upload is what feeds the `iiif-image` Lambda's pipeline. The
   Cognito authenticated role's IAM policy scopes `s3:PutObject`/`s3:GetObject`
-  to `image/*` and `av/*`; the bucket root is intentionally not writable (or
-  listable) from the UI.
+  (plus `s3:AbortMultipartUpload`, for cancelling) to `image/*` and `av/*`; the
+  bucket root is intentionally not writable (or listable) from the UI. A file
+  over 5MiB goes up as a multipart upload, which needs `POST` and `DELETE` in
+  the source bucket's CORS rule as well as `PUT`. Without `POST` it fails
+  before sending anything, as a bare "Network Error".
 - **Users** (`/users`) — lists the Cognito user pool and assigns roles and
   collection grants. Admin-only, hidden from the section menu for everyone else.
   See "Roles and permissions" below.
