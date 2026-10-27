@@ -3,7 +3,7 @@
 import {useCallback, useEffect, useMemo, useState} from "react";
 import NextLink from "next/link";
 import {useParams} from "next/navigation";
-import {Box, Button, Callout, Card, Flex, SegmentedControl, Text} from "@radix-ui/themes";
+import {Box, Button, Callout, Card, Flex, Link, SegmentedControl, Text} from "@radix-ui/themes";
 import CloverViewer from "../components/CloverViewer";
 import SwapStage from "../components/SwapStage";
 import {arrayMove} from "@dnd-kit/sortable";
@@ -17,6 +17,69 @@ import LayoutPanel from "../components/work/LayoutPanel";
 import LinkingPanel from "../components/work/LinkingPanel";
 
 const IMPORT_STALE_MS = 6 * 60 * 1000;
+
+// The published twin of a working manifest id. Both spaces are path segments
+// under one base, so publishing is a prefix swap (see app/shared/publish.js).
+function publishedManifestUrl(workingId) {
+  return typeof workingId === "string" && workingId.includes("/working/")
+    ? workingId.replace("/working/", "/published/")
+    : null;
+}
+
+// Published means the twin resolves. Documents are anonymously readable through
+// the distribution, so the browser can ask directly. null while unknown.
+function usePublishedUrl(workingId) {
+  const url = publishedManifestUrl(workingId);
+  const [state, setState] = useState({url: null, published: null});
+  useEffect(() => {
+    if (!url) return undefined;
+    let cancelled = false;
+    fetch(url, {method: "HEAD", cache: "no-store"})
+      .then((response) => !cancelled && setState({url, published: response.ok}))
+      .catch(() => !cancelled && setState({url, published: false}));
+    return () => {
+      cancelled = true;
+    };
+  }, [url]);
+  return state.url === url ? {url, published: state.published} : {url, published: null};
+}
+
+function ShareManifest({manifestId, collectionPath}) {
+  const {url, published} = usePublishedUrl(manifestId);
+  const [copied, setCopied] = useState(false);
+  if (published === null) return null;
+  if (!published) {
+    return (
+      <Text size="2" color="gray">
+        This work must be{" "}
+        {collectionPath ? (
+          <Link asChild>
+            <NextLink href={collectionPath} prefetch={false}>
+              published
+            </NextLink>
+          </Link>
+        ) : (
+          "published"
+        )}{" "}
+        before it can be shared.
+      </Text>
+    );
+  }
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      window.prompt("Manifest link", url);
+    }
+  };
+  return (
+    <Button size="3" variant="soft" onClick={copy}>
+      {copied ? "Copied" : "Copy Manifest URL"}
+    </Button>
+  );
+}
 
 function WorkDetailPanel({
   manifestDetail,
@@ -48,12 +111,9 @@ function WorkDetailPanel({
   const importInProgress = importStatus?.status === "in-progress" && !isStale;
   const [resumeError, setResumeError] = useState(null);
   const [section, setSection] = useState("assets");
-  // A "Share" menu used to sit beside the section control, copying this work's
-  // WORKING manifest URL to the clipboard. Removed deliberately: its only
-  // purpose was handing a draft URL to someone else, and a draft URL pasted
-  // into a Canopy config builds a site against content that changes under it.
-  // What a downstream site should consume is the published collection, which
-  // PublishPanel shows under "what a downstream site consumes".
+  // Share copies the PUBLISHED manifest URL, never the working one: a draft URL
+  // pasted into a Canopy config builds a site against content that changes
+  // under it. Until the work is published there is nothing to share.
 
   // Clover mutates the manifest object it's given, and this one is the same
   // object the canvas reorder/remove handlers read from and write back to S3.
@@ -189,6 +249,7 @@ function WorkDetailPanel({
           <SegmentedControl.Item value="layout">Layout</SegmentedControl.Item>
           <SegmentedControl.Item value="linking">Linking</SegmentedControl.Item>
         </SegmentedControl.Root>
+        <ShareManifest manifestId={manifestObject?.id} collectionPath={collectionPath} />
       </Flex>
       <Card size="3" className="panel manifest-panel">
         <Box className="panel-body manifest-panel-body">
