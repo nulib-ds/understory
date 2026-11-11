@@ -17,6 +17,7 @@ const {
   canCreateWork,
   canMoveWork,
   canPublish,
+  canSetCollectionLanguages,
   changedSlugs,
   toSlugArray,
   normalizeRoles,
@@ -158,6 +159,14 @@ test("publishing is scoped to the collection, not reserved to admins", () => {
   assert.equal(canPublish(editor, ""), false);
   assert.equal(canPublish(viewer, "eis"), false, "a grant alone is read-only sight");
   assert.equal(canPublish(stranger, "eis"), false);
+});
+
+test("a collection's languages are set by the people who publish it", () => {
+  assert.equal(canSetCollectionLanguages(admin, "anything"), true);
+  assert.equal(canSetCollectionLanguages(editor, "eis"), true);
+  assert.equal(canSetCollectionLanguages(editor, "bikes"), false);
+  assert.equal(canSetCollectionLanguages(viewer, "eis"), false, "a grant alone is read-only sight");
+  assert.equal(canSetCollectionLanguages(stranger, "eis"), false);
 });
 
 // --- role assignment -------------------------------------------------------

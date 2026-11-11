@@ -358,3 +358,63 @@ test("a work mid-import is held: not written, not removed", () => {
     [["live-and-importing", "h-old"], ["new-and-importing", null]],
   );
 });
+
+// --- empty languages -------------------------------------------------------
+// The UI never deletes a language from a field: emptied, it is written to the
+// working manifest as []. Publishing takes those out.
+
+const {pruneLanguageMap, pruneEmptyLanguageValues} = require("../publish");
+
+test("pruneLanguageMap drops empty languages, and is null when none are left", () => {
+  assert.deepEqual(pruneLanguageMap({en: ["x"], fr: [], none: []}), {en: ["x"]});
+  assert.equal(pruneLanguageMap({en: [], fr: []}), null);
+  assert.deepEqual(pruneLanguageMap({en: ["x"]}), {en: ["x"]});
+  assert.equal(pruneLanguageMap(undefined), undefined);
+});
+
+test("a published manifest carries no empty language, and loses what they empty", () => {
+  const working = {
+    id: "https://example.org/working/presentation/manifest/w1/manifest.json",
+    type: "Manifest",
+    label: {en: ["Harlequin"], fr: []},
+    summary: {en: [], fr: []},
+    metadata: [
+      {label: {en: ["Date"], fr: ["Date"]}, value: {none: ["2012"], fr: []}},
+      {label: {en: ["Subject"]}, value: {en: []}},
+      {label: {fr: []}, value: {fr: ["Masque"]}},
+    ],
+    requiredStatement: {label: {en: ["Attribution"]}, value: {en: [], fr: []}},
+    items: [
+      {id: "c0", type: "Canvas", label: {en: ["Front"], fr: []}},
+      {id: "c1", type: "Canvas", label: {en: []}},
+      {id: "c2", type: "Canvas"},
+    ],
+  };
+  const before = structuredClone(working);
+  const published = pruneEmptyLanguageValues(working);
+
+  assert.deepEqual(published.label, {en: ["Harlequin"]});
+  assert.equal("summary" in published, false, "a summary left with nothing is removed");
+  assert.deepEqual(published.metadata, [
+    {label: {en: ["Date"], fr: ["Date"]}, value: {none: ["2012"]}},
+  ], "an entry needs both a label and a value");
+  assert.equal("requiredStatement" in published, false);
+  assert.deepEqual(published.items[0].label, {en: ["Front"]});
+  assert.equal("label" in published.items[1], false, "a canvas label is optional");
+  assert.deepEqual(published.items[2], {id: "c2", type: "Canvas"});
+  assert.deepEqual(working, before, "the working document is not touched");
+});
+
+test("the manifest's own label is required, so it is pruned but never removed", () => {
+  const published = pruneEmptyLanguageValues({type: "Manifest", label: {en: []}});
+  assert.deepEqual(published.label, {en: []});
+});
+
+test("a manifest with no empty languages publishes as it stands", () => {
+  const manifest = {
+    type: "Manifest",
+    label: {none: ["T"]},
+    metadata: [{label: {none: ["Date"]}, value: {none: ["2012"]}}],
+  };
+  assert.deepEqual(pruneEmptyLanguageValues(manifest), manifest);
+});

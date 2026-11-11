@@ -46,7 +46,7 @@ test("adds a work to a brand-new collection", () => {
 
   assert.equal(plan.rootChanged, true);
   assert.deepEqual(plan.collections, [
-    {slug: "campus-maps", label: "Campus Maps", thumbnail: THUMB, itemCount: 1},
+    {slug: "campus-maps", label: "Campus Maps", thumbnail: THUMB, itemCount: 1, languages: []},
   ]);
 });
 
@@ -374,7 +374,8 @@ test("memberFromManifest derives everything but the hash from the manifest", () 
   };
   assert.deepEqual(memberFromManifest(manifest, {contentHash: "h"}), {
     manifestId: manifestId("w1"),
-    label: "Map of campus",
+    // Every language of the title, as the manifest has it.
+    label: {en: ["Map of campus"]},
     thumbnail: null,
     contentHash: "h",
     itemCount: 3,

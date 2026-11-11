@@ -8,7 +8,7 @@
 // Deliberately depends on nothing but ./language: manifest.js loads the AWS SDK
 // at module scope, and pulling that in would make these pure functions
 // untestable without it.
-const {languageMap, extractLabel} = require("./language");
+const {languageMap, extractLabel, asLanguageMap} = require("./language");
 const {WORKING, spaceKey} = require("./space");
 
 const COLLECTION_PREFIX = "presentation/collection";
@@ -42,6 +42,20 @@ const CONTENT_HASH_KEY = `${EXTENSION_NAMESPACE}contentHash`;
 // which is the work's own chosen image and which a work built in the UI does
 // not have — its canvases carry no thumbnail of their own.
 const THUMBNAIL_SERVICE_KEY = `${EXTENSION_NAMESPACE}thumbnailService`;
+// The languages a collection is described in, most preferred first: ["en", "fr"]
+// says English values come before French ones. Every work in the collection
+// takes it as its own. Curator-set, so the manifests do NOT determine it, and it
+// is the one exception to the rule that collection state must be derivable from
+// the corpus (see AGENTS.md). It is stored where the other such fact already
+// lives: on the collection's entry in the ROOT register, beside its label, which
+// reindex merges rather than rebuilds. The leaf carries a copy, written from the
+// root on every rebuild, so a consumer reading one collection finds it there.
+const LANGUAGES_KEY = `${EXTENSION_NAMESPACE}languages`;
+const MAX_COLLECTION_LANGUAGES = 20;
+// BCP 47 in its common shapes: a 2-3 letter language, then subtags of 2-8
+// letters or digits (fr, fr-CA, ar-Latn, zh-Hant-TW). A light check, not a
+// registry lookup. `none` is not a language: it is how a value says it has none.
+const languageTagPattern = /^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/;
 
 const MAX_LABEL_LENGTH = 200;
 const MAX_SLUG_LENGTH = 96;
@@ -116,6 +130,43 @@ function sanitizeCollectionSlug(raw) {
     throw new CollectionNameError(`"${trimmed}" is a reserved collection name`);
   }
   return trimmed;
+}
+
+// A collection's language list, as a client sends it: an array of BCP 47 tags,
+// most preferred first. Trimmed, and de-duplicated case-insensitively keeping
+// the first, because BCP 47 tags are case-insensitive and "en" twice says
+// nothing about priority. An empty list is allowed: it means "not set".
+function sanitizeCollectionLanguages(raw) {
+  if (!Array.isArray(raw)) {
+    throw new CollectionNameError("languages must be an array of language tags");
+  }
+  const seen = new Set();
+  const languages = [];
+  for (const entry of raw) {
+    const tag = String(entry ?? "").trim();
+    if (!languageTagPattern.test(tag)) {
+      throw new CollectionNameError(`"${tag}" is not a language tag such as en or fr-CA`);
+    }
+    const folded = tag.toLowerCase();
+    if (seen.has(folded)) continue;
+    seen.add(folded);
+    languages.push(tag);
+  }
+  if (languages.length > MAX_COLLECTION_LANGUAGES) {
+    throw new CollectionNameError(
+      `A collection may list at most ${MAX_COLLECTION_LANGUAGES} languages`,
+    );
+  }
+  return languages;
+}
+
+// The language list a stored collection document or root entry carries, or []
+// for one that has none. Tolerant of a hand-edited value: anything that is not a
+// language tag is dropped rather than thrown on, since this runs on every read.
+function collectionLanguages(document) {
+  const value = document?.[LANGUAGES_KEY];
+  if (!Array.isArray(value)) return [];
+  return value.filter((tag) => typeof tag === "string" && languageTagPattern.test(tag));
 }
 
 // Deliberately does not run the reserved-slug check, so rootCollectionKey can
@@ -279,7 +330,9 @@ function buildManifestReference({manifestId, label, thumbnail, contentHash, item
   const reference = {
     id: manifestId,
     type: "Manifest",
-    label: languageMap(label),
+    // The work's title in every language it has: a consumer reading the
+    // collection, the works list included, can show it in the reader's own.
+    label: asLanguageMap(label),
   };
   if (thumbnail && thumbnail.length) {
     reference.thumbnail = thumbnail;
@@ -303,7 +356,7 @@ function buildManifestReference({manifestId, label, thumbnail, contentHash, item
 function memberFromReference(item) {
   return {
     manifestId: item.id,
-    label: extractLabel(item.label),
+    label: asLanguageMap(item.label),
     thumbnail: item.thumbnail || null,
     contentHash: item[CONTENT_HASH_KEY],
     itemCount: item[ITEM_COUNT_KEY],
@@ -332,7 +385,7 @@ function memberFromManifest(manifest, {contentHash} = {}) {
   const items = Array.isArray(manifest?.items) ? manifest.items : [];
   return {
     manifestId: manifest.id,
-    label: extractLabel(manifest.label),
+    label: asLanguageMap(manifest.label),
     thumbnail: manifestThumbnail(manifest),
     contentHash,
     itemCount: items.length,
@@ -353,7 +406,7 @@ function workIdFromManifestUrl(url) {
 // and clients that merge references with the dereferenced document by id would
 // drop it entirely (the leaf carries no metadata). The prefixed term is what our
 // own API reads.
-function buildCollectionReference({baseUrl, slug, label, thumbnail, itemCount, space = WORKING}) {
+function buildCollectionReference({baseUrl, slug, label, thumbnail, itemCount, languages, space = WORKING}) {
   const reference = {
     id: buildCollectionId(baseUrl, slug, space),
     type: "Collection",
@@ -366,6 +419,10 @@ function buildCollectionReference({baseUrl, slug, label, thumbnail, itemCount, s
     {label: languageMap("Items"), value: languageMap(String(itemCount))},
   ];
   reference[ITEM_COUNT_KEY] = itemCount;
+  // The authoritative copy of the collection's languages (see LANGUAGES_KEY).
+  if (languages?.length) {
+    reference[LANGUAGES_KEY] = languages;
+  }
   return reference;
 }
 
@@ -374,7 +431,12 @@ function buildCollectionReference({baseUrl, slug, label, thumbnail, itemCount, s
 // first link it follows. The WORKING default exists because the manifest API
 // only ever builds working documents; every publish-side caller must pass
 // PUBLISHED explicitly.
-function buildCollectionDocument({baseUrl, slug, label, members, space = WORKING}) {
+//
+// `languages` is the root register's list for this collection, copied here so a
+// consumer of the leaf alone can read it. Every caller passes what the root says
+// (or, for a write that has only the leaf to hand, what the leaf already says):
+// a rebuild that left it out would erase it from the leaf until the next one.
+function buildCollectionDocument({baseUrl, slug, label, members, languages, space = WORKING}) {
   const items = members.map(buildManifestReference);
   const thumbnail = members.find((member) => member.thumbnail?.length)?.thumbnail;
 
@@ -387,6 +449,9 @@ function buildCollectionDocument({baseUrl, slug, label, members, space = WORKING
   };
   if (thumbnail) {
     document.thumbnail = thumbnail;
+  }
+  if (languages?.length) {
+    document[LANGUAGES_KEY] = languages;
   }
   document.partOf = [
     {
@@ -430,6 +495,7 @@ function rootCollectionSummaries(root) {
         id: entry.id,
         itemCount: readItemCount(entry),
         thumbnail: entry.thumbnail || null,
+        languages: collectionLanguages(entry),
       };
     })
     .filter(Boolean);
@@ -587,8 +653,13 @@ function planReconciliation({baseUrl, member, removed = false, desired, root, le
       : others;
 
     const label = summaryBySlug.get(slug)?.label || desiredBySlug.get(slug)?.label || extractLabel(existing?.label) || slug;
+    // The root is the authority for the languages; a collection the root does
+    // not list yet keeps whatever its own leaf says.
+    const languages = summaryBySlug.has(slug)
+      ? summaryBySlug.get(slug).languages
+      : collectionLanguages(existing);
     const members = keep.map(memberFromReference);
-    const document = buildCollectionDocument({baseUrl, slug, label, members});
+    const document = buildCollectionDocument({baseUrl, slug, label, members, languages});
 
     if (!existing || serializeCollection(existing) !== serializeCollection(document)) {
       leafWrites.push({slug, key: collectionObjectKey(slug), document});
@@ -598,6 +669,7 @@ function planReconciliation({baseUrl, member, removed = false, desired, root, le
       label,
       thumbnail: document.thumbnail || null,
       itemCount: members.length,
+      languages,
     });
   }
 
@@ -628,6 +700,8 @@ module.exports = {
   ITEM_COUNT_KEY,
   CONTENT_HASH_KEY,
   THUMBNAIL_SERVICE_KEY,
+  LANGUAGES_KEY,
+  MAX_COLLECTION_LANGUAGES,
   MAX_LABEL_LENGTH,
   MAX_SLUG_LENGTH,
   MAX_COLLECTIONS_PER_WORK,
@@ -635,6 +709,8 @@ module.exports = {
   CollectionNameError,
   sanitizeCollectionLabel,
   sanitizeCollectionSlug,
+  sanitizeCollectionLanguages,
+  collectionLanguages,
   collectionObjectKey,
   rootCollectionKey,
   collectionSlugFromKey,

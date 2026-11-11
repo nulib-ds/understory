@@ -17,6 +17,13 @@ import "@fontsource-variable/google-sans-flex/wght.css";
 import "@fontsource/ibm-plex-mono/400.css";
 import "@fontsource/ibm-plex-mono/500.css";
 import "@fontsource/ibm-plex-mono/600.css";
+// Clover's parts, then its other templates' styles, which hold the Document
+// template every viewer uses (components/CloverViewer.jsx). All of it is inside
+// `@layer clover`, so every unlayered rule in App.css overrides it whatever the
+// order; it sits here, before the app's own sheets, so the list still reads in
+// cascade order.
+import "@nulib/clover/styles.css";
+import "@nulib/clover/templates.css";
 import "../index.css";
 import "../components/AssetDropzone.css";
 import "../components/SignIn.css";

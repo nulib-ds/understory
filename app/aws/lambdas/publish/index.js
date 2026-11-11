@@ -47,6 +47,7 @@ const {
   CONTENT_HASH_KEY,
   contentHash,
   publishDocument,
+  pruneEmptyLanguageValues,
   externalImageServices,
   planPublish,
   stageActions,
@@ -203,7 +204,9 @@ async function batch({slug, runId, indexName, batchIndex}) {
         continue;
       }
       const hash = contentHash(stored.bytes);
-      const {document, replacements} = publishDocument(stored.document, {
+      // Languages a curator emptied stay in the working manifest as `[]`; the
+      // published copy never carries them (pruneEmptyLanguageValues).
+      const {document, replacements} = publishDocument(pruneEmptyLanguageValues(stored.document), {
         from: WORKING_BASE,
         to: PUBLISHED_BASE,
         strip: [MANAGED_KEY],
@@ -224,7 +227,9 @@ async function batch({slug, runId, indexName, batchIndex}) {
         status: "ok",
         contentHash: hash,
         manifestId: document.id,
-        label: extractLabel(document.label),
+        // Every language of the title, as published (empty ones pruned), for
+        // the published collection's member entry.
+        label: document.label,
         thumbnail: manifestThumbnail(document) || null,
         external: externalImageServices(document, imageApiBase).length,
       });
@@ -270,7 +275,7 @@ async function keepHeldWork(member) {
       held: true,
       contentHash: member.publishedHash || null,
       manifestId: document.id,
-      label: extractLabel(document.label),
+      label: document.label,
       thumbnail: manifestThumbnail(document) || null,
       external: externalImageServices(document, imageApiBase).length,
     },
@@ -294,8 +299,14 @@ async function writeCollection({slug, runId}) {
   const published = results.filter((result) => result.status === "ok");
 
   const workingRoot = await readJson(rootCollectionKey(WORKING));
-  const label =
-    rootCollectionSummaries(workingRoot?.document || {}).find((entry) => entry.slug === slug)?.label || slug;
+  const workingSummary = rootCollectionSummaries(workingRoot?.document || {}).find(
+    (entry) => entry.slug === slug,
+  );
+  const label = workingSummary?.label || slug;
+  // The collection's languages are published with it, as the working register
+  // has them at this run: a site reading the published collection learns which
+  // languages it is described in, and in what order of preference.
+  const languages = workingSummary?.languages || [];
 
   // Built with the same builders as the working leaf, passing the published
   // base — so it is by construction what that code would have produced, rather
@@ -305,6 +316,7 @@ async function writeCollection({slug, runId}) {
     space: PUBLISHED,
     slug,
     label,
+    languages,
     members: published.map((result) => ({
       manifestId: result.manifestId,
       label: result.label,
@@ -331,7 +343,10 @@ async function writeCollection({slug, runId}) {
     buildRootCollectionDocument({
       baseUrl: PUBLISHED_BASE_ROOT,
       space: PUBLISHED,
-      collections: [...others, {slug, label, itemCount: leaf.items.length, thumbnail: leaf.thumbnail}].sort(
+      collections: [
+        ...others,
+        {slug, label, itemCount: leaf.items.length, thumbnail: leaf.thumbnail, languages},
+      ].sort(
         (a, b) => a.label.localeCompare(b.label),
       ),
     }),

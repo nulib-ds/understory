@@ -12,10 +12,12 @@
   min-height: calc(206 * var(--px));
   padding: var(--space-5);
   /* Interactive-surface convention: muted gray at rest, muted accent on hover.
-     See "Design conventions" in AGENTS.md. */
+     See "Design conventions" in AGENTS.md. The one exception to its resting
+     gray: a step lighter (--gray-2), because the zone is a large area and the
+     usual --gray-3 reads as heavy at this size. Hover is unchanged. */
   border: 1px dashed var(--gray-7);
   border-radius: var(--radius-3);
-  background-color: var(--interactive-surface);
+  background-color: var(--gray-2);
   color: var(--interactive-surface-text);
   cursor: pointer;
   text-align: center;

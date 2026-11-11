@@ -225,6 +225,13 @@ function canOrderCollection(principal, slug) {
   return canPublish(principal, slug);
 }
 
+// Setting a collection's languages: the same people as publish and order. It
+// rewrites that one collection's root entry and leaf, and changes how its works
+// are shown, nothing in any work.
+function canSetCollectionLanguages(principal, slug) {
+  return canPublish(principal, slug);
+}
+
 // The symmetric difference: what this save actually adds or removes. Untouched
 // memberships are none of the check's business, so a work that already sits in a
 // collection the editor cannot see is not a reason to refuse an unrelated edit.
@@ -271,6 +278,7 @@ module.exports = {
   canMoveWork,
   canPublish,
   canOrderCollection,
+  canSetCollectionLanguages,
   changedSlugs,
   toSlugArray,
 };

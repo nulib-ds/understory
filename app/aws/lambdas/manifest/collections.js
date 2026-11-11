@@ -18,6 +18,8 @@ const {
   CollectionNameError,
   sanitizeCollectionLabel,
   sanitizeCollectionSlug,
+  sanitizeCollectionLanguages,
+  collectionLanguages,
   collectionObjectKey,
   rootCollectionKey,
   collectionSlugFromKey,
@@ -60,6 +62,7 @@ const {
   canViewCollection,
   canManageCollections,
   canOrderCollection,
+  canSetCollectionLanguages,
 } = require("../../../shared/access");
 const {readImportStatus} = require("./importAssets");
 
@@ -279,6 +282,81 @@ async function handleCollectionsRoute({method, segments, principal, event}) {
     return handleSearchRoute({method, segments, principal, event});
   }
 
+  // GET /collections/{slug}/languages
+  // PUT /collections/{slug}/languages  {languages: ["en", "fr"]}
+  //
+  // The languages the collection is described in, most preferred first. Every
+  // work in the collection takes the list as its own; the work page shows its
+  // values in that order. Stored on the collection's entry in the root register
+  // (LANGUAGES_KEY, shared/collection.js) and copied onto its leaf.
+  if (segments.length === 3 && segments[2] === "languages" && (method === "GET" || method === "PUT")) {
+    const slug = decodeURIComponent(segments[1]);
+    if (method === "GET") {
+      if (!canViewCollection(principal, slug)) {
+        return jsonResponse(403, {error: "You do not have access to this collection"});
+      }
+      try {
+        const known = rootCollectionSummaries(await ensureRoot()).find((entry) => entry.slug === slug);
+        if (!known) return jsonResponse(404, {error: `No collection called "${slug}"`});
+        return jsonResponse(200, {slug, languages: known.languages});
+      } catch (error) {
+        console.error("Read collection languages failed", error);
+        return jsonResponse(500, {error: "Unable to read the collection's languages"});
+      }
+    }
+
+    if (!canSetCollectionLanguages(principal, slug)) {
+      return jsonResponse(403, {error: "You do not have permission to change this collection's languages"});
+    }
+    let languages;
+    try {
+      languages = sanitizeCollectionLanguages((parseBody(event) || {}).languages);
+    } catch (error) {
+      if (error instanceof CollectionNameError || error.message === "Invalid JSON payload") {
+        return jsonResponse(400, {error: error.message});
+      }
+      throw error;
+    }
+    try {
+      // The root first: it is the authority, and the leaf only a copy of it.
+      // Should the leaf write then fail, the next save to the collection
+      // rebuilds the leaf from the root and the copy catches up.
+      let missing = false;
+      await updateRoot((current) => {
+        const summaries = rootCollectionSummaries(current);
+        if (!summaries.some((entry) => entry.slug === slug)) {
+          missing = true;
+          return null;
+        }
+        return buildRootCollectionDocument({
+          baseUrl,
+          collections: summaries.map((entry) => (entry.slug === slug ? {...entry, languages} : entry)),
+        });
+      });
+      if (missing) return jsonResponse(404, {error: `No collection called "${slug}"`});
+
+      // Conditional, like every leaf write: a curator's save may be rewriting
+      // this leaf at the same moment.
+      await withWriteRetry(async () => {
+        const current = await readVersioned(collectionObjectKey(slug));
+        if (!current) return;
+        const document = buildCollectionDocument({
+          baseUrl,
+          slug,
+          label: extractLabel(current.document.label) || slug,
+          members: membersOf(current.document).map(memberFromReference),
+          languages,
+        });
+        if (serializeCollection(document) === serializeCollection(current.document)) return;
+        await writeVersioned(collectionObjectKey(slug), document, current.etag);
+      });
+      return jsonResponse(200, {slug, languages});
+    } catch (error) {
+      console.error("Set collection languages failed", error);
+      return jsonResponse(500, {error: "Unable to save the collection's languages"});
+    }
+  }
+
   // PUT /collections/{slug}/order  {workId, afterWorkId}
   //
   // Moves ONE work to sit after another (null: to the front) in the collection's
@@ -316,6 +394,9 @@ async function handleCollectionsRoute({method, segments, principal, event}) {
           slug,
           label: extractLabel(current.document.label) || slug,
           members: moved.map(memberFromReference),
+          // Only the leaf is read on this path; its copy of the list is the
+          // root's, and a reorder must not drop it.
+          languages: collectionLanguages(current.document),
         });
         await writeVersioned(collectionObjectKey(slug), document, current.etag);
         return {changed: true, document};
@@ -575,6 +656,11 @@ async function reindexCollections() {
     ensureRoot(),
   ]);
   const declared = new Map(rootCollectionSummaries(root).map((entry) => [entry.slug, entry.label]));
+  // Not derivable from the corpus: the root register is its only home, so a
+  // rebuild carries it over rather than recomputing it.
+  const declaredLanguages = new Map(
+    rootCollectionSummaries(root).map((entry) => [entry.slug, entry.languages]),
+  );
 
   // One pass. listManifestSummaries has already read every manifest, and the
   // summary carries partOf and thumbnail, so re-reading the corpus here would
@@ -589,7 +675,7 @@ async function reindexCollections() {
       // not held onto, to keep the pass's memory flat across the corpus.
       group.members.push({
         manifestId: summary.manifestUrl,
-        label: summary.label,
+        label: summary.labelMap || summary.label,
         thumbnail: summary.thumbnail,
         contentHash: hashes.get(summary.identifier),
         itemCount: summary.itemCount,
@@ -623,13 +709,15 @@ async function reindexCollections() {
     const prior = membersOf(await readJson(collectionObjectKey(slug))).filter((item) => stillThere.has(item.id));
     const members = arrangeMembers(prior, incoming).map(memberFromReference);
 
-    const document = buildCollectionDocument({baseUrl, slug, label, members});
+    const languages = declaredLanguages.get(slug) || [];
+    const document = buildCollectionDocument({baseUrl, slug, label, members, languages});
     documents.push({slug, document});
     collections.push({
       slug,
       label,
       thumbnail: document.thumbnail || null,
       itemCount: members.length,
+      languages,
     });
   }
 

@@ -1008,6 +1008,18 @@ Resources:
             ApiId: !Ref ManifestHttpApi
             Path: /collections/{slug}/order
             Method: PUT
+        GetCollectionLanguages:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ManifestHttpApi
+            Path: /collections/{slug}/languages
+            Method: GET
+        SetCollectionLanguages:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ManifestHttpApi
+            Path: /collections/{slug}/languages
+            Method: PUT
         GetCollectionImportPlan:
           Type: HttpApi
           Properties:

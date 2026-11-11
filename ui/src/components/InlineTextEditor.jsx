@@ -1,7 +1,8 @@
 import {useCallback, useEffect, useMemo, useState} from "react";
-import {Flex, IconButton, Text, TextArea, TextField, Tooltip} from "@radix-ui/themes";
-import {CheckIcon, TrashIcon} from "@radix-ui/react-icons";
+import {Flex, IconButton, Text, TextArea, TextField} from "@radix-ui/themes";
+import {CheckIcon, EraserIcon} from "@radix-ui/react-icons";
 import {renderIiifHtml} from "../lib/iiifHtml";
+import ConfirmIconButton from "./ConfirmIconButton";
 
 // Only one editor is open at a time, across the whole page: opening one closes
 // whichever was open, discarding its draft exactly as Escape would. Several
@@ -20,11 +21,14 @@ let closeOpenEditor = null;
 //                a label). Valid HTML renders as HTML while viewing and shows
 //                as its raw markup once clicked into; anything that fails
 //                §4.5's rules stays plain text. See lib/iiifHtml.js.
-//   onRemove   — offer a remove button, shown ONLY while editing, beside the
-//                field. Removing is then something you do to the value you
-//                have open, rather than a column of trash cans that looked
-//                like the delete for the whole row. Omit it where the value
-//                cannot be removed (a field's last value).
+//   autoEdit   — start open, for a value just asked for ("Add Français"), so
+//                the curator types straight into it.
+//   clearable  — offer a Clear button while editing a value that has one, so
+//                emptying it is not a matter of deleting every character. Two
+//                clicks (ConfirmIconButton): the first arms it ("Clear value?",
+//                in red), the second saves the value as empty, exactly as saving
+//                an emptied field would. Needs allowEmpty, since that is what it
+//                saves.
 export default function InlineTextEditor({
   value: savedValue,
   onSave,
@@ -36,14 +40,16 @@ export default function InlineTextEditor({
   fieldSize = "1",
   ariaLabel = "Edit value",
   className = "",
-  onRemove,
-  removeLabel = "Remove",
+  clearable = false,
+  clearLabel = "Clear value",
   html = false,
+  autoEdit = false,
+  lang,
 }) {
-  const [editing, setEditing] = useState(false);
+  const [editing, setEditing] = useState(autoEdit);
   const [draft, setDraft] = useState(savedValue);
   const [saving, setSaving] = useState(false);
-  const [removing, setRemoving] = useState(false);
+  const [clearing, setClearing] = useState(false);
   const [error, setError] = useState(null);
   const rendered = useMemo(
     () => (html && savedValue ? renderIiifHtml(savedValue) : null),
@@ -99,19 +105,20 @@ export default function InlineTextEditor({
     }
   };
 
-  // On success the caller's list re-renders without this value, which usually
-  // unmounts this editor. Closing anyway covers the case where it does not
-  // (the next value is identical, so it keeps this one's key).
-  const handleRemove = async () => {
-    setRemoving(true);
+  // The confirmed second click. Saves the value as empty, which is what the
+  // caller already does with an emptied field. On success the caller's list
+  // usually re-renders without this value and unmounts the editor; closing
+  // anyway covers the case where it does not.
+  const handleClear = async () => {
+    setClearing(true);
     setError(null);
     try {
-      await onRemove();
+      await onSave("");
       setEditing(false);
     } catch (err) {
       setError(err.message);
     } finally {
-      setRemoving(false);
+      setClearing(false);
     }
   };
 
@@ -122,6 +129,7 @@ export default function InlineTextEditor({
         // <p> inside the default <p> is invalid nesting.
         as={rendered ? "div" : as}
         {...textProps}
+        lang={lang}
         color={savedValue ? textProps.color : "gray"}
         role="button"
         tabIndex={0}
@@ -161,6 +169,7 @@ export default function InlineTextEditor({
             autoFocus
             disabled={saving}
             rows={3}
+            lang={lang}
             style={{flex: 1}}
             onChange={(event) => setDraft(event.target.value)}
             onKeyDown={onKeyDown}
@@ -169,6 +178,7 @@ export default function InlineTextEditor({
           <TextField.Root
             size={fieldSize}
             value={draft}
+            lang={lang}
             style={{flex: 1}}
             autoFocus
             disabled={saving}
@@ -181,25 +191,19 @@ export default function InlineTextEditor({
           variant="soft"
           onClick={handleSave}
           loading={saving}
-          disabled={removing}
+          disabled={clearing}
           aria-label={ariaLabel}
         >
           <CheckIcon />
         </IconButton>
-        {onRemove && (
-          <Tooltip content={removeLabel}>
-            <IconButton
-              size={fieldSize}
-              variant="soft"
-              color="red"
-              onClick={handleRemove}
-              loading={removing}
-              disabled={saving}
-              aria-label={removeLabel}
-            >
-              <TrashIcon />
-            </IconButton>
-          </Tooltip>
+        {clearable && allowEmpty && savedValue && (
+          <ConfirmIconButton
+            label={clearLabel}
+            icon={<EraserIcon />}
+            size={fieldSize}
+            disabled={saving}
+            onConfirm={handleClear}
+          />
         )}
       </Flex>
       {error && <Text as="p" size="1" color="red">{error}</Text>}

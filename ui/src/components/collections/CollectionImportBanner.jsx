@@ -136,7 +136,9 @@ export default function CollectionImportBanner({slug, onProgress, onImportRows})
 
   return (
     <Callout.Root color={color} size="1" mb="3">
-      <Callout.Text>
+      {/* A div, not Callout.Text's default <p>: it holds block content, and a
+          <div> inside a <p> is invalid HTML that React warns breaks hydration. */}
+      <Callout.Text as="div">
         <Flex direction="column" gap="2">
           <Flex justify="between" align="center" gap="3">
             <Text size="2">
