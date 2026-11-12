@@ -100,6 +100,9 @@ function manifestSummary(identifier, manifest, space = WORKING) {
   return {
     identifier,
     label,
+    // The title in every language, for a collection member built from this
+    // summary (reindex); `label` stays the one string a list or sort reads.
+    labelMap: manifest?.label || null,
     manifestUrl: manifest?.id || "",
     relativePath: manifestObjectKey(identifier, space),
     itemCount: items.length,

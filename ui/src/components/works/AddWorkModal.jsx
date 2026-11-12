@@ -13,7 +13,7 @@ import {
 } from "@radix-ui/themes";
 import {ZoomInIcon} from "@radix-ui/react-icons";
 import CloverViewer from "../CloverViewer";
-import {CLOVER_OPTIONS, CLOVER_THEME} from "../../cloverTheme";
+import {CLOVER_OPTIONS} from "../../cloverTheme";
 
 export default function AddWorkModal({
   open,
@@ -256,8 +256,7 @@ export default function AddWorkModal({
                     <CloverViewer
                       key={importPreview?.sourceUrl}
                       iiifContent={importViewerContent}
-                      customTheme={CLOVER_THEME}
-                      options={CLOVER_OPTIONS}
+                      {...CLOVER_OPTIONS}
                     />
                   </Box>
                 )}

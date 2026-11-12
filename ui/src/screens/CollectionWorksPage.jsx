@@ -1,9 +1,10 @@
 "use client";
 
-import {useCallback, useEffect, useRef, useState} from "react";
+import {useCallback, useEffect, useMemo, useRef, useState} from "react";
+import NextLink from "next/link";
 import {useParams, usePathname, useRouter, useSearchParams} from "next/navigation";
-import {Box, Button, Callout, Card, Flex, SegmentedControl, Text, TextField} from "@radix-ui/themes";
-import {PlusIcon} from "@radix-ui/react-icons";
+import {Box, Button, Callout, Card, Flex, Link, SegmentedControl, Text, TextField} from "@radix-ui/themes";
+import {ArrowLeftIcon, PlusIcon} from "@radix-ui/react-icons";
 import {
   COLLECTION_API_BASE,
   MANIFEST_API_BASE,
@@ -13,14 +14,21 @@ import {
   collectionOrderUrl,
 } from "../lib/api";
 import {ROLE_ADMIN, useSession} from "../lib/session";
-import PageHeading from "../components/PageHeading";
 import PageReady from "../components/PageReady";
 import AddWorkModal from "../components/works/AddWorkModal";
 import CloverSlider from "../components/CloverSlider";
 import SwapStage from "../components/SwapStage";
 import WorksTable from "../components/works/WorksTable";
 import PublishPanel from "../components/works/PublishPanel";
+import CollectionLanguagesPanel from "../components/collections/CollectionLanguagesPanel";
 import CollectionImportBanner from "../components/collections/CollectionImportBanner";
+import LanguageChips from "../components/work/LanguageChips";
+import {NONE} from "../lib/languageMap";
+import {
+  LanguageLanesContext,
+  useCollectionLanguages,
+  useLanguageLanesState,
+} from "../lib/workLanguage";
 
 // A collection member's id is its manifest's address: .../manifest/{workId}/manifest.json.
 function workIdFromManifestId(manifestId) {
@@ -93,102 +101,145 @@ function WorksListPanel({
   // admin role nor a single grant gets an empty list. Say why, rather than
   // showing a bare table that looks like the collection is empty.
   const noAccess = !isAdmin && session.collections.length === 0;
-  // Two views of one collection. The publish tab is only offered where the
-  // collection API is configured, as the panel itself is.
+  // Three views of one collection: its works, publishing it, and the languages
+  // it is described in. The last two are only offered where the collection API
+  // is configured, as their panels are.
   const [section, setSection] = useState("works");
   const collectionSize = counts ? counts.new + counts.changed + counts.published : null;
+  const unpublished = counts ? counts.new + counts.changed : 0;
+
+  // The language lanes the works list shows titles in, as on a work's page:
+  // the collection's languages, then any other language the loaded titles use,
+  // then None. The chips beside the section control turn them on and off.
+  const collectionLanguages = useCollectionLanguages(slug);
+  const languagesInUse = useMemo(() => {
+    const used = new Set();
+    let hasNone = false;
+    for (const work of works || []) {
+      for (const [code, values] of Object.entries(work.labels || {})) {
+        if (!Array.isArray(values) || values.length === 0) continue;
+        if (code === NONE) hasNone = true;
+        else used.add(code);
+      }
+    }
+    return {used: [...used], hasNone};
+  }, [works]);
+  const languageLanes = useLanguageLanesState(collectionLanguages, languagesInUse);
 
   return (
+    <LanguageLanesContext.Provider value={languageLanes}>
     <Flex direction="column" gap="5">
-      {/* Not editable, unlike every other heading in the app: the slug is the
-          collection's identity, so renaming is impossible by construction. */}
-      <Flex direction="column" align="center" gap="1">
-        <PageHeading>{heading}</PageHeading>
+      {/* The way back to the collections list, as a work's page has one back to
+          its collection: a small link, not a heading. */}
+      <Flex pt="6">
+        <Link asChild size="2" className="work-back-link">
+          <NextLink href="/" prefetch={false}>
+            <ArrowLeftIcon aria-hidden /> Back to Collections
+          </NextLink>
+        </Link>
       </Flex>
-      {/* The collection as its own members show it: Clover's Slider reading
-          the working collection document, so it follows every save, framed the
-          way a work's viewer is. Not for
-          an empty collection, which has nothing to show. */}
-      {collectionId && collectionSize > 0 && (
-        <Card size="3" className="panel viewer-panel slider-panel">
+      {/* The collection as its own members show it: Clover's Items reading the
+          working collection document, so it follows every save, in a container
+          framed the way a work's viewer is and headed, as the viewer is, by
+          the title. Not editable: the slug is the collection's identity, so
+          renaming is impossible by construction. */}
+      <Card size="3" className="panel viewer-panel slider-panel">
+        <div className="collection-grid-head">
+          <Text asChild>
+            <h2 className="collection-grid-title">{heading}</h2>
+          </Text>
+        </div>
+        {collectionId && collectionSize > 0 ? (
           <SwapStage
             className="viewer-stage slider-stage"
-            cardsSelector=".clover-slider img"
+            cardsSelector=".clover-items img"
             contentKey={`${collectionId}:${collectionSize}:${orderRevision}`}
             render={() => (
               <CloverSlider
                 iiifContent={collectionId}
-                onItemInteraction={(item) => {
+                onSelect={(item) => {
                   const workId = workIdFromManifestId(item?.id);
                   if (workId) onSelectWork(workId);
                 }}
               />
             )}
           />
-        </Card>
-      )}
+        ) : collectionSize === 0 ? (
+          <Text as="p" color="gray" className="collection-grid-empty">
+            No works yet.
+          </Text>
+        ) : null}
+      </Card>
       {/* Spaced like the work page's section control: extra room above it (mt 6)
           on top of the column's gap. */}
       {COLLECTION_API_BASE && (
         <Flex justify="between" align="center" gap="3" mt="6">
           <SegmentedControl.Root size="3" value={section} onValueChange={setSection}>
             <SegmentedControl.Item value="works">Works</SegmentedControl.Item>
-            <SegmentedControl.Item value="share">Share &amp; Publish</SegmentedControl.Item>
+            <SegmentedControl.Item value="share">
+              {/* Flagged while any work is not yet live, as a work's Share tab
+                  is while it is unpublished. */}
+              <span className="segment-label">
+                Share
+                {unpublished > 0 && (
+                  <span className="segment-flag" role="img" aria-label="unpublished works" />
+                )}
+              </span>
+            </SegmentedControl.Item>
+            <SegmentedControl.Item value="languages">Languages</SegmentedControl.Item>
           </SegmentedControl.Root>
-          {/* Counts are for the whole collection, not the loaded page — a
-              summary computed from the rows on screen would only be right on
-              page one. The unpublished figure rides along because it answers the
-              same question: how much is here, and how much of it is live. The
-              publish aside states it too, but only in some of its states. */}
-          <Flex align="center" justify="end" gap="2">
-            {importRows ? (
-              /* During a run the collection document has nothing in it yet, so
-                 its counts say zero. The plan is the truth: how many works the
-                 run will bring in, and how many have finished. */
-              <>
-                <Text size="1" color="gray">
-                  {importRows.length} work{importRows.length === 1 ? "" : "s"}
-                </Text>
-                <Text size="1" color="gray" aria-hidden>
-                  ·
-                </Text>
-                <Text size="1" color="indigo">
-                  {importRows.filter((row) => row.importState !== "queued" && row.importState !== "importing").length}{" "}
-                  of {importRows.length} imported
-                </Text>
-              </>
-            ) : (
-              <>
-                {/* The collection's size, and nothing else — it does not move when
-                    the list is filtered. That is why it comes from the sync counts
-                    rather than the works response's `total`, which counts only the
-                    rows matching the filter ("0 of 0 works match"). Every member
-                    lands in exactly one bucket (the server counts an unknown hash
-                    as changed), so the three sum to the whole collection. */}
-                {collectionSize !== null && (
-                  <Text size="1" color="gray">
-                    {collectionSize} work{collectionSize === 1 ? "" : "s"}
-                  </Text>
-                )}
-                {counts && counts.new + counts.changed > 0 && (
-                  <>
-                    <Text size="1" color="gray" aria-hidden>
-                      ·
-                    </Text>
-                    <Text size="1" color="orange">
-                      {counts.new + counts.changed} unpublished
-                      {counts.new > 0 && counts.changed > 0
-                        ? ` (${counts.new} new, ${counts.changed} changed)`
-                        : ""}
-                    </Text>
-                  </>
-                )}
-              </>
-            )}
-          </Flex>
+          {/* Which languages the works' titles show in: on every tab, as on a
+              work's page. */}
+          <LanguageChips />
         </Flex>
       )}
       <div hidden={section !== "works"}>
+      {/* The Works section's heading: how many works the collection holds, and
+          how many are not yet live. Counts are for the whole collection, not
+          the loaded page — a summary computed from the rows on screen would
+          only be right on page one — and they do not move when the list is
+          filtered. Styled like the work page's section headings. */}
+      <Flex align="baseline" gap="3" wrap="wrap" mb="3" className="works-count">
+        {importRows ? (
+          /* During a run the collection document has nothing in it yet, so its
+             counts say zero. The plan is the truth: how many works the run will
+             bring in, and how many have finished. */
+          <>
+            <Text asChild size="5" weight="bold">
+              <h3>
+                {importRows.length} work{importRows.length === 1 ? "" : "s"}
+              </h3>
+            </Text>
+            <Text size="3" color="indigo">
+              {importRows.filter((row) => row.importState !== "queued" && row.importState !== "importing").length}{" "}
+              of {importRows.length} imported
+            </Text>
+          </>
+        ) : (
+          <>
+            {/* The collection's size, from the sync counts rather than the works
+                response's `total`, which counts only the rows matching the
+                filter. Every member lands in exactly one bucket (the server
+                counts an unknown hash as changed), so the three sum to the
+                whole collection. */}
+            {collectionSize !== null && (
+              <Text asChild size="5" weight="bold">
+                <h3>
+                  {collectionSize} work{collectionSize === 1 ? "" : "s"}
+                </h3>
+              </Text>
+            )}
+            {counts && counts.new + counts.changed > 0 && (
+              <Text size="3" color="orange">
+                {counts.new + counts.changed} unpublished
+                {counts.new > 0 && counts.changed > 0
+                  ? ` (${counts.new} new, ${counts.changed} changed)`
+                  : ""}
+              </Text>
+            )}
+          </>
+        )}
+      </Flex>
       <Card size="3" className="panel manifest-panel">
         <Flex justify="between" align="center" gap="3" mb="4">
           <TextField.Root
@@ -253,7 +304,11 @@ function WorksListPanel({
         canPublish={canPublish}
         onPublished={onPublished}
       />
+      {/* The collection's languages, which every work in it takes as its own.
+          Set by the same people who publish it. */}
+      <CollectionLanguagesPanel active={section === "languages"} slug={slug} canEdit={canPublish} />
     </Flex>
+    </LanguageLanesContext.Provider>
   );
 }
 

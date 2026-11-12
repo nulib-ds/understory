@@ -1,0 +1,83 @@
+{
+  "collection": {
+    "slug": "multilingual-sample",
+    "label": "Multilingual Sample",
+    "languages": ["en", "fr"]
+  },
+  "works": [
+    {
+      "id": "5eed0000-0000-4000-8000-000000000001",
+      "label": {
+        "en": ["Harlequin, the monkey"],
+        "fr": ["Arlequin, le singe"],
+        "none": ["Arlecchino \"Scimmia\""]
+      },
+      "summary": {
+        "en": ["A Harlequin with a monkey's traits: agile, quick and mischievous, a servant who openly apes his betters."],
+        "fr": ["Un Arlequin aux traits de singe : agile, vif et espiègle, un valet qui singe ouvertement ses maîtres."]
+      },
+      "metadata": [
+        {"label": {"en": ["Creator"], "fr": ["Créateur"]}, "value": {"none": ["Fava, Antonio, 1949-"]}},
+        {"label": {"en": ["Date"], "fr": ["Date"]}, "value": {"none": ["2012"]}},
+        {"label": {"en": ["Materials"], "fr": ["Matériaux"]}, "value": {"en": ["Leather, elastic"], "fr": ["Cuir, élastique"]}},
+        {"label": {"en": ["Genre"], "fr": ["Genre"]}, "value": {"en": ["Comic masks"], "fr": ["Masques comiques"]}},
+        {"label": {"en": ["Subject"]}, "value": {"en": ["Commedia dell'arte", "Harlequin (Fictitious character)"]}}
+      ],
+      "requiredStatement": {
+        "label": {"en": ["Attribution"], "fr": ["Attribution"]},
+        "value": {
+          "en": ["Courtesy of Northwestern University Libraries"],
+          "fr": ["Avec l'aimable autorisation des bibliothèques de l'Université Northwestern"]
+        }
+      },
+      "canvasLabels": [
+        {"en": ["Right"], "fr": ["Droite"]},
+        {"en": ["Front"], "fr": ["Face"]}
+      ]
+    },
+    {
+      "id": "5eed0000-0000-4000-8000-000000000002",
+      "label": {
+        "en": ["Pantalone, the merchant"],
+        "fr": ["Pantalon, le marchand"]
+      },
+      "summary": {
+        "fr": ["Pantalon est le Magnifique vénitien : riche, avare, et maître de la maison et de ses enfants."]
+      },
+      "metadata": [
+        {"label": {"none": ["Creator"]}, "value": {"none": ["Fava, Antonio, 1949-"]}},
+        {"label": {"en": ["Date"], "fr": ["Date"]}, "value": {"none": ["2010"]}},
+        {"label": {"en": ["Place made"], "fr": ["Lieu de fabrication"]}, "value": {"en": ["Reggio Emilia, Italy"], "fr": ["Reggio d'Émilie, Italie"]}},
+        {"label": {"en": ["Dimensions"]}, "value": {"none": ["18 x 15 x 16 cm"]}}
+      ],
+      "requiredStatement": {
+        "label": {"en": ["Attribution"]},
+        "value": {"en": ["Courtesy of Northwestern University Libraries"]}
+      },
+      "canvasLabels": [
+        {"en": ["Front"], "fr": ["Face"]},
+        {"none": ["Left"]}
+      ]
+    },
+    {
+      "id": "5eed0000-0000-4000-8000-000000000003",
+      "label": {
+        "fr": ["Zanni"],
+        "none": ["Grande Zanni"]
+      },
+      "summary": {
+        "en": ["The first Zanni: a hungry servant down from the mountains, and the root of every Harlequin."],
+        "none": ["Il primo Zanni."]
+      },
+      "metadata": [
+        {"label": {"en": ["Creator"], "fr": ["Créateur"]}, "value": {"none": ["Fava, Antonio, 1949-"]}},
+        {"label": {"en": ["Genre"], "fr": ["Genre"]}, "value": {"en": ["Comic masks"]}},
+        {"label": {"en": ["Language"], "fr": ["Langue"]}, "value": {"en": ["Italian"], "fr": ["Italien"]}},
+        {"label": {"fr": ["Remarques"]}, "value": {"fr": ["Masque en cuir teint à la main."]}}
+      ],
+      "canvasLabels": [
+        {"en": ["Front"], "fr": ["Face"]}
+      ]
+    }
+  ]
+}

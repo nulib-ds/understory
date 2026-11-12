@@ -332,7 +332,10 @@ async function writeCollection({slug, runId}) {
   const landed = results.filter((r) => r.status === "ok" || r.status === "partial");
 
   const root = await ensureRoot();
-  const label = rootCollectionSummaries(root).find((entry) => entry.slug === slug)?.label || slug;
+  const summary = rootCollectionSummaries(root).find((entry) => entry.slug === slug);
+  const label = summary?.label || slug;
+  // The root register's list, copied onto the leaf like every other rebuild.
+  const languages = summary?.languages || [];
 
   // Every work this run landed, plus any member the leaf already has that the
   // run did not produce: a work moved in on its own page while the run walked,
@@ -350,7 +353,7 @@ async function writeCollection({slug, runId}) {
     const members = arrangeMembers(membersOf(current?.document), landed.map(buildManifestReference)).map(
       memberFromReference,
     );
-    const document = buildCollectionDocument({baseUrl, slug, label, members});
+    const document = buildCollectionDocument({baseUrl, slug, label, members, languages});
     await writeVersioned(collectionObjectKey(slug), document, current?.etag || null);
     return document;
   });
@@ -364,7 +367,16 @@ async function writeCollection({slug, runId}) {
       baseUrl,
       collections: [
         ...rootCollectionSummaries(current).filter((entry) => entry.slug !== slug),
-        {slug, label, itemCount: leaf.items.length, thumbnail: leaf.thumbnail || null},
+        {
+          slug,
+          label,
+          itemCount: leaf.items.length,
+          thumbnail: leaf.thumbnail || null,
+          // Whatever the root holds NOW: a curator may have set the list while
+          // the run walked, and this write must not undo it.
+          languages:
+            rootCollectionSummaries(current).find((entry) => entry.slug === slug)?.languages || languages,
+        },
       ].sort((a, b) => a.label.localeCompare(b.label) || a.slug.localeCompare(b.slug)),
     }),
   );

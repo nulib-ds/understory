@@ -129,6 +129,28 @@ html {
   --interactive-surface-hover: var(--accent-3);
   --interactive-surface-text: var(--gray-11);
   --interactive-surface-text-hover: var(--accent-11);
+
+  /* A pointer on every control that does something when clicked. Radix
+     defaults these to the arrow; links already point. A disabled control keeps
+     Radix's not-allowed (--cursor-disabled). */
+  --cursor-button: pointer;
+  --cursor-checkbox: pointer;
+  --cursor-radio: pointer;
+  --cursor-switch: pointer;
+  --cursor-menu-item: pointer;
+
+  /* Clover's colours (@nulib/clover), which it reads from these custom
+     properties with its own blue-and-gray defaults behind them. Set here, on
+     the theme, so every Clover part on any page follows it: the viewer and the
+     collection's thumbnail strip alike. */
+  --clover-color-primary: var(--gray-12);
+  --clover-color-primary-muted: var(--gray-11);
+  --clover-color-secondary: var(--color-panel-solid);
+  --clover-color-secondary-muted: var(--gray-3);
+  --clover-color-secondary-alt: var(--gray-6);
+  --clover-color-accent: var(--accent-9);
+  --clover-color-control: var(--gray-12);
+  --clover-color-control-glyph: var(--gray-1);
 }
 
 /* Headings run a touch tighter than Radix's default tracking: the display face
@@ -296,10 +318,12 @@ body {
   font-weight: 800;
 }
 
+/* Generous room at the bottom, so the last card on a long page does not sit
+   on the window's edge. */
 main.layout {
   min-height: 100vh;
   background-color: #ffffff;
-  padding: calc(48 * var(--px)) 0 calc(24 * var(--px));
+  padding: calc(48 * var(--px)) 0 calc(120 * var(--px));
 }
 
 /* Wide-screen by default, but capped so content stops stretching on very wide
@@ -527,11 +551,13 @@ main.layout {
    16.7ms budget, before React had done any work.
    This is containment, not virtualization: every card stays in the DOM, so
    dnd-kit can still measure and reorder them. contain-intrinsic-size feeds the
-   browser the real card height (they are uniform) so the scrollbar and scroll
-   position stay honest for cards it has not rendered yet. */
+   browser a card's height so the scrollbar and scroll position stay honest for
+   cards it has not rendered yet: 126px, measured with three language lanes
+   showing (en, fr, none). A card with more or fewer lanes is taller or shorter,
+   and `auto` keeps the real height once a card has been drawn. */
 .canvas-list-item {
   content-visibility: auto;
-  contain-intrinsic-size: auto calc(66 * var(--px));
+  contain-intrinsic-size: auto calc(126 * var(--px));
 }
 
 .canvas-list-item {
@@ -607,6 +633,42 @@ main.layout {
 /* The strip is out of flow, so the row's content has to clear it. */
 .canvas-list-info {
   padding-left: 2.9rem;
+  flex: 1;
+  min-width: 0;
+}
+
+/* A canvas's label as language lanes (MapLanes), beside its thumbnail. Tighter
+   than the Metadata tab's lanes, so a card stays a row in a list rather than a
+   form; the handle and thumbnail stay centred on it. */
+.canvas-label-lanes {
+  flex: 1;
+  min-width: 0;
+}
+
+.canvas-label-lanes .field-lane {
+  padding: var(--space-1) 0;
+}
+
+/* A canvas card's thumbnail, twice the size the dropzone and the works table
+   use (.asset-dropzone-preview, 2.5rem). Two classes, so it wins over that rule
+   whatever order the sheets load in. */
+.asset-dropzone-preview.canvas-list-thumb {
+  width: 5rem;
+  height: 5rem;
+}
+
+/* Remove asset, in the card's top-right corner like a metadata card's Remove
+   field (.field-card__corner). The card is already position: relative. The
+   first lane leaves room for it, so a long label never runs under it. */
+.canvas-list-corner {
+  position: absolute;
+  top: var(--base-card-padding-top);
+  right: var(--base-card-padding-right);
+  z-index: 1;
+}
+
+.canvas-label-lanes .field-lane:first-child {
+  padding-inline-end: calc(36 * var(--px));
 }
 
 .canvas-drag-handle:hover {
@@ -658,12 +720,6 @@ main.layout {
   gap: 2rem;
 }
 
-/* Values stack vertically in their cell, so rows align from the top. */
-.metadata-table td,
-.metadata-table th {
-  vertical-align: top;
-}
-
 /* A field name or value's edit field, sized to its text and set in its type,
    like the work title and canvas labels. Content-sized matters more here than
    anywhere: the check and remove buttons sit at the end of the field, and a
@@ -677,7 +733,166 @@ main.layout {
   max-width: 100%;
 }
 
-.metadata-table .rt-TextFieldInput {
+/* The Metadata tab: a card per field, a lane per language in each
+   (components/work/MetadataPanel.jsx). The language is said once, by the
+   lane's gutter, so every lane's values line up in one column down the card. */
+.field-cards {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+/* A card floats its action (a metadata entry's Remove field) in its top-right
+   corner, at the card's own padding. Radix's Card is already
+   position: relative. The first lane leaves room on its right, so a long value
+   never runs under the button. */
+.field-card__corner {
+  position: absolute;
+  top: var(--base-card-padding-top);
+  right: var(--base-card-padding-right);
+  z-index: 1;
+}
+
+.field-card .field-lane:first-child {
+  padding-top: 0;
+  padding-inline-end: calc(36 * var(--px));
+}
+
+.field-lane {
+  display: grid;
+  /* Wide enough for a long tag (zh-Hant-TW) in the code face; only the code
+     sits here, so it no longer needs room for a language's full name. */
+  grid-template-columns: calc(96 * var(--px)) minmax(0, 1fr);
+  gap: var(--space-4);
+  padding: var(--space-3) 0;
+}
+
+.field-lane + .field-lane {
+  border-top: 1px solid var(--gray-a4);
+}
+
+.field-lane__language {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+}
+
+.field-lane__code {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-family: var(--code-font-family);
+}
+
+/* A metadata field's name in its lane: muted, a step below the values it
+   labels. Two classes, so it wins over .canvas-label-editable wherever that
+   rule sits (see Design Conventions in AGENTS.md). */
+.canvas-label-editable.field-lane__name {
+  color: var(--gray-10);
+  font-weight: var(--font-weight-regular);
+}
+
+/* The mark on a language lane with no values of its own, whose tooltip says
+   it shows the field's None value instead. */
+.field-lane__fallback {
+  display: inline-flex;
+  color: var(--accent-11);
+  cursor: help;
+  border-radius: var(--radius-1);
+}
+
+.field-lane__fallback:focus-visible {
+  outline: 2px solid var(--focus-8);
+  outline-offset: 2px;
+}
+
+.field-lane__values {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+/* The checkboxes that turn lanes on and off (LanguageChips.jsx): one track,
+   sized and coloured like the size-3 surface SegmentedControl beside them, so
+   the two read as one row of controls. Unlike its items, any number can be on,
+   and each says so with its checkbox. */
+.language-toggles {
+  --language-toggles-radius: max(var(--radius-3), var(--radius-full));
+  display: inline-flex;
+  align-items: stretch;
+  height: var(--space-7);
+  padding: 1px;
+  border-radius: var(--language-toggles-radius);
+  background-color: var(--color-surface);
+  background-image: linear-gradient(var(--gray-a3), var(--gray-a3));
+}
+
+.language-toggle {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  /* Tight between options, the track's usual inset at its two ends. */
+  padding-inline: var(--space-2);
+  border-radius: calc(var(--language-toggles-radius) - 1px);
+  color: var(--gray-12);
+  font-size: var(--font-size-3);
+  letter-spacing: var(--letter-spacing-3);
+  cursor: pointer;
+  user-select: none;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.language-toggle:first-child {
+  padding-inline-start: var(--space-3);
+}
+
+.language-toggle:last-child {
+  padding-inline-end: var(--space-3);
+}
+
+/* Checked: lifted out of the track in --color-background, as the segmented
+   control's selected item is, but with no hairline, so no line divides one
+   option from the next. Neighbours that are both checked join into one block:
+   the corners where they meet are square. */
+.language-toggle--on {
+  background-color: var(--color-background);
+  font-weight: var(--font-weight-medium);
+}
+
+.language-toggle--on + .language-toggle--on {
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+}
+
+.language-toggle--on:has(+ .language-toggle--on) {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+/* Unchecked: left in the track, its code muted, as an unselected item is. */
+.language-toggle--off {
+  color: var(--gray-11);
+}
+
+.language-toggle--off:hover {
+  background-color: var(--gray-a2);
+}
+
+/* Dashed: a language the work uses but its collection does not list. Still
+   shown, so nothing a manifest holds is hidden, but marked as outside the
+   collection's set. The checkbox carries its own focus ring, so the outline
+   is free for this. */
+.language-toggle--outside {
+  outline: 1px dashed var(--gray-a8);
+  outline-offset: -1px;
+}
+
+/* A field name or value's edit field, sized to its text and set in its type.
+   See .metadata-value above for why content-sized. */
+.field-card .rt-TextFieldInput {
   font-size: var(--font-size-3);
   field-sizing: content;
   min-width: 12ch;
@@ -706,11 +921,6 @@ main.layout {
   max-width: 100%;
   height: auto;
   vertical-align: middle;
-}
-
-/* Field names are bold at rest, so they are bold while being edited too. */
-.metadata-table th .rt-TextFieldInput {
-  font-weight: var(--font-weight-bold);
 }
 
 .canvas-label-editable {
@@ -801,13 +1011,11 @@ main.layout {
   }
 }
 
-/* A canvas label's edit field, in the label's own type — the same treatment
-   as the work title's (see .work-breadcrumb below): clicking to edit should
-   not drop a bold size-3 label to size-2 regular. The field keeps its size-2
-   height, which fits the row, so the card does not grow while you type. */
+/* A canvas label's edit field, in the label's own type: clicking to edit should
+   not drop a size-3 label to size-2. The field keeps its size-2 height, which
+   fits a lane, so the card does not grow while you type. */
 .canvas-list-info .rt-TextFieldInput {
   font-size: var(--font-size-3);
-  font-weight: var(--font-weight-bold);
   field-sizing: content;
   min-width: 8ch;
   /* Radix pads only the start (text-indent), so a content-sized field would
@@ -825,8 +1033,7 @@ main.layout {
 .page-heading {
   align-self: center;
   /* Real heading elements carry a UA margin; the work title's span does not.
-     Zero it here so both render identically. .work-title-editable's negative
-     chip margin still wins — it is declared after this rule. */
+     Zero it here so both render identically. */
   margin: 0;
   /* The Understory wordmark's treatment at a larger size: display face, black
      weight, tight tracking.
@@ -842,91 +1049,91 @@ main.layout {
   text-align: center;
 }
 
-/* Only the click-to-edit chip. Everything visual comes from .page-heading, so
-   an editable title and a static one cannot drift apart. */
-.work-title-editable {
-  padding: calc(2 * var(--px)) calc(6 * var(--px));
-  margin: calc(-2 * var(--px)) calc(-6 * var(--px));
+/* A work's title in the works list, a line per language showing (WorkTitle in
+   components/works/WorksTable.jsx), each led by its code in the muted code
+   face, as the lanes on a work's page are. */
+.work-title-lanes {
+  display: inline-flex;
+  flex-direction: column;
+  gap: var(--space-1);
 }
 
-/* "<collection> / <work>" on a work's page. Flex rather than inline flow so
-   the title's edit field, which is a block-level Flex, stays on the same line
-   as the crumb instead of dropping below it. Wraps as whole items: a long
-   title moves under the crumb rather than breaking beside it. Gaps are in em
-   so they follow the heading's fluid size. */
-.work-breadcrumb {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
+.work-title-lane {
+  display: inline-flex;
   align-items: baseline;
-  column-gap: 0.3em;
+  gap: var(--space-3);
 }
 
-/* The parent crumb is accent-coloured because it is a link — the same
-   purple as a collection's name in the collections list. It keeps the
-   heading's weight (inherited from .page-heading) so the two halves read as
-   one heading; the colour alone says which half you can follow.
-   Hover steps one shade darker rather than underlining: at this size an
-   underline is a heavy bar under the whole name. */
-.work-breadcrumb__collection {
-  color: var(--accent-11);
-  text-decoration: none;
-  transition: color 0.15s ease;
+.work-title-lane__code {
+  flex: none;
+  min-width: calc(40 * var(--px));
+  font-family: var(--code-font-family);
+  font-size: var(--font-size-1);
+  font-weight: var(--font-weight-regular);
+  color: var(--gray-10);
 }
 
-.work-breadcrumb__collection:hover,
-.work-breadcrumb__collection:focus-visible {
-  color: var(--accent-12);
+/* A page's own title, heading its container: the collection's above its grid,
+   on a toolbar-like band with a hairline below, and a work's in the Document
+   template's toolbar above its viewer. The page-heading face in black, rather
+   than Clover's own; Clover's styles sit in @layer clover, so this unlayered
+   rule wins there. */
+.collection-grid-head {
+  padding: var(--space-4) var(--space-5);
+  border-bottom: 1px solid var(--gray-a4);
 }
 
-/* Lighter than the crumbs on either side: at a black weight a slash is as
-   heavy as a letter and reads as part of a word. The heading face has a real
-   weight axis, so 300 is not synthesized. */
-.work-breadcrumb__separator {
-  color: var(--gray-8);
-  font-weight: 300;
+.collection-grid-title,
+.viewer-stage .clover-template-document-title {
+  margin: 0;
+  font-family: var(--heading-font-family);
+  font-weight: 800;
+  font-size: calc(var(--font-size-6) * 1.45);
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+  color: var(--gray-12);
 }
 
-/* The work title's edit field, set in the title's own type so clicking to
-   edit does not collapse a 42px black heading into 16px body text. Scoped to
-   the breadcrumb: InlineTextEditor is shared with canvas labels and metadata
-   fields, which keep the default field.
-
-   Height follows the heading's line box plus a little room; it is spelt out
-   from the heading's size tokens rather than in em, because the check button
-   beside the field sits at a different font size and has to match it. */
-.work-breadcrumb {
-  --title-field-height: calc(var(--font-size-6) * 1.7 * 1.1 + var(--space-3));
+.collection-grid-empty {
+  padding: var(--space-5);
 }
 
-.work-breadcrumb .rt-TextFieldRoot {
-  --text-field-height: var(--title-field-height);
-  font: inherit;
-  letter-spacing: inherit;
+/* The way back from a work to its collection, above the viewer: a small link
+   with an arrow, not a heading (the work's title is the viewer's heading,
+   .clover-template-document-title below). */
+/* Radix's segmented control sets no cursor of its own, so its items take the
+   pointer here, like every other control (--cursor-button above). The one
+   already chosen keeps the arrow: clicking it does nothing. */
+.rt-SegmentedControlItem:not(:disabled):not([data-state="on"]) {
+  cursor: pointer;
 }
 
-/* field-sizing grows the field with what is typed, so it starts the width of
-   the title instead of a fixed 170px that the heading's type overflows. A
-   browser without it falls back to the input's default width, which at this
-   size is still wide enough to edit in. */
-.work-breadcrumb .rt-TextFieldInput {
-  font: inherit;
-  letter-spacing: inherit;
-  field-sizing: content;
-  min-width: 4ch;
-  /* Radix pads the start with text-indent and leaves the end at zero, which
-     a content-sized field makes visible: the last letter sat on the border. */
-  padding-inline-end: var(--text-field-padding);
+/* The Share tab's flag: a small amber dot after the word while the work has no
+   published copy, the same amber as the notice the section shows. */
+.segment-label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
 }
 
-.work-breadcrumb .rt-IconButton {
-  --base-button-height: var(--title-field-height);
+.segment-flag {
+  width: calc(8 * var(--px));
+  height: calc(8 * var(--px));
+  border-radius: 999px;
+  background-color: var(--amber-9);
+  flex: none;
 }
 
-/* The icon keeps Radix's 15px otherwise, a speck in a button this size. */
-.work-breadcrumb .rt-IconButton svg {
-  width: calc(22 * var(--px));
-  height: calc(22 * var(--px));
+/* The published manifest URL in the Share section: a long address, so it may
+   break anywhere rather than overflow the panel. */
+.share-url {
+  overflow-wrap: anywhere;
+}
+
+.work-back-link {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
 }
 
 /* The collections field in the Linking panel. The resting value reuses
@@ -949,9 +1156,25 @@ main.layout {
   font-style: italic;
 }
 
+/* The viewer's container: the one panel on a work's page that is drawn as a
+   container at all (.panel turns the rest off), because the viewer is the
+   page's subject. Rounded like the cards below it (--radius-4) and lifted by a
+   soft shadow: a hairline ring for its edge, then two faint layers for depth.
+   Two classes, so these win over .panel's zeroed radius. The shadow is on the
+   Card itself, which clips everything inside it, so nothing inside could carry
+   one (see .viewer-stage). */
 .viewer-panel {
   min-height: calc(520 * var(--px));
   padding: 0;
+}
+
+.panel.viewer-panel {
+  border-radius: var(--radius-4);
+  background-color: var(--color-panel-solid);
+  box-shadow:
+    0 0 0 1px var(--gray-a3),
+    0 1px 2px var(--gray-a2),
+    0 4px 16px var(--gray-a3);
 }
 
 .viewer {
@@ -963,29 +1186,9 @@ main.layout {
 .viewer-stage {
   min-height: calc(420 * var(--px));
   overflow: hidden;
-  /* Same colour and radius as the ring Radix paints on the asset Cards, but
-     INSET: the viewer panel Card has overflow:hidden and occupies the identical
-     box, so an outset shadow here gets clipped away and never renders. */
-  box-shadow: inset 0 0 0 1px color-mix(in oklab, rgba(0, 0, 0, 0.11), var(--gray-5) 25%);
+  /* The panel around it draws the edge and the shadow; the stage only needs
+     the same radius, so its corners do not poke past the panel's. */
   border-radius: var(--radius-4);
-}
-
-.viewer-stage .clover-viewer-header {
-  display: none;
-}
-
-.viewer-stage .clover-viewer-media-wrapper {
-  padding-left: 1.618rem;
-}
-
-.viewer-stage .clover-viewer-information-panel {
-  padding-top: 1rem;
-}
-
-.viewer-stage canvas,
-.viewer-stage .openseadragon-canvas {
-  width: 100% !important;
-  height: 100% !important;
 }
 
 /* The collection slider borrows the viewer's frame (.viewer-panel +
@@ -997,9 +1200,14 @@ main.layout {
 
 .viewer-stage.slider-stage {
   min-height: 0;
-  /* The viewer's own inset around its thumbnail strip: Clover's top padding,
-     and the 1.618rem left that .clover-viewer-media-wrapper gets above. */
-  padding: var(--space-4) 0 0 1.618rem;
+  /* The works as a masonry grid (CloverSlider), inset evenly on every side,
+     at the card padding the page's other containers use. At most a third of
+     the window tall, scrolling inside past that, so a large collection's grid
+     does not push the works list down. A small collection is only as tall as
+     its pictures. */
+  padding: var(--space-5);
+  max-height: 35vh;
+  overflow-y: auto;
 }
 
 .viewer-placeholder {
@@ -1034,6 +1242,38 @@ main.layout {
   font-family: var(--code-font-family);
 }
 
+/* A section's own heading inside its panel (the collection's Languages). */
+.section-heading {
+  margin: 0;
+}
+
+/* A language code on a dark chip, read-only: the collection's Languages list,
+   in the same look as the work page's language toggles when on. */
+.language-code-chip {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: calc(44 * var(--px));
+  padding: calc(4 * var(--px)) calc(10 * var(--px));
+  border-radius: 999px;
+  background-color: var(--gray-11);
+  color: var(--gray-1);
+  font-family: var(--code-font-family);
+  font-size: var(--font-size-2);
+}
+
+/* A collection's languages, in order of preference
+   (components/collections/CollectionLanguagesPanel.jsx): an ordered list of
+   cards, because the order is the setting. The first is the preferred one. */
+.collection-languages {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
 /* Users section
    ------------------------------------------------------------------------- */
 
@@ -1052,75 +1292,6 @@ main.layout {
    a rendering bug. */
 .role-matrix__option:has(:disabled) {
   color: var(--gray-10);
-}
-
-/* Clover's Slider is styled by its own stylesheet, so it never sees the Radix
-   theme: its caption links come out in the browser's default blue. These
-   restate the app's accent on the stable class names it exposes. Selectors
-   carry two parts (class + element/class) because Clover's generated class
-   names are single-class and would otherwise win. */
-/* Card size is Clover's documented knob: the slider is sized by its cards, so
-   these two variables set how big each thumbnail is and so how many fit.
-   12.5rem is exactly the size of a thumbnail in the work page's viewer (measured
-   at two window widths), and rem is what that viewer scales by, since the root
-   font-size is the app's fluid unit. */
-.clover-slider {
-  --clover-thumbnail-width: 12.5rem;
-  --clover-thumbnail-height: 12.5rem;
-  /* Clover colours a hovered or focused card's caption from these, falling back
-     to its own blue. The viewer gets them through its theme (cloverTheme.js);
-     the slider takes no theme, so they are set here. The accent is the link
-     colour itself, so a hovered caption keeps its colour and gains an underline,
-     as a Radix link does. */
-  --clover-color-accent: var(--accent-a11);
-  --clover-color-accent-muted: var(--accent-8);
-  --clover-color-accent-alt: var(--accent-10);
-}
-
-.clover-slider a {
-  color: var(--accent-a11);
-  text-decoration: none;
-}
-
-.clover-slider a figcaption,
-.clover-slider a figcaption span {
-  color: inherit;
-}
-
-/* The same type as a title in the works table below (Radix Text size 2, bold). */
-.clover-slider a figcaption span {
-  font-size: var(--font-size-2);
-  line-height: var(--line-height-2);
-  font-weight: var(--font-weight-bold);
-}
-
-/* What a Radix link does on hover (rt-underline-auto): an underline, thin and
-   soft, set a little below the text, and no change of colour. */
-.clover-slider a:hover .clover-slider-figure-title,
-.clover-slider a:focus-visible .clover-slider-figure-title {
-  text-decoration-line: underline;
-  text-decoration-color: var(--accent-a6);
-  text-decoration-thickness: min(2px, max(1px, 0.05em));
-  text-underline-offset: calc(0.025em + 2px);
-}
-
-.clover-slider a:focus-visible {
-  outline: 2px solid var(--focus-8);
-  outline-offset: 2px;
-}
-
-.clover-slider .clover-slider-previous,
-.clover-slider .clover-slider-next {
-  color: var(--interactive-surface-text);
-  transition: background-color 0.15s ease, color 0.15s ease;
-}
-
-.clover-slider .clover-slider-previous:hover:not(:disabled),
-.clover-slider .clover-slider-next:hover:not(:disabled),
-.clover-slider .clover-slider-previous:focus-visible,
-.clover-slider .clover-slider-next:focus-visible {
-  background-color: var(--interactive-surface-hover);
-  color: var(--interactive-surface-text-hover);
 }
 
 /* A work's import state in the works table: one line, so the status column
