@@ -75,6 +75,67 @@ function rewriteUrls(node, {from, to, strip = []}, state = {replacements: 0}) {
   return node;
 }
 
+// A language map with its empty languages taken out: {"en": ["x"], "fr": []}
+// becomes {"en": ["x"]}. Null when nothing is left. A language a curator has
+// emptied is kept in the WORKING manifest as `[]` on purpose — the UI never
+// deletes a language from a field, so what was there stays visible as a gap to
+// fill — and taken out here, so a published document never carries one.
+function pruneLanguageMap(map) {
+  if (!map || typeof map !== "object" || Array.isArray(map)) return map;
+  const next = {};
+  for (const [code, values] of Object.entries(map)) {
+    if (Array.isArray(values) && values.length === 0) continue;
+    next[code] = values;
+  }
+  return Object.keys(next).length ? next : null;
+}
+
+// A manifest as it should be published: every language map without its empty
+// languages, and every property those leave empty gone with them.
+//   - summary, requiredStatement and a canvas's label are optional, so one that
+//     is left with nothing is removed;
+//   - a metadata entry left without a label or a value is removed, since an
+//     entry needs both;
+//   - the manifest's own label is required, so it is pruned but never removed:
+//     a label that would prune to nothing is published as it stands.
+// Returns a new object; the working document is not touched.
+function pruneEmptyLanguageValues(manifest) {
+  if (!manifest || typeof manifest !== "object") return manifest;
+  const next = {...manifest};
+
+  if (next.label !== undefined) {
+    next.label = pruneLanguageMap(next.label) || next.label;
+  }
+  if (next.summary !== undefined) {
+    const summary = pruneLanguageMap(next.summary);
+    if (summary) next.summary = summary;
+    else delete next.summary;
+  }
+  if (Array.isArray(next.metadata)) {
+    const metadata = next.metadata
+      .map((entry) => ({...entry, label: pruneLanguageMap(entry?.label), value: pruneLanguageMap(entry?.value)}))
+      .filter((entry) => entry.label && entry.value);
+    if (metadata.length) next.metadata = metadata;
+    else delete next.metadata;
+  }
+  if (next.requiredStatement !== undefined) {
+    const label = pruneLanguageMap(next.requiredStatement?.label);
+    const value = pruneLanguageMap(next.requiredStatement?.value);
+    if (label && value) next.requiredStatement = {...next.requiredStatement, label, value};
+    else delete next.requiredStatement;
+  }
+  if (Array.isArray(next.items)) {
+    next.items = next.items.map((canvas) => {
+      if (!canvas || canvas.label === undefined) return canvas;
+      const label = pruneLanguageMap(canvas.label);
+      if (label) return {...canvas, label};
+      const {label: _dropped, ...rest} = canvas;
+      return rest;
+    });
+  }
+  return next;
+}
+
 // Returns the published document and how many URLs moved. Zero is a bug, not a
 // no-op: a manifest whose id does not sit under the working base is a hand
 // edit, a base-URL change, or an already-published document fed back in.
@@ -183,6 +244,8 @@ function supersededCandidates({index, previouslyStaged = [], live = []}) {
 }
 
 module.exports = {
+  pruneLanguageMap,
+  pruneEmptyLanguageValues,
   CONTENT_HASH_KEY,
   contentHash,
   isSelfReference,

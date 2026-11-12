@@ -16,6 +16,7 @@
   "type": "commonjs",
   "main": "index.js",
   "scripts": {
-    "test": "node --test \"app/**/__tests__/*.test.js\""
+    "test": "node --test \"app/**/__tests__/*.test.js\"",
+    "seed:multilingual": "node scripts/seed-multilingual-sample.js"
   }
 }

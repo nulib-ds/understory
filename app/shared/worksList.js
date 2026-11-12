@@ -18,7 +18,7 @@ const {
   membersOf,
   workIdFromManifestUrl,
 } = require("./collection");
-const {extractLabel} = require("./language");
+const {extractLabel, asLanguageMap, languageMapText} = require("./language");
 const {planPublish} = require("./publish");
 
 const SYNC_NEW = "new";
@@ -87,6 +87,9 @@ function listCollectionWorks({working, published, q = "", from = 0, size = 50}) 
     return {
       identifier: workId,
       label: extractLabel(item.label),
+      // Every language of the title, for a list that shows it in the
+      // collection's languages; `label` is the one string for anything else.
+      labels: asLanguageMap(item.label),
       manifestUrl: item.id,
       thumbnails: typeof service === "string" && service ? [service] : [],
       itemCount: Number.isInteger(item[ITEM_COUNT_KEY]) ? item[ITEM_COUNT_KEY] : 0,
@@ -94,7 +97,8 @@ function listCollectionWorks({working, published, q = "", from = 0, size = 50}) 
     };
   });
 
-  const matching = works.filter((work) => matchesFilter(work.label, q));
+  // The filter matches a title in any of its languages.
+  const matching = works.filter((work) => matchesFilter(languageMapText(work.labels), q));
   const start = Math.max(0, from);
   return {
     total: matching.length,

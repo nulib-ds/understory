@@ -80,6 +80,7 @@ test("rows carry what the table draws", () => {
   assert.deepEqual(row, {
     identifier: "a",
     label: "Atlas",
+    labels: {none: ["Atlas"]},
     manifestUrl: workingId("a"),
     thumbnails: ["https://img/a"],
     itemCount: 2,
@@ -122,4 +123,20 @@ test("matching ignores case and accents, and wants every word", () => {
   assert.equal(matchesFilter("Müller Collection", "COLLECTION müller"), true, "any order");
   assert.equal(matchesFilter("Müller Collection", "muller maps"), false, "every word must match");
   assert.equal(matchesFilter("Anything", "   "), true, "a blank filter matches everything");
+});
+
+test("rows carry the title in every language, and the filter matches any of them", () => {
+  const leaf = buildCollectionDocument({
+    baseUrl: BASE,
+    slug: "masks",
+    label: "Masks",
+    members: [
+      {manifestId: workingId("a"), label: {en: ["Harlequin"], fr: ["Arlequin"]}, contentHash: "h"},
+      {manifestId: workingId("b"), label: {none: ["Pantalone"]}, contentHash: "h"},
+    ],
+  });
+  const all = listCollectionWorks({working: leaf, published: null});
+  assert.deepEqual(all.works[0].labels, {en: ["Harlequin"], fr: ["Arlequin"]});
+  const french = listCollectionWorks({working: leaf, published: null, q: "arlequin"});
+  assert.deepEqual(french.works.map((w) => w.identifier), ["a"], "a French word finds the work");
 });

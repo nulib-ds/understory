@@ -188,7 +188,7 @@ reload on a cached session.
 |---|---|---|
 | `/` | `CollectionsPage` (`ui/src/screens/`) | Built — the home page |
 | `/collections` | redirect to `/` (`ui/next.config.mjs`) | for older links |
-| `/collection/[slug]` | `CollectionWorksPage` | Built — list served from the collection documents, filter, publish panel |
+| `/collection/[slug]` | `CollectionWorksPage` | Built — list served from the collection documents, filter, publish panel, languages |
 | `/collection/[slug]/work/[workId]` | `WorkPage` | Built |
 | `/collection/[slug]/search` | `CollectionSearchPage` | Built — **unlinked**; queries the live search index through the API |
 | `/users` | `UsersPage` | Built — admin only |
@@ -208,8 +208,19 @@ reached through its collection.
   the Collections section below.
 - **A collection's works** (`/collection/:slug`) — create/manage the IIIF
   Presentation manifests in one collection (the `working/presentation/manifest/` prefix
-  in the IIIF bucket). The page heading is the collection's title. The
-  **Share & publish** panel in the aside starts closed: its heading is the
+  in the IIIF bucket). Laid out like a work's page:
+  - a small "← Back to Collections" link;
+  - a container headed by the collection's title, in the same treatment as a
+    work's viewer title, holding its works as a Clover masonry grid
+    (`CloverSlider`), at most 35vh tall and scrolling past that;
+  - sections Works, Share and Languages, with the language toggles on the right;
+  - the Works section headed by its count, "N works", with the unpublished
+    count beside it.
+
+  Each row's title shows in every visible language that it has, a line per
+  language. A row has no code beside its lines when only one lane is showing.
+  The Share tab carries the amber flag while any work is unpublished. The
+  **Share** panel starts closed: its heading is the
   button that opens it, and its body (status, addresses, the two publish
   buttons) mounts on the first open and then only hides. Mounting is what
   fetches the publish status, so a visit that never opens it never asks, and
@@ -217,7 +228,10 @@ reached through its collection.
   the list with the panel shut. The page header's unpublished count is the
   at-a-glance summary, and comes from the works list, not the panel.
 - **A work** (`/collection/:slug/work/:workId`) — edit one work and preview it
-  via Clover Viewer. Assets are uploaded per-work through `AssetDropzone`, which
+  via Clover Viewer. Its sections are Assets, Metadata, Layout, Linking and
+  Share. Share holds the published manifest URL and its copy button. While the
+  work has no published copy, Share says it must be published first and its tab
+  carries an amber flag. Assets are uploaded per-work through `AssetDropzone`, which
   writes to the `image/` prefix of the **source** bucket (not the IIIF/output
   bucket) — that upload is what feeds the `iiif-image` Lambda's pipeline. The
   Cognito authenticated role's IAM policy scopes `s3:PutObject`/`s3:GetObject`
@@ -280,9 +294,30 @@ route depends on a screen having imported `api.js` first.
   only its spinner. `/` and `/users` are prerendered at build; the two slug
   routes render on demand, which is why the app needs a server at all (see
   **Amplify deployment**).
-- **Clover only through `ui/src/components/CloverViewer.jsx`**, which loads it
-  with `next/dynamic` and `ssr: false`. OpenSeadragon touches `document` the
-  moment it is imported, so a direct import breaks the server render.
+- **Clover only through `ui/src/components/CloverViewer.jsx`** (the Viewer) and
+  `CloverSlider.jsx` (a collection's thumbnail strip), which load it with
+  `next/dynamic` and `ssr: false`. The package is `@nulib/clover`, pinned at
+  4.9.3; it replaced `@samvera/clover-iiif` (3.x, deprecated), whose
+  OpenSeadragon touched `document` on import. Do not go below 4.9.3: earlier
+  versions export ESM with no `default` condition, and `next build` fails on
+  the `require.resolveWeak` lookup `next/dynamic` adds
+  ([nulib-ds/clover#415](https://github.com/nulib-ds/clover/issues/415)).
+  `npm run dev` runs Turbopack and does not show the failure.
+  - Every viewer is the package's default export, the Viewer, in its
+    `Document` template (`@nulib/clover/templates`), which `CloverViewer.jsx`
+    passes. That is a toolbar, page thumbnails down the left and the pages in
+    one column. Its options are props, shared in `ui/src/cloverTheme.js`.
+    Document has no `header` option: its toolbar shows the work's title, in
+    the viewer's language, and its provider.
+  - The strip is `Items`, standalone, the successor to 3.x's `Slider`. Its
+    links go to each member's `homepage`, else its id, which for us is manifest
+    JSON, so `CloverSlider` stops the click and hands it to `onSelect`.
+  - `@nulib/clover/styles.css` and `templates.css` (the latter holds Document's
+    styles) are imported in `layout.jsx` with the other global sheets. It sits in `@layer clover`, so unlayered rules in `App.css`
+    win over it.
+  - Its colours come from `--clover-color-*` custom properties, set from the
+    Radix theme in `App.css`'s token block, not from a theme object.
+  - The work page passes its Language choice to the Viewer's `language` prop.
 - **A URL change that should not cost a server request goes through
   `window.history.replaceState`**, which Next keeps in step with `usePathname`
   and `useSearchParams`. Router navigation fetches the route from the server. Two
@@ -305,6 +340,13 @@ twin, read in the Lambda, which then filters and pages
 (`listCollectionWorks`, `app/shared/worksList.js`). No search index is
 involved, so curators browsing never wake OpenSearch, and because S3 reads see
 the latest write, a save is on the list the moment it returns.
+
+A member's `label` is the work's title in every language its manifest has, not
+one string (`asLanguageMap`, `app/shared/language.js`), in the working leaf and
+in the published one. That is what lets the works list, and any consumer of the
+collection, show a title in the reader's language. Leaves written before this
+carry a single `none` title until the work is next saved or
+`POST /collections/reindex` runs.
 
 Each working member carries three extension terms beside `id`, `label` and
 `thumbnail` (all in `app/shared/collection.js`):
@@ -347,8 +389,9 @@ it is at that moment.
 - every write from the collection import, which must never touch the leaf
   per work.
 
-The filter is a normalized token match on the label: case and accents are
-folded, every word must appear, and rows stay in the leaf's own label order.
+The filter is a normalized token match on the label, in any of its languages:
+case and accents are folded, every word must appear, and rows stay in the
+leaf's own label order.
 There is no typo tolerance, where the index's `fuzziness: AUTO` had some. If
 richer admin search (metadata, full text) is ever wanted, bring it back as a
 deliberate search feature that accepts a cold start, not as something the list
@@ -587,6 +630,15 @@ Load-bearing, not incidental:
 - **`_staged` names one index, never several.** `Finalize` moves it with `stageActions` — off every earlier candidate and onto the new one in a single atomic call. It used to be a bare `add`, and an alias may name any number of indexes, so every IIIF publish not followed by a flip stacked another candidate behind it. The status route reported whichever OpenSearch listed last, the panel read "IIIF assets published…" after every flip, and each flip moved live search *backwards* onto an older run. Stacks deployed before the fix heal on their next IIIF publish; **do not flip one before that**, or it may go backwards once more.
 - A conditional S3 write on `internal/publish/{slug}/status.json` is the run mutex.
 - Alias state is read through `/_alias`, never `/_cat/indices`. On the old managed domain the latter was a cluster-monitor API a scoped policy could deny, and on Serverless its response omits fields.
+
+**Publishing drops empty languages.** `pruneEmptyLanguageValues`
+(`app/shared/publish.js`) runs on every manifest before the URL rewrite. It
+takes out each language whose array is `[]` (how the UI records an emptied
+language in the working copy), then whatever that leaves empty: a `summary`, a
+`requiredStatement`, a canvas `label`, and a `metadata` entry without both a
+label and a value. The manifest's own `label` is required, so it is pruned but
+never removed. The working manifest keeps its `[]`s, and the hash recorded for
+the published member is still the hash of the working bytes.
 
 **Publishing never re-copies images.** A pyramid TIFF is the same object for a draft and a live work, and the Image API is one endpoint. Publishing moves presentation JSON only.
 
@@ -1041,7 +1093,7 @@ A bare `iiif` names the standard, not the project, and stays: the `-iiif` bucket
 suffix, `iiif-image`, `IIIFDistribution`, `IIIF_BASE_URL`, `/iiif/3`.
 
 The extension terms written into documents — `MANAGED_KEY`, `ITEM_COUNT_KEY`,
-`CONTENT_HASH_KEY` — all hang off `EXTENSION_NAMESPACE` in
+`CONTENT_HASH_KEY`, `LANGUAGES_KEY` — all hang off `EXTENSION_NAMESPACE` in
 `app/shared/collection.js`, `https://nulib-ds.github.io/understory/ns#`. It is
 an identifier and need not resolve. Changing it changes the stored data format,
 so do it only while the data is disposable.
@@ -1621,11 +1673,34 @@ repair never touches them. That keeps reindex a pure function of the working
 corpus, exactly as it always was.
 
 The last point is a constraint, not just a property: **never add collection-level
-state that the manifests do not determine.** The moment a collection needs a
-curator-authored description, reindex would destroy it and this design needs
-replacing with real storage. For the same reason every derived value must be
-recomputable — "first member" for a borrowed thumbnail means *first after
-sorting by label then id*, not first added.
+state that the manifests do not determine** — except in the root register,
+which is already where the two such facts live: that a collection exists, and
+its label. The moment a collection needs a curator-authored description, reindex
+would destroy it and this design needs replacing with real storage. For the same
+reason every derived value must be recomputable — "first member" for a borrowed
+thumbnail means *first after sorting by label then id*, not first added.
+
+**A collection's languages are that exception.** `LANGUAGES_KEY`
+(`https://nulib-ds.github.io/understory/ns#languages`) is an ordered array of
+BCP 47 tags, most preferred first: `["en", "fr"]` says English values come
+before French. Every work in the collection takes the list as its own; nothing
+is written into the manifests.
+
+- It is curator-set (`PUT /collections/{slug}/languages`, by the people who
+  publish the collection, `canSetCollectionLanguages`). The manifests cannot
+  determine it.
+- So it is stored on the collection's entry in the **root**, beside the label,
+  and copied onto the leaf. `rootCollectionSummaries` reads it, and the builders
+  write it (`buildCollectionReference`, `buildCollectionDocument({languages})`).
+- Every rebuild passes the root's list through: reconciliation, reindex, a
+  reorder, the collection import's `WriteCollection` and the publish run. A
+  rebuild that left it out would erase the leaf's copy until the next one. The
+  published leaf and root carry it too, so a site can read which languages a
+  collection is described in.
+- It is an absolute IRI, never `understory:languages`: a compact IRI needs an
+  `@context` entry, which breaks Clover (below).
+- The route writes the root first, because the root is the authority. If the
+  leaf write then fails, the next save rebuilds the leaf from the root.
 
 **Label and id are two independent fields.** The label is a display string in
 any script and is free to change; the id is ASCII, chosen once at creation, and
@@ -1673,6 +1748,7 @@ Routes: `GET /collections` (one GetObject; creates the root if absent),
 `GET /collections/{slug}/search` (the live search index; see **Search index**),
 `GET /collections/{slug}/works` (served from the two leaves; carries the collection label and
 whole-collection sync counts so the page needs one request),
+`GET` and `PUT /collections/{slug}/languages` (the collection's languages, above),
 `PUT /manifests/{id}/collection` (a move), the three publish routes under
 `/collections/{slug}/publish`, the three import routes
 (`POST /collections/import/preview`, `POST /collections/import`,
@@ -1841,11 +1917,17 @@ Use CommonJS modules (`require`/`module.exports`) and 2-space indentation in all
 The UI is built on Radix Themes (`accentColor="iris"`, `grayColor="mauve"`, `scaling="110%"` in `ui/src/app/layout.jsx`). Reach for a Radix component before hand-rolling one, and use theme tokens (`--gray-N`, `--accent-N`, `--space-N`, `--radius-N`) rather than literal colors or pixel values. Never hardcode a hex — it will not follow the theme.
 
 **Page headings.** Every section gets one centred heading via `PageHeading`
-(`ui/src/components/PageHeading.jsx`), and a work's title on its detail page is
-the same treatment. Both carry `.page-heading`, which owns the typography — the
-size falls between Radix's steps, so it lives in CSS rather than in a `size`
-prop. `.work-title-editable` adds only the click-to-edit chip, so an editable
-title and a static one cannot drift apart.
+(`ui/src/components/PageHeading.jsx`), which carries `.page-heading`. That
+class owns the typography: the size falls between Radix's steps, so it lives in
+CSS rather than in a `size` prop.
+
+A work's page is the exception. It opens with a small "Back to <collection>"
+link (`.work-back-link`), and its heading is the Clover viewer's own: the
+Document toolbar's title (`.clover-template-document-title`, an `h2`), restyled
+in `App.css` with the same treatment as `.page-heading`, in black. It shows the
+title in the viewer's language (the collection's preferred one) and is not
+editable; the title is edited in the Metadata tab's Title section, where every
+language has a lane.
 
 Two traps:
 
@@ -1874,7 +1956,7 @@ background-color: var(--interactive-surface-hover);  /* --accent-3 */
 color: var(--interactive-surface-text-hover);        /* --accent-11 */
 ```
 
-Pair them with `transition: background-color 0.15s ease, color 0.15s ease`. A surface that also has an *active* state (mid-drag, for example) should read one step stronger than hover — `--accent-4` — so the live target is unmistakable. Current examples: `.canvas-drag-handle` in `ui/src/App.css` and `.asset-dropzone` in `ui/src/components/AssetDropzone.css`.
+Pair them with `transition: background-color 0.15s ease, color 0.15s ease`. A surface that also has an *active* state (mid-drag, for example) should read one step stronger than hover — `--accent-4` — so the live target is unmistakable. Current examples: `.canvas-drag-handle` in `ui/src/App.css` and `.asset-dropzone` in `ui/src/components/AssetDropzone.css`. The dropzone rests a step lighter, on `--gray-2`, because it is a large area and `--gray-3` reads as heavy at that size; its hover follows the convention.
 
 The same gray-to-accent idea applies to **editable text** (`.canvas-label-editable`), which has no resting background and only lights up on hover. Use the *alpha* step `--accent-a3` there rather than the solid `--accent-3`: that highlight sits over cards, table rows and the page background, so it has to blend with whatever is behind it.
 
@@ -1891,6 +1973,106 @@ which builds React elements from the spec's whitelist (`a b br i img p small
 span sub sup`; `href` on `a` limited to http/https/mailto, `src`/`alt` on
 `img`) and never uses `innerHTML`.
 
+**Language of values.** `label`, `summary`, and the `label` and `value` of each
+`metadata` (and `requiredStatement`) entry are IIIF language maps (Presentation
+3.0 §4.4). `ui/src/lib/languageMap.js` is the one place that reads and writes
+them:
+
+- **Reading follows the spec's algorithm**, not "the first key":
+  `resolveLanguageMap(map, preferences)` returns the values to show and the key
+  they came from. On the work page the preferences are the collection's
+  languages in order (see **Collections**), then the browser's, through
+  `WorkLanguageContext` (`ui/src/lib/workLanguage.js`). That decides the title
+  in the page heading, the label of a canvas still importing, and the language
+  the Clover viewer reads in (the collection's preferred one).
+- **Writing touches one key.** An edit goes to the key the text was shown from
+  (`writeLanguageValues`), and every other key is carried through, so a manifest
+  with `en` and `fr` keeps both and a `none`-only manifest stays `none`-only.
+  Nothing rewrites stored manifests. Text the app makes up itself (a new
+  metadata field, a canvas named after its file) is written under `none`.
+- **Nothing deletes a language.** Clearing a value takes it out of its
+  language's array, and a language left with no values is written to the
+  working manifest as `[]`, never removed. The gap stays visible to fill.
+  Publishing takes empty languages out (`pruneEmptyLanguageValues`, below), so
+  a published document never carries one. An open value or field name has a
+  Clear button for this, so emptying one never means deleting every
+  character. The only delete on the Metadata tab is a metadata card's Remove
+  field, for a whole entry.
+- **They ask first** (`ConfirmIconButton`, `ui/src/components/`), and so does
+  a canvas card's Remove asset on the Assets tab. The first click arms the
+  button as a red "Clear value?", "Remove field?" or "Remove asset?" in the
+  same place, and the second click acts. Clicking elsewhere or pressing Escape
+  disarms it. Remove field and Remove asset both sit in their card's top-right
+  corner.
+- **The Metadata tab is field cards with language lanes**
+  (`ui/src/components/work/MetadataPanel.jsx`), in four sections kept apart
+  because they are different things in the Presentation API, each headed by
+  its everyday name and its property:
+  - Title (`label`) and Description (`summary`), the work's own;
+  - Metadata (`metadata`), its field-and-value pairs, one card each, with Add
+    field;
+  - Required statement (`requiredStatement`), at the bottom and read-only.
+
+  Each card has a lane for every language that is turned on, and no heading of
+  its own: the section names the property, and a field's name is its `label`,
+  which each lane already shows in that lane's language. A lane shows exactly what the
+  manifest stores under that key, so the language is said once, by the lane,
+  never beside each value.
+  - The lanes are the collection's languages in its order, then any other
+    language the work uses (its toggle dashed: outside the collection's set),
+    then None.
+  - Checkboxes at the right of the work page's section row, on every tab,
+    show and hide lanes (`LanguageChips`). They sit in one track styled like
+    the section switcher's SegmentedControl beside them, but any number can
+    be on: a checked language's segment is lifted out of the track like a
+    selected item, an unchecked one is left in it, and no line divides one
+    from the next. Each shows a checkbox and the language code
+    alone; the language's name is in its tooltip and accessible name. The
+    track has no visible label; for assistive technology the group is named
+    "Show languages". That is the viewer's choice and stores nothing: a hidden
+    language's values stay in the manifest and are still published, and each
+    toggle's tooltip says so. The choice holds whichever tab is open. The
+    preferred language is named in its toggle's tooltip and accessible name.
+    None is on by default only where the work has text with no language. The
+    work page holds the lane state (`useLanguageLanesState`,
+    `ui/src/lib/workLanguage.js`) and passes it down through
+    `LanguageLanesContext`, so the toggles and both tabs read one object.
+  - The **Assets** tab uses the same lanes for each canvas's `label`
+    (`SortableCanvasCard`). The lanes are `MapLanes`, shared with the Title and
+    Description cards (`ui/src/components/work/LanguageLanes.jsx`). A canvas
+    label is optional, so even its last value can be cleared.
+  - A lane is marked by its language code alone, muted. The toggles' tooltips
+    name each language in full.
+  - An empty lane offers "Add Français" or "Add None", which opens an editor
+    for that language. "Add value" opens an empty editor too. No placeholder
+    text is ever written.
+  - **An empty metadata entry is never written.** Add field opens a draft card
+    in the page only, with an "Add …" button in every lane. It is written as a
+    new entry when its first name or value is saved. Every metadata save also
+    leaves out any entry with no non-empty name or value in any language, so
+    clearing the last of a field's text removes the field. An entry that is
+    written keeps a key in each of its maps, as the API requires: `[]` under
+    the preferred language (or `none`) where it has none.
+  - A language lane with no values of its own, in a field whose values are
+    under `none`, carries an accent info mark beside "Add value". Its tooltip
+    says "Shows the None value". By the spec's algorithm a
+    reader whose language a field lacks is shown its `none` values, so a date
+    under `none` reads the same in English and French.
+- Language names come from `Intl.DisplayNames` in the language itself
+  (`languageAutonym`: `fr` is "Français"), and in the viewer's own language
+  where a gloss helps (`languageName`, in tooltips). Rendered text carries a
+  `lang` attribute from its key.
+- A collection's Languages tab (`CollectionLanguagesPanel`) sets the list: add a
+  tag, move it up or down, remove it. Removing a language from the list changes
+  no work; its values stay, shown in a dashed lane.
+- Not yet language-aware: the works list, collection documents and the search
+  index, all of which take one string through `extractLabel`
+  (`app/shared/language.js`); and annotation bodies, which carry `language`
+  beside `value` rather than in a map (§4.4).
+
+The helper is ESM with no dependencies, so `app/shared/__tests__/uiLanguageMap.test.js`
+imports it directly.
+
 **Metadata field spacing.** Field groups in the Metadata and Layout panels — Description, Additional fields, Display — are separated by **2rem**, via the shared `.metadata-fields` class in `ui/src/App.css`. Add new fields as children of that container rather than giving them a `gap` prop of their own, and the spacing comes for free. The fields are visually distinct blocks with their own small label-to-control spacing (`mb="1"`), so they need noticeably more room between groups than a default Radix gap provides.
 
 **Comboboxes and popups.** Radix Themes has no combobox, and neither `DropdownMenu`
@@ -1900,8 +2082,8 @@ anchored to a `position: relative` wrapper, with
 `onMouseDown={e => e.preventDefault()}` on every option so focus never leaves the
 input (which also means no ref and no document listener). Note
 `.rt-TextFieldRoot` has a **fixed height and does not wrap**, so chips belong
-above the field, not inside it. Radix `Card` sets `contain: paint`, so the Clover
-viewer's `z-index: 99999` is trapped in its own stacking context and a modest
+above the field, not inside it. Radix `Card` sets `contain: paint`, so anything
+the Clover viewer stacks is trapped in its own stacking context and a modest
 `z-index` on the listbox is enough.
 
 > There is no live example in the tree any more. `WorkCollectionsField` was the
@@ -1959,11 +2141,12 @@ free, including the `rem` strings `AssetThumbnails.jsx` emits into inline styles
 That root font-size is written additively (`calc(1rem + …)`) so it preserves the
 user's configured default at the anchor instead of overwriting it.
 
-That root font-size is also the only lever this repo has on the **Clover viewer**,
-whose chrome is ~250 `rem` values and unreachable through its theme API
-(`cloverTheme.js` can only set colours). Do not scale `.viewer-panel` /
-`.viewer-stage` independently of everything else — that grows the frame while
-Clover's own px tokens stay put and makes the mismatch worse.
+That root font-size also scales the **Clover viewer**. Clover's spacing and
+type scales are `rem` custom properties (`--clover-space-*`, `--clover-text-*`),
+so they follow the fluid root with everything else. Do not scale
+`.viewer-panel` / `.viewer-stage` independently of everything else. That grows
+the frame while Clover's `px` values (its borders and other details) stay put,
+which makes the mismatch worse.
 
 Two accepted consequences: below ~1400px the app is smaller than the old fixed
 design (7% at 1280, 14% at 1024), and browser zoom is ~14% less effective, since
@@ -2017,6 +2200,16 @@ esbuild resolving the whole graph catches a missing export or a require cycle, a
 
 ## Commit & Pull Request Guidelines
 Use Conventional Commits (`feat:`, `fix:`, `chore:`, etc.) from the start. Reference related GitHub issues in the PR body. Include manual verification steps (`npm test`, sample render) so reviewers can reproduce. Keep PRs focused; split unrelated work into separate branches.
+
+**Writing a pull request.**
+
+- Keep the title to 50 characters or fewer.
+- Open with one short paragraph. Write no other paragraphs.
+- Group the changes under section headings.
+- Give each change one bullet, short enough not to wrap.
+- Be technical where precision needs it. Name IIIF terms exactly: `label`, `summary`, `requiredStatement`, language map.
+- Otherwise use plain words, chosen on purpose. Write no generic phrases, such as "various improvements".
+- Follow Strunk and White strictly: omit needless words, use the active voice, and prefer the specific to the general.
 
 ## Local Customization & Overrides
 

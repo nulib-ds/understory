@@ -371,6 +371,7 @@ test("the root always exists, may be empty, and carries the count both ways", ()
       id: buildCollectionId(BASE, "campus-maps"),
       itemCount: 12,
       thumbnail: [{id: "https://img/1", type: "Image"}],
+      languages: [],
     },
   ]);
   assert.deepEqual(rootCollectionSummaries(empty), []);

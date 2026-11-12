@@ -2,21 +2,130 @@
 
 import {useCallback, useEffect, useMemo, useState} from "react";
 import NextLink from "next/link";
-import {useParams} from "next/navigation";
-import {Box, Button, Callout, Card, Flex, SegmentedControl, Text} from "@radix-ui/themes";
+import {useParams, useRouter} from "next/navigation";
+import {Box, Button, Callout, Card, Code, Flex, Link, SegmentedControl, Text} from "@radix-ui/themes";
+import {ArrowLeftIcon, InfoCircledIcon} from "@radix-ui/react-icons";
 import CloverViewer from "../components/CloverViewer";
 import SwapStage from "../components/SwapStage";
 import {arrayMove} from "@dnd-kit/sortable";
-import {COLLECTION_API_BASE, MANIFEST_API_BASE, apiFetch, manifestApiUrl} from "../lib/api";
-import {CLOVER_OPTIONS, CLOVER_THEME} from "../cloverTheme";
+import {MANIFEST_API_BASE, apiFetch, manifestApiUrl} from "../lib/api";
+import {CLOVER_OPTIONS} from "../cloverTheme";
 import PageReady from "../components/PageReady";
-import InlineTextEditor from "../components/InlineTextEditor";
 import CanvasList from "../components/work/CanvasList";
 import MetadataPanel from "../components/work/MetadataPanel";
+import LanguageChips from "../components/work/LanguageChips";
 import LayoutPanel from "../components/work/LayoutPanel";
 import LinkingPanel from "../components/work/LinkingPanel";
+import {browserLanguages, manifestHasNone, manifestLanguages} from "../lib/languageMap";
+import {
+  LanguageLanesContext,
+  WorkLanguageContext,
+  useCollectionLanguages,
+  useLanguageLanesState,
+} from "../lib/workLanguage";
+
 
 const IMPORT_STALE_MS = 6 * 60 * 1000;
+
+// A manifest's address is .../manifest/{workId}/manifest.json, in either space.
+function workIdFromManifestId(manifestId) {
+  const match = /\/manifest\/([^/]+)\/manifest\.json$/.exec(manifestId || "");
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
+// The published twin of a working manifest id. Both spaces are path segments
+// under one base, so publishing is a prefix swap (see app/shared/publish.js).
+function publishedManifestUrl(workingId) {
+  return typeof workingId === "string" && workingId.includes("/working/")
+    ? workingId.replace("/working/", "/published/")
+    : null;
+}
+
+// Published means the twin resolves. Documents are anonymously readable through
+// the distribution, so the browser can ask directly. null while unknown.
+function usePublishedUrl(workingId) {
+  const url = publishedManifestUrl(workingId);
+  const [state, setState] = useState({url: null, published: null});
+  useEffect(() => {
+    if (!url) return undefined;
+    let cancelled = false;
+    fetch(url, {method: "HEAD", cache: "no-store"})
+      .then((response) => !cancelled && setState({url, published: response.ok}))
+      .catch(() => !cancelled && setState({url, published: false}));
+    return () => {
+      cancelled = true;
+    };
+  }, [url]);
+  return state.url === url ? {url, published: state.published} : {url, published: null};
+}
+
+// The Share section while the work has no published copy: there is nothing to
+// share until there is. Links to the collection, where publishing happens.
+function UnpublishedNotice({collectionPath}) {
+  return (
+    <Flex>
+      <Callout.Root color="amber" size="1">
+        <Callout.Icon>
+          <InfoCircledIcon />
+        </Callout.Icon>
+        <Callout.Text>
+          This work must be{" "}
+          {collectionPath ? (
+            <Link asChild>
+              <NextLink href={collectionPath} prefetch={false}>
+                published
+              </NextLink>
+            </Link>
+          ) : (
+            "published"
+          )}{" "}
+          before it can be shared.
+        </Callout.Text>
+      </Callout.Root>
+    </Flex>
+  );
+}
+
+// The Share section. Shares the PUBLISHED manifest URL, never the working one:
+// a draft URL pasted into a Canopy config builds a site against content that
+// changes under it. Until the work is published there is nothing to share, and
+// the section says so instead.
+function SharePanel({published, url, collectionPath}) {
+  if (published === null) {
+    return <Text as="p" color="gray">Checking whether this work is published…</Text>;
+  }
+  if (!published) return <UnpublishedNotice collectionPath={collectionPath} />;
+  return (
+    <Flex direction="column" gap="3" align="start">
+      <Text as="p" size="2" color="gray">
+        The published manifest, the address a site reads this work from.
+      </Text>
+      <Code size="2" variant="ghost" className="share-url">
+        {url}
+      </Code>
+      <CopyManifestButton url={url} />
+    </Flex>
+  );
+}
+
+// Copies the published manifest URL.
+function CopyManifestButton({url}) {
+  const [copied, setCopied] = useState(false);
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      window.prompt("Manifest link", url);
+    }
+  };
+  return (
+    <Button size="3" variant="soft" onClick={copy}>
+      {copied ? "Copied" : "Copy Manifest URL"}
+    </Button>
+  );
+}
 
 function WorkDetailPanel({
   manifestDetail,
@@ -48,12 +157,9 @@ function WorkDetailPanel({
   const importInProgress = importStatus?.status === "in-progress" && !isStale;
   const [resumeError, setResumeError] = useState(null);
   const [section, setSection] = useState("assets");
-  // A "Share" menu used to sit beside the section control, copying this work's
-  // WORKING manifest URL to the clipboard. Removed deliberately: its only
-  // purpose was handing a draft URL to someone else, and a draft URL pasted
-  // into a Canopy config builds a site against content that changes under it.
-  // What a downstream site should consume is the published collection, which
-  // PublishPanel shows under "what a downstream site consumes".
+  // Share copies the PUBLISHED manifest URL, never the working one: a draft URL
+  // pasted into a Canopy config builds a site against content that changes
+  // under it. Until the work is published there is nothing to share.
 
   // Clover mutates the manifest object it's given, and this one is the same
   // object the canvas reorder/remove handlers read from and write back to S3.
@@ -62,6 +168,42 @@ function WorkDetailPanel({
     () => (manifestObject ? structuredClone(manifestObject) : null),
     [manifestObject],
   );
+
+  // Which language a single line of text shows in — a canvas still importing —
+  // is decided by the spec's algorithm (lib/languageMap.js) from this list: the
+  // collection's languages in its order, then the browser's. The Metadata and
+  // Assets tabs show every language side by side instead.
+  const collectionLanguages = useCollectionLanguages(workCollection?.slug);
+  const languagePreferences = useMemo(
+    () => [...collectionLanguages, ...browserLanguages()],
+    [collectionLanguages],
+  );
+  // The viewer reads the work in the collection's preferred language; with none
+  // set it is left to Clover, which reads the browser's.
+  const viewerLanguage = collectionLanguages[0];
+  // The viewer's Collection section lists the other works in this work's
+  // collection. Picking one opens that work's page here, rather than Clover
+  // switching the viewer to it: the viewer is given this work as a controlled
+  // `manifestId`, so Clover asks (onManifestChange) instead of moving.
+  const router = useRouter();
+  const openMember = (manifestId) => {
+    const workId = workIdFromManifestId(manifestId);
+    if (!workId || manifestId === manifestObject?.id) return;
+    router.push(`${collectionPath}/work/${encodeURIComponent(workId)}`);
+  };
+  // Whether the work has a published copy, and its URL: null until known. It
+  // decides between the notice above the section control and the copy button
+  // in its row.
+  const {url: publishedUrl, published} = usePublishedUrl(manifestObject?.id);
+  // The language lanes, held here for the whole page: the chips in the section
+  // row turn them on and off, and the Metadata and Assets tabs both draw them,
+  // so the choice holds whichever tab is open.
+  const languagesInUse = useMemo(
+    () => ({used: manifestLanguages(manifestObject), hasNone: manifestHasNone(manifestObject)}),
+    [manifestObject],
+  );
+  const languageLanes = useLanguageLanesState(collectionLanguages, languagesInUse);
+
   // The API resolves this for us (managed partOf entries only), so the client
   // never re-parses partOf and the save response does not need to ship a whole
   // manifest back just to report membership. Memoized for the same reason
@@ -76,42 +218,21 @@ function WorkDetailPanel({
   };
 
   return (
+    <WorkLanguageContext.Provider value={languagePreferences}>
+    <LanguageLanesContext.Provider value={languageLanes}>
     <Flex direction="column" gap="5">
       {manifestDetail && (
-        <Flex direction="column" align="center" pt="8">
-          {/* A breadcrumb, because a work is only ever reached through its
-              collection: the heading names which one and links back to it.
-              That link is the way back; a separate "Back to …" button above
-              it only said the same thing twice.
-
-              A real <h2> via asChild, like PageHeading. This used to pass
-              as="h1" to the editor's Text, which accepts only
-              span/div/p/label and silently rendered a <span> — so the title
-              was never a heading at all.
-
-              The work title is edited here rather than in the Metadata tab —
-              it is the page's own heading, and shares .page-heading with every
-              section heading so the two treatments cannot drift. It carries
-              .page-heading itself, not just by inheritance: the editor's
-              weight="bold" would otherwise pull it back to 700. */}
-          <Text asChild weight="bold">
-            <h2 className="page-heading work-breadcrumb">
-              <NextLink href={collectionPath} className="work-breadcrumb__collection">
-                {collectionLabel}
-              </NextLink>
-              <span className="work-breadcrumb__separator" aria-hidden="true">/</span>
-              <InlineTextEditor
-                as="span"
-                value={manifestDetail.label || ""}
-                onSave={onSaveTitle}
-                placeholder={manifestDetail.identifier}
-                ariaLabel="Save title"
-                textProps={{weight: "bold"}}
-                fieldSize="3"
-                className="page-heading work-title-editable"
-              />
-            </h2>
-          </Text>
+        // The way back to the collection the work is in: a work is only ever
+        // reached through it. A small link, not a heading. The work's own title
+        // is the viewer's heading (.clover-template-document-title in App.css),
+        // in the collection's preferred language, and it is edited in the
+        // Metadata tab's Title section, where every language has a lane.
+        <Flex pt="6">
+          <Link asChild size="2" className="work-back-link">
+            <NextLink href={collectionPath} prefetch={false}>
+              <ArrowLeftIcon aria-hidden /> Back to {collectionLabel}
+            </NextLink>
+          </Link>
         </Flex>
       )}
       {(isFailed || isStale) && (
@@ -157,13 +278,19 @@ function WorkDetailPanel({
           <Flex direction="column" gap="3" className="viewer">
             <SwapStage
               className="viewer-stage"
-              cardsSelector=".clover-viewer button[role=radio] img"
-              contentKey={`${manifestDetail.identifier}::${viewerRevision}`}
+              cardsSelector=".clover-items img"
+              // The language is part of the key: a copy is built once and kept
+              // as it was, so reading the work in another language is a new copy.
+              contentKey={`${manifestDetail.identifier}::${viewerRevision}::${viewerLanguage || ""}`}
               render={() => (
                 <CloverViewer
                   iiifContent={viewerContent}
-                  customTheme={CLOVER_THEME}
-                  options={CLOVER_OPTIONS}
+                  // The page's language choice reaches the viewer too. With none
+                  // chosen it is left to Clover, which reads the browser's.
+                  language={viewerLanguage}
+                  manifestId={manifestObject?.id}
+                  onManifestChange={openMember}
+                  {...CLOVER_OPTIONS}
                 />
               )}
             />
@@ -182,13 +309,27 @@ function WorkDetailPanel({
         )}
       </Card>
       {/* Sits in the gap between the viewer and the panel below it. */}
-      <Flex justify="between" align="center" gap="3" mt="6">
+      <Flex justify="between" align="center" gap="3" wrap="wrap" mt="6">
         <SegmentedControl.Root size="3" value={section} onValueChange={setSection}>
           <SegmentedControl.Item value="assets">Assets</SegmentedControl.Item>
           <SegmentedControl.Item value="metadata">Metadata</SegmentedControl.Item>
           <SegmentedControl.Item value="layout">Layout</SegmentedControl.Item>
           <SegmentedControl.Item value="linking">Linking</SegmentedControl.Item>
+          <SegmentedControl.Item value="share">
+            {/* Flagged while the work has no published copy, which is what
+                the section explains. The flag is a mark; its words are for
+                assistive technology. */}
+            <span className="segment-label">
+              Share
+              {published === false && (
+                <span className="segment-flag" role="img" aria-label="not published" />
+              )}
+            </span>
+          </SegmentedControl.Item>
         </SegmentedControl.Root>
+        {/* Right-aligned: which languages are showing, on every tab, since the
+            choice is the page's, not one tab's. */}
+        {manifestDetail && <LanguageChips />}
       </Flex>
       <Card size="3" className="panel manifest-panel">
         <Box className="panel-body manifest-panel-body">
@@ -214,11 +355,14 @@ function WorkDetailPanel({
           ) : section === "metadata" ? (
             <MetadataPanel
               manifest={manifestDetail.manifest}
+              onSaveTitle={onSaveTitle}
               onSaveSummary={onSaveSummary}
               onSaveMetadata={onSaveMetadata}
             />
           ) : section === "linking" ? (
             <LinkingPanel collection={workCollection} onMove={onMoveWork} />
+          ) : section === "share" ? (
+            <SharePanel published={published} url={publishedUrl} collectionPath={collectionPath} />
           ) : (
             <LayoutPanel
               manifest={manifestDetail.manifest}
@@ -228,6 +372,8 @@ function WorkDetailPanel({
         </Box>
       </Card>
     </Flex>
+    </LanguageLanesContext.Provider>
+    </WorkLanguageContext.Provider>
   );
 }
 
@@ -356,7 +502,8 @@ export default function WorkPage() {
   );
 
   const handleSaveTitle = useCallback(
-    (value) => persistManifestFields({label: {none: [value]}}),
+    // Takes the whole label map, built by the caller from the language it showed.
+    (label) => persistManifestFields({label}),
     [persistManifestFields],
   );
   const handleSaveSummary = useCallback(
@@ -464,12 +611,13 @@ export default function WorkPage() {
   );
 
   const handleRenameCanvas = useCallback(
+    // `label` is the canvas's whole language map, built by the card from the
+    // language it showed, so the canvas's other languages come through intact.
     async (index, label) => {
       if (!manifestDetail?.manifest?.items) return;
-      const trimmed = label.trim();
-      if (!trimmed) return;
+      if (!label) return;
       const items = manifestDetail.manifest.items.map((canvas, idx) =>
-        idx === index ? {...canvas, label: {none: [trimmed]}} : canvas,
+        idx === index ? {...canvas, label} : canvas,
       );
       await persistManifestItems(items);
     },

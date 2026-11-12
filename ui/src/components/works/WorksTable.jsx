@@ -23,6 +23,8 @@ import DeleteWorkDialog from "./DeleteWorkDialog";
 import SyncStateBadge from "./SyncStateBadge";
 import ImportStateBadge from "./ImportStateBadge";
 import {imageRequestUrl} from "../../lib/canvasAssets";
+import {langAttribute} from "../../lib/languageMap";
+import {useLanguageLanes} from "../../lib/workLanguage";
 
 function hideOnError(event) {
   event.currentTarget.style.visibility = "hidden";
@@ -61,6 +63,29 @@ function WorkThumbnail({work}) {
 // is nothing to move or delete yet. Every other row is sortable — or, while a
 // filter hides part of the list, carries an inert handle, so the rows do not
 // shift sideways as soon as someone types.
+// A work's title in each language that is turned on and that it has, in lane
+// order. The code beside each line only when more than one lane is showing:
+// with one, every row would say the same code. A title in no visible language
+// falls back to the one string the list always has.
+function WorkTitle({work}) {
+  const {visible} = useLanguageLanes();
+  const lines = visible
+    .map((code) => [code, (work.labels?.[code] || []).filter(Boolean)[0]])
+    .filter(([, value]) => value);
+  if (lines.length === 0) return work.label || work.identifier;
+  const showCodes = visible.length > 1;
+  return (
+    <span className="work-title-lanes">
+      {lines.map(([code, value]) => (
+        <span key={code} className="work-title-lane">
+          {showCodes && <span className="work-title-lane__code">{code}</span>}
+          <span lang={langAttribute(code)}>{value}</span>
+        </span>
+      ))}
+    </span>
+  );
+}
+
 function WorkRow({work, workPath, canReorder, reorderable, onDelete}) {
   const importing = Boolean(work.importState);
   const openable = !importing || work.importState === "ok" || work.importState === "partial";
@@ -107,7 +132,7 @@ function WorkRow({work, workPath, canReorder, reorderable, onDelete}) {
           {openable ? (
             <Link asChild size="3" weight="bold">
               <NextLink href={workPath(work.identifier)} prefetch={false}>
-                {work.label || work.identifier}
+                <WorkTitle work={work} />
               </NextLink>
             </Link>
           ) : (
