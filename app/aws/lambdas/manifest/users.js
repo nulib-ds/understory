@@ -11,6 +11,7 @@
 const {
   CognitoIdentityProviderClient,
   AdminAddUserToGroupCommand,
+  AdminCreateUserCommand,
   AdminRemoveUserFromGroupCommand,
   CreateGroupCommand,
   ListGroupsCommand,
@@ -157,6 +158,38 @@ function validateDesired(body) {
 
 class UserRequestError extends Error {}
 
+// Deliberately loose: Cognito is the real check, and it says why it refused.
+// This only catches what is plainly not an address before a request is spent.
+const EMAIL_SHAPE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+function validateInvite(body) {
+  const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
+  if (!EMAIL_SHAPE.test(email)) {
+    throw new UserRequestError("email must be an email address");
+  }
+  return {email};
+}
+
+// Creates the user and has Cognito email them a temporary password, which the
+// sign-in screen then asks them to replace (NEW_PASSWORD_STEP in SignIn.jsx).
+// The pool is admin-create-only, so this is the only way into it short of the
+// AWS console or CLI. A new user holds no role and no grant: the admin assigns
+// those on the same screen, exactly as for anyone else.
+async function inviteUser(email) {
+  const result = await cognito.send(
+    new AdminCreateUserCommand({
+      UserPoolId: userPoolId,
+      Username: email,
+      UserAttributes: [
+        {Name: "email", Value: email},
+        {Name: "email_verified", Value: "true"},
+      ],
+      DesiredDeliveryMediums: ["EMAIL"],
+    }),
+  );
+  return result.User;
+}
+
 // A grant group is created on demand. Collections are user-created and dynamic,
 // so they cannot be declared in the template the way the two role groups are.
 async function ensureGroup(groupName, description) {
@@ -216,6 +249,26 @@ async function handleUsersRoute({method, segments, event, principal}) {
     } catch (error) {
       console.error("List users failed", error);
       return jsonResponse(500, {error: "Unable to list users"});
+    }
+  }
+
+  if (segments.length === 1 && method === "POST") {
+    try {
+      const {email} = validateInvite(parseBody(event));
+      const user = await inviteUser(email);
+      return jsonResponse(201, {user: serializeUser(user, [])});
+    } catch (error) {
+      if (error instanceof UserRequestError || error.message === "Invalid JSON payload") {
+        return jsonResponse(400, {error: error.message});
+      }
+      if (error?.name === "UsernameExistsException") {
+        return jsonResponse(409, {error: "A user with that email already exists"});
+      }
+      if (error?.name === "InvalidParameterException") {
+        return jsonResponse(400, {error: error.message});
+      }
+      console.error("Invite user failed", error);
+      return jsonResponse(500, {error: "Unable to invite user"});
     }
   }
 

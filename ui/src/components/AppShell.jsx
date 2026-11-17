@@ -4,13 +4,15 @@ import Link from "next/link";
 import {usePathname} from "next/navigation";
 import {Box, Heading, Link as RadixLink} from "@radix-ui/themes";
 import {ROLE_ADMIN, useSession} from "../lib/session";
+import {useBranding} from "../lib/branding";
+import {renderSnippetHtml} from "../lib/iiifHtml";
 import Wordmark from "./Wordmark";
 
 // The app's top-level sections. Order here is the order on the page.
 //
 // Each carries its own `match` because prefix matching cannot express what the
 // collections tab needs: as a prefix, "/" lights on every path, /users
-// included; as an exact match, it goes dark on /collection/:slug. So each
+// included; as an exact match, it goes dark on /collection. So each
 // section decides for itself.
 //
 // Adding a section means one entry here, one `match`, and one route folder
@@ -19,7 +21,7 @@ const SECTIONS = [
   {
     path: "/",
     label: "Collections",
-    match: (p) => p === "/" || p === "/collections" || p.startsWith("/collection/"),
+    match: (p) => p === "/" || p.startsWith("/collection"),
   },
   // Admin-only. Hiding it is a courtesy, not the control: /users is refused by
   // the API for anyone else, and the page says so if they navigate there.
@@ -61,20 +63,43 @@ function SectionNav() {
 // Every signed-in route renders inside this: the brand bar, the page container,
 // the app wordmark and the session strip are identical across sections, so
 // they live here once instead of in each screen.
+// The institution's mark in the brand bar: its header.html snippet when the
+// instance has one, its name otherwise, and nothing at all with neither.
+function BrandMark() {
+  const {header, institutionName} = useBranding();
+  const snippet = renderSnippetHtml(header);
+  if (snippet) return <div className="brand-mark">{snippet}</div>;
+  if (institutionName) {
+    return (
+      <div className="brand-mark">
+        <span className="brand-mark__name">{institutionName}</span>
+      </div>
+    );
+  }
+  return null;
+}
+
+function SiteFooter() {
+  const {footer} = useBranding();
+  const snippet = renderSnippetHtml(footer);
+  if (!snippet) return null;
+  return (
+    <footer className="site-footer">
+      <div className="site-footer__inner">{snippet}</div>
+    </footer>
+  );
+}
+
 export default function AppShell({children}) {
   const {signOut, username} = useSession();
   return (
     <>
-      {/* The brand bar: a full-bleed purple utility bar, mirroring the one at the top of
-          library.northwestern.edu. Its contents align to the same container
-          width as the page below it. */}
+      {/* The brand bar: a full-bleed utility bar in the accent colour, carrying the
+          institution's mark. Its contents align to the same container width as
+          the page below it. */}
       <header className="brand-bar">
         <div className="brand-bar__inner">
-          <a className="nu-wordmark" href="https://www.northwestern.edu/">
-            {/* The wordmark is a background image, so keep the name available to
-                screen readers — same approach the Northwestern sites use. */}
-            <span className="nu-wordmark-label">Northwestern</span>
-          </a>
+          <BrandMark />
         </div>
       </header>
       <main className="layout">
@@ -115,6 +140,7 @@ export default function AppShell({children}) {
           <Box pt="2">{children}</Box>
         </div>
       </main>
+      <SiteFooter />
     </>
   );
 }

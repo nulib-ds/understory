@@ -2,10 +2,12 @@ import {Theme} from "@radix-ui/themes";
 // Every global stylesheet, imported once, here, in cascade order. Next loads a
 // layout's CSS before the CSS of the pages beneath it, so a sheet imported from
 // a component would land after App.css and reverse the order the app depends
-// on: Radix first, the theme and fonts on top of it, App.css (the fluid scale,
-// the tokens and the overrides) last. Do not import global CSS anywhere else.
+// on: Radix first, the fonts on top of it, App.css (the fluid scale, the tokens
+// and the overrides) last. Do not import global CSS anywhere else.
+//
+// An instance's own branding/theme.css comes after all of these: AuthGate
+// appends it to <head> at run time (lib/branding.js).
 import "@radix-ui/themes/styles.css";
-import "../theme.css";
 import "@fontsource/google-sans/400.css";
 import "@fontsource/google-sans/500.css";
 import "@fontsource/google-sans/600.css";
@@ -29,8 +31,10 @@ import "../components/AssetDropzone.css";
 import "../components/SignIn.css";
 import "../App.css";
 
+// No title here: it names the instance, which only /config.json knows, so
+// AuthGate renders it (React hoists a <title> into <head>). A title here would
+// be re-applied by Next on every navigation, over the instance's.
 export const metadata = {
-  title: "Understory",
   icons: {icon: "/favicon.svg"},
 };
 

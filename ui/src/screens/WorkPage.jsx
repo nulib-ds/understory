@@ -2,7 +2,8 @@
 
 import {useCallback, useEffect, useMemo, useState} from "react";
 import NextLink from "next/link";
-import {useParams, useRouter} from "next/navigation";
+import {useRouter} from "next/navigation";
+import {collectionPath, useRouteParams, workPath} from "../lib/routes";
 import {Box, Button, Callout, Card, Code, Flex, Link, SegmentedControl, Text} from "@radix-ui/themes";
 import {ArrowLeftIcon, InfoCircledIcon} from "@radix-ui/react-icons";
 import CloverViewer from "../components/CloverViewer";
@@ -149,6 +150,7 @@ function WorkDetailPanel({
   canvasSaving,
   canvasActionError,
   disableAddReason,
+  collectionSlug,
   collectionPath,
   collectionLabel,
 }) {
@@ -189,7 +191,7 @@ function WorkDetailPanel({
   const openMember = (manifestId) => {
     const workId = workIdFromManifestId(manifestId);
     if (!workId || manifestId === manifestObject?.id) return;
-    router.push(`${collectionPath}/work/${encodeURIComponent(workId)}`);
+    router.push(workPath(collectionSlug, workId));
   };
   // Whether the work has a published copy, and its URL: null until known. It
   // decides between the notice above the section control and the copy button
@@ -382,14 +384,12 @@ function WorkDetailPanel({
 // of the works list after every save — the list lives on its own route now and
 // refetches when you navigate back to it.
 export default function WorkPage() {
-  const {slug: rawSlug, workId} = useParams();
   // A Move rewrites the address with history.replaceState instead of
-  // navigating (see moveWork), so the route's params keep the slug this page was
-  // reached by. movedTo is the collection the work lives in since.
-  const [movedTo, setMovedTo] = useState(null);
-  const slug = movedTo ?? (rawSlug ? decodeURIComponent(rawSlug) : null);
-  const selectedManifestId = workId ? decodeURIComponent(workId) : null;
-  const collectionPath = `/collection/${encodeURIComponent(slug)}`;
+  // navigating (see moveWork), and Next keeps useSearchParams in step with it,
+  // so the slug read here is always the collection the work is in now.
+  const {slug, workId} = useRouteParams();
+  const selectedManifestId = workId;
+  const collectionHref = collectionPath(slug);
 
   const manifestApiAvailable = Boolean(MANIFEST_API_BASE);
   const [manifestDetail, setManifestDetail] = useState(null);
@@ -546,17 +546,12 @@ export default function WorkPage() {
         prev && prev.identifier === selectedManifestId ? {...prev, collection: next} : prev,
       );
       // The work now lives under a different slug, so the URL it was reached by
-      // is stale. Replace rather than push: the old URL would 404 on Back. And
-      // through history.replaceState rather than the router: navigating to a
-      // new [slug] would remount this page, flashing it and reloading Clover
-      // for a change the viewer cannot see.
+      // is stale. Replace rather than push: the old URL would name the wrong
+      // collection on Back. And through history.replaceState rather than the
+      // router: navigating would remount this page, flashing it and reloading
+      // Clover for a change the viewer cannot see.
       if (next?.slug && next.slug !== slug) {
-        setMovedTo(next.slug);
-        window.history.replaceState(
-          null,
-          "",
-          `/collection/${encodeURIComponent(next.slug)}/work/${encodeURIComponent(selectedManifestId)}`,
-        );
+        window.history.replaceState(null, "", workPath(next.slug, selectedManifestId));
       }
       return next;
     },
@@ -735,7 +730,8 @@ export default function WorkPage() {
         canvasSaving={canvasSaving}
         canvasActionError={canvasActionError}
         disableAddReason={disableAddReason}
-        collectionPath={collectionPath}
+        collectionSlug={slug}
+        collectionPath={collectionHref}
         collectionLabel={collectionLabel}
       />
     </PageReady>

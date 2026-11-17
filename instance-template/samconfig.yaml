@@ -1,0 +1,38 @@
+# This instance's whole configuration. `sam deploy` reads it from this folder,
+# next to understory.yml (the release this instance runs) and branding/.
+#
+# Name every parameter, empty ones included: a parameter left out keeps
+# whatever value the stack was last given, so this file would stop being the
+# whole truth about the stack. Write an empty value as Key="".
+version: 1.0
+default:
+  deploy:
+    parameters:
+      # 27 characters or fewer. It names every bucket, which S3 needs unique
+      # across all of AWS, so make it yours: <institution>-understory.
+      stack_name: acme-understory
+      region: us-east-1
+      template_file: understory.yml
+      resolve_s3: true
+      s3_prefix: acme-understory
+      confirm_changeset: true
+      capabilities:
+        - CAPABILITY_IAM
+        - CAPABILITY_AUTO_EXPAND
+      tags:
+        - Project=understory
+      parameter_overrides:
+        # Invited as the first administrator on the first deploy.
+        - AdminEmail=curator@acme.example
+        - InstitutionName="Acme University Libraries"
+        # A Radix Themes colour name; branding/theme.css can go further.
+        - AccentColor=indigo
+        # Search capacity ceiling, in OCUs: the spend cap. 2, 4, 8 or 16.
+        - SearchMaxOcu=2
+        - SearchIndexPrefix=""
+        # Optional custom domain: iiif-, images- and admin-<ProjectName>.<BaseDomainName>.
+        # Decide before publishing anything: every IIIF id embeds the host.
+        - ProjectName=understory
+        - BaseDomainName=""
+        - CertificateArn=""
+        - HostedZoneId=""

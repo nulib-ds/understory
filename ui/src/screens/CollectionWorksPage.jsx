@@ -2,7 +2,8 @@
 
 import {useCallback, useEffect, useMemo, useRef, useState} from "react";
 import NextLink from "next/link";
-import {useParams, usePathname, useRouter, useSearchParams} from "next/navigation";
+import {usePathname, useRouter, useSearchParams} from "next/navigation";
+import {collectionPath, useRouteParams, workPath as workPathFor} from "../lib/routes";
 import {Box, Button, Callout, Card, Flex, Link, SegmentedControl, Text, TextField} from "@radix-ui/themes";
 import {ArrowLeftIcon, PlusIcon} from "@radix-ui/react-icons";
 import {
@@ -262,7 +263,7 @@ function WorksListPanel({
           {!manifestApiAvailable && (
             <Callout.Root color="red" size="1" mb="3">
               <Callout.Text>
-                Work API URL is not configured. Update NEXT_PUBLIC_MANIFEST_API_URL to point at the deployed endpoint.
+                The API URL is not configured: apiUrl is missing from /config.json.
               </Callout.Text>
             </Callout.Root>
           )}
@@ -315,19 +316,14 @@ function WorksListPanel({
 // The works list route. Still backed by GET /manifests for now — the
 // collection-scoped route replaces that later; this is the landing pad for it.
 export default function CollectionWorksPage() {
-  const {slug: rawSlug} = useParams();
-  const slug = rawSlug ? decodeURIComponent(rawSlug) : null;
+  const {slug} = useRouteParams();
   const router = useRouter();
 
   // Every work now lives under its collection, so a work's URL carries the slug.
-  const workPath = useCallback(
-    (identifier) =>
-      `/collection/${encodeURIComponent(slug)}/work/${encodeURIComponent(identifier)}`,
-    [slug],
-  );
+  const workPath = useCallback((identifier) => workPathFor(slug, identifier), [slug]);
   const selectWork = useCallback(
     (identifier) => {
-      router.push(identifier ? workPath(identifier) : `/collection/${encodeURIComponent(slug)}`);
+      router.push(identifier ? workPath(identifier) : collectionPath(slug));
     },
     [router, slug, workPath],
   );
@@ -386,7 +382,7 @@ export default function CollectionWorksPage() {
     const q = queryRef.current;
     const endpoint = collectionWorksUrl(slug, {q});
     if (!endpoint) {
-      setWorksError("Collection API URL is not configured. Set NEXT_PUBLIC_COLLECTION_API_URL and redeploy.");
+      setWorksError("The API URL is not configured: apiUrl is missing from /config.json.");
       setWorksLoaded(true);
       return;
     }

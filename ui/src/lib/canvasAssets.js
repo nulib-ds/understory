@@ -1,7 +1,11 @@
 // Shared by App.jsx (reorder/remove, manifest fetch/save) and AssetDropzone.jsx
 // (upload + attach) — anything that builds or resolves a canvas from an S3 asset key.
 
-const IIIF_BASE_URL = (process.env.NEXT_PUBLIC_IIIF_BASE_URL || "").replace(/\/$/, "");
+import {getConfig} from "./config";
+
+// Our Image API base, e.g. https://images-…/iiif/3. Read when called, never at
+// module scope: it comes from /config.json, which loads after this module.
+const imageApiBase = () => getConfig().imageApiUrl;
 
 export function slugifyManifestId(value) {
   return (value || "")
@@ -12,9 +16,10 @@ export function slugifyManifestId(value) {
 }
 
 export function buildInfoUrlFromKey(key) {
-  if (!IIIF_BASE_URL || !key) return "";
+  const base = imageApiBase();
+  if (!base || !key) return "";
   const identifier = key.replace(/\.[^./]+$/, "");
-  return `${IIIF_BASE_URL}/${encodeURIComponent(identifier)}/info.json`;
+  return `${base}/${encodeURIComponent(identifier)}/info.json`;
 }
 
 export function assetLabelFromKey(key) {
@@ -22,7 +27,7 @@ export function assetLabelFromKey(key) {
   return basename.replace(/\.[^./]+$/, "");
 }
 
-// Our Image API is 3.0 (NEXT_PUBLIC_IIIF_BASE_URL ends /iiif/3). In 3.0 a request
+// Our Image API is 3.0 (imageApiUrl ends /iiif/3). In 3.0 a request
 // larger than the image is refused unless it carries `^`, so a fixed-size tile
 // — a 64px list thumbnail, a 400px sign-in square — would 400 for any image or
 // poster smaller than the tile. For display that is the wrong trade: filling
@@ -34,11 +39,11 @@ export function assetLabelFromKey(key) {
 // Written `%5E`, not `^`. Browsers encode it themselves, but our server
 // refuses a bare `^` from a client that does not (measured with curl), and
 // these URLs can end up in documents other clients read.
-const OWN_IMAGE_API_IS_V3 = /\/iiif\/3$/.test(IIIF_BASE_URL);
 
 export function imageRequestUrl(serviceId, {region = "full", size}) {
   const id = (serviceId || "").replace(/\/$/, "");
-  const own = OWN_IMAGE_API_IS_V3 && id.startsWith(`${IIIF_BASE_URL}/`);
+  const base = imageApiBase();
+  const own = /\/iiif\/3$/.test(base) && id.startsWith(`${base}/`);
   return `${id}/${region}/${own ? "%5E" : ""}${size}/0/default.jpg`;
 }
 
@@ -117,10 +122,9 @@ export function buildCanvasResource(manifest, imageInfo, label) {
 //
 // An A/V upload lands at av/{workId}/{assetId}.{ext} in the source bucket, and
 // the av-transcode Lambda reports on it in {documents base}/av/{workId}/{assetId}/media.json
-// (app/shared/av.js). That base is IIIF_BASE_URL on the backend, which the UI
-// has no variable for — NEXT_PUBLIC_IIIF_BASE_URL is the Image API — but every
-// manifest id already starts with it, so it is read from there rather than
-// adding a setting that could drift.
+// (app/shared/av.js). That base is IIIF_BASE_URL on the backend and
+// documentsUrl in /config.json, but it is read from the manifest's own id:
+// that is the base the work was written under, whatever the config says now.
 
 export function mediaKindFromFile(file) {
   const type = file?.type || "";

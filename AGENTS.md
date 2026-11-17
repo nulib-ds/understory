@@ -3,7 +3,9 @@
 ## Project Overview
 This project is the admin backend for one or more downstream IIIF sites (Canopy or similar), deployed entirely on AWS. **A collection is the unit of everything**: each downstream site is driven by one curatorial collection, consuming that collection's IIIF documents and its own search index.
 
-A SAM application (`app/aws/template.yml`) provisions a source S3 bucket and an output S3 bucket (`*-iiif`). An S3-triggered Lambda (`app/aws/lambdas/iiif-image/`) converts uploaded source images to pyramid TIFFs (Level 2) for use by `samvera/serverless-iiif` (a nested SAR application). serverless-iiif downloads the whole TIFF for every tile, so the TIFFs are JPEG-compressed (quality under 90; the Lambda's comments say why) and carry `width`/`height`/`pages` S3 metadata so it never has to probe them. `app/aws/lambdas/manifest/` exposes the whole CRUD and query API behind API Gateway + Cognito. `app/aws/lambdas/public-search/` is the one unauthenticated route, the search a consuming site calls, reachable only through `IIIFDistribution` (see **Public search route**). `app/aws/lambdas/publish/` is the task worker for the publish state machine. A Next.js frontend (`ui/`) talks to them, hosted on Amplify Hosting's managed server.
+A SAM application (`app/aws/template.yml`) provisions a source S3 bucket and an output S3 bucket (`*-iiif`). An S3-triggered Lambda (`app/aws/lambdas/iiif-image/`) converts uploaded source images to pyramid TIFFs (Level 2) for use by `samvera/serverless-iiif` (a nested SAR application). serverless-iiif downloads the whole TIFF for every tile, so the TIFFs are JPEG-compressed (quality under 90; the Lambda's comments say why) and carry `width`/`height`/`pages` S3 metadata so it never has to probe them. `app/aws/lambdas/manifest/` exposes the whole CRUD and query API behind API Gateway + Cognito. `app/aws/lambdas/public-search/` is the one unauthenticated route, the search a consuming site calls, reachable only through `IIIFDistribution` (see **Public search route**). `app/aws/lambdas/publish/` is the task worker for the publish state machine. A Next.js frontend (`ui/`) talks to them: a static export, served by the stack itself through `AdminDistribution` (see **The admin UI**).
+
+Understory is released as versioned, packaged templates, and each instance (NU's production, or another institution's) runs one from an instance repo of configuration and branding (see **Deploying** and `RELEASING.md`).
 
 ### Priorities
 
@@ -32,13 +34,14 @@ Because each space describes its own URLs, **publishing is a URL-rewriting trans
 
 ## CDN
 
-Two CloudFront distributions, both created in every stack including dev. Only
+Three CloudFront distributions, all created in every stack including dev. Only
 the aliases, the certificate and the Route53 records are conditional
 (`BaseDomainName`/`CertificateArn`/`HostedZoneId`), so a dev stack exercises the
 same origins, cache behaviours and CORS headers as staging — it just reaches
-them at a generated `*.cloudfront.net` name. Both are stack outputs
-(`IIIFEndpoint`, `ImagesEndpoint`), because those names are opaque and there is
-otherwise no way to find them.
+them at a generated `*.cloudfront.net` name. All three are stack outputs
+(`IIIFEndpoint`, `ImagesEndpoint`, `AdminUrl`), because those names are opaque
+and there is otherwise no way to find them. The third, `AdminDistribution`,
+serves the admin UI (see **The admin UI** under Deploying).
 
 `ImagesDistribution` fronts serverless-iiif, which since v5+ ships no
 distribution of its own. The cache key is the **path only** — the IIIF Image API
@@ -46,23 +49,29 @@ encodes the whole request there, so anything else would just fragment the cache
 — and Accept-Encoding is deliberately excluded because tiles are already
 compressed.
 
-> **`ForceHost` is why a dev stack's images bypass the CDN.** Without it,
-> `info.json` advertises the Lambda Function URL as its `@id` and OpenSeadragon
-> derives every tile URL from that, walking straight past the distribution. It
-> cannot be `!GetAtt ImagesDistribution.DomainName`: that distribution takes the
-> SAR app's `FunctionDomain` as its origin, so pointing back at it is a
-> CloudFormation cycle. Using the custom hostname — a parameter, not an
-> attribute — breaks the cycle, which means a stack with no custom domain has
-> nothing to derive from. The `ImageApiForceHost` parameter exists for exactly
-> that case: deploy once, copy the `ImagesDistributionHost` output (a bare host,
-> no scheme and no path), set the parameter, deploy again. Setting
-> `BaseDomainName` to a `cloudfront.net` name is NOT the workaround — it also
-> needs a certificate, and it would rewrite `IIIF_BASE_URL` into a hostname that
-> does not exist.
+> **`info.json` must name the distribution, or images bypass the CDN.**
+> OpenSeadragon derives every tile URL from `info.json`'s `@id`, and
+> serverless-iiif builds that from `ForceHost`, else the `X-Forwarded-Host`
+> header, else `Host`, which behind CloudFront is the Function URL's own.
+> `ForceHost` cannot be `!GetAtt ImagesDistribution.DomainName`: that
+> distribution takes the SAR app's `FunctionDomain` as its origin, so pointing
+> back at it is a CloudFormation cycle. So:
+> - **With a custom domain**, `ForceHost` is the custom hostname (a parameter,
+>   so no cycle), and the distribution's other, `*.cloudfront.net` name cannot
+>   leak into a cached `info.json`.
+> - **Without one**, `ImagesHostFunction` (a CloudFront Function) copies the
+>   viewer's `Host` into `X-Forwarded-Host`, and the behaviour's origin request
+>   policy, the managed `AllViewerExceptHostHeader`, forwards it. The cache key
+>   stays the path.
+>
+> This replaced the `ImageApiForceHost` parameter, which made a stack with no
+> custom domain deploy twice to learn its own hostname. Checked on
+> `mat-dev-understory`, 2026-11-17: with `forceHost` unset on the function, an
+> uncached `info.json` advertised the distribution's host.
 
 ### Image API version: 3
 
-`IMAGE_API_BASE_URL` (and the UI's `NEXT_PUBLIC_IIIF_BASE_URL`) end in **`/iiif/3`**.
+`IMAGE_API_BASE_URL` (and the UI's `imageApiUrl`, in `/config.json`) end in **`/iiif/3`**.
 serverless-iiif serves both `/iiif/2` and `/iiif/3` from the same TIFFs; the
 path chosen is the version every service id, `info.json` and request we write
 carries. It was `/iiif/2` until 2026-09-30, apparently an early default, and
@@ -119,43 +128,23 @@ covered by the one `*.<base>` certificate:
 |---|---|---|
 | `iiif-<project>.<base>` | the IIIF bucket (documents) | `IIIFDistribution` + `IIIFDnsRecord` |
 | `images-<project>.<base>` | serverless-iiif (the Image API) | `ImagesDistribution` + `ImagesDnsRecord` |
-| `admin-<project>.<base>` | the Amplify-hosted admin UI | `AmplifyDomain` |
+| `admin-<project>.<base>` | the admin UI (`UiBucket`) | `AdminDistribution` + `AdminDnsRecord` |
 
-`AmplifyDomain` is the odd one out in two ways. It has **no Route53 RecordSet**:
-Amplify owns the CNAME for a domain attached to it and writes that record itself
-when the hosted zone is in the same account, and no CloudFormation attribute
-exposes the target it points at, so a hand-written record would be a guess
-Amplify then fights over. `HostedZoneId` is therefore not consulted for it — with
-the zone managed elsewhere, take the record from Hosting > Custom domains in the
-console. And it maps the branch to the **root** of `admin-<project>.<base>`
-(`Prefix: ""`) rather than treating `admin-<project>` as a prefix under the base,
-following the same shape as `nulib/manifest-edit-backend`.
+All three are plain CloudFront aliases with Route53 alias records, written only
+when `HostedZoneId` is set (`ManageDns`). With the zone managed elsewhere, point
+each name at its distribution's `*.cloudfront.net` domain by hand.
 
-It sets `CertificateType: CUSTOM` against the existing `CertificateArn` instead
-of letting Amplify provision its own. An `AMPLIFY_MANAGED` certificate would sit
-in `PENDING_VERIFICATION` waiting on a validation record — a DNS round trip this
-stack already paid for when the wildcard was issued. That also rules out
-auto-subdomain: a per-branch name would be `<branch>.admin-<project>.<base>`, two
-labels below the base, which `*.<base>` does not cover.
+**Choose the domain before publishing anything.** Every IIIF id embeds its host,
+and the app only recognizes ids under its own `IIIF_BASE_URL`, so adding or
+changing a domain later changes every published URL. A stack without one keeps
+its generated names for the life of its distributions, and a stack recreated
+from scratch gets new ones.
 
-> **Seen working on staging and production** (production on 2026-10-07: the
-> association went `AVAILABLE` with the `CUSTOM` certificate, and Amplify wrote
-> `admin-understory`'s record into the zone itself). CloudFormation waits
-> for the domain association to go `AVAILABLE`, and a domain whose CNAME never
-> appears sits in `AWAITING_APP_CNAME` until the stack times out. In practice
-> setting `HostedZoneId` at all means the zone is in this account — a
-> `Route53::RecordSet` could not be created in it otherwise — so Amplify will
-> write the record itself and this never comes up. If the zone is ever moved out
-> of the deploy account, the record Amplify wants shows up in the console as soon
-> as the association is created, long before CloudFormation gives up: add it
-> there while the deploy waits.
-
-The generated `<branch>.<appid>.amplifyapp.com` name keeps working alongside the
-custom one and is its own output (`AmplifyDefaultDomain`), because attaching a
-domain takes several minutes and the DNS half may not be this stack's to do.
-`UIEndpoint` is the custom hostname once one is configured, the generated one
-otherwise. Neither output, nor `AmplifyDomain`, exists on a stack without
-`GitHubBranch` (see **Deploying**).
+> **Until 2026-11, the admin hostname was an `AWS::Amplify::Domain`.** Amplify
+> keeps that name on a CloudFront distribution of its own, and CloudFront
+> refuses an alias another distribution holds, so a stack that had one must
+> delete its Amplify app before `AdminDistribution` can take the name (see
+> **Moving NU's stacks**).
 
 The key and id builders take a `space` that defaults to `working` (`app/shared/space.js`), so every caller but the publish pipeline is correct without passing one. An unknown space throws rather than building a key nobody serves.
 
@@ -168,16 +157,18 @@ A work belongs to **exactly one** collection, recorded in its `partOf`. There is
 Routes are folders under `ui/src/app/` (the Next.js App Router). Everything
 signed-in sits in the `(app)` route group, whose layout wraps every page in
 `AuthGate` and `AppShell` (`ui/src/components/AppShell.jsx`). `AppShell` owns the
-purple Northwestern bar, the page container, and the band carrying the
-"Understory" wordmark and the section switcher. Screens render as its `children`
+brand bar, the page container, the band carrying the "Understory" wordmark and
+the section switcher, and the instance's footer. Screens render as its `children`
 and must not draw chrome of their own.
 
 Each route's `page.jsx` is a thin wrapper around a screen in `ui/src/screens/`.
 The folder is `screens/`, not `pages/`: Next reserves `src/pages/` for its older
 Pages Router and tries to serve every file in it as a route.
 
-The purple bar carries the Northwestern mark on the left and the session strip
-on the right — `Signed in as <email> | Sign out`, with sign-out as an underlined
+The brand bar, in the accent colour (`--brand-bar-bg`), carries the
+institution's mark on the left: the instance's `branding/header.html`, or its
+`InstitutionName` when it has none. The session strip sits in the wordmark band
+— `Signed in as <email> | Sign out`, with sign-out as an underlined
 link rather than a button, because it is site chrome and should not compete with
 the page's own controls. The email comes from the ID token's `email` claim
 (`AuthGate`): the pool sets `UsernameAttributes: [email]`, so Cognito's own
@@ -187,13 +178,21 @@ reload on a cached session.
 | Route | Component | State |
 |---|---|---|
 | `/` | `CollectionsPage` (`ui/src/screens/`) | Built — the home page |
-| `/collections` | redirect to `/` (`ui/next.config.mjs`) | for older links |
-| `/collection/[slug]` | `CollectionWorksPage` | Built — list served from the collection documents, filter, publish panel, languages |
-| `/collection/[slug]/work/[workId]` | `WorkPage` | Built |
-| `/collection/[slug]/search` | `CollectionSearchPage` | Built — **unlinked**; queries the live search index through the API |
-| `/users` | `UsersPage` | Built — admin only |
+| `/collection?slug=…` | `CollectionWorksPage` | Built — list served from the collection documents, filter, publish panel, languages |
+| `/collection/work?slug=…&id=…` | `WorkPage` | Built |
+| `/collection/search?slug=…` | `CollectionSearchPage` | Built — **unlinked**; queries the live search index through the API |
+| `/users` | `UsersPage` | Built — admin only, with Invite |
 
 Anything else lands on `/` (`ui/src/app/not-found.jsx`).
+
+**A collection's slug and a work's id are query parameters, not path
+segments.** The UI is a static export, and a static export serves only the
+paths it built: `/collection/[slug]` would need every slug at build time, and
+slugs are made at run time. Every address is built in `ui/src/lib/routes.js`
+(`collectionPath`, `workPath`, `useRouteParams`), and each page that reads
+them is wrapped in `<Suspense>`, which a static export requires of
+`useSearchParams`. The older path-shaped links, and `/collections`, redirect at
+the edge (`AdminRouterFunction`).
 
 There is deliberately **no all-works view**: a work belongs to exactly one
 collection, so the collections list is where you start and a work is always
@@ -206,7 +205,7 @@ reached through its collection.
   (`ui/src/components/collections/`). A collection's name links through to its
   works. Renaming is impossible by construction — the slug is the identity. See
   the Collections section below.
-- **A collection's works** (`/collection/:slug`) — create/manage the IIIF
+- **A collection's works** (`/collection?slug=…`) — create/manage the IIIF
   Presentation manifests in one collection (the `working/presentation/manifest/` prefix
   in the IIIF bucket). Laid out like a work's page:
   - a small "← Back to Collections" link;
@@ -227,7 +226,7 @@ reached through its collection.
   staying mounted keeps a running publish polling, so its finish still refreshes
   the list with the panel shut. The page header's unpublished count is the
   at-a-glance summary, and comes from the works list, not the panel.
-- **A work** (`/collection/:slug/work/:workId`) — edit one work and preview it
+- **A work** (`/collection/work?slug=…&id=…`) — edit one work and preview it
   via Clover Viewer. Its sections are Assets, Metadata, Layout, Linking and
   Share. Share holds the published manifest URL and its copy button. While the
   work has no published copy, Share says it must be published first and its tab
@@ -252,7 +251,7 @@ a link's height.
 They are `next/link` `Link`s, and each `SECTIONS` entry carries its own
 `match(pathname)`. Prefix matching cannot express what the collections tab
 needs: as a prefix, `/` lights on every path, `/users` included; as an exact
-match, it goes dark on `/collection/[slug]`. Because the matching is ours,
+match, it goes dark on `/collection`. Because the matching is ours,
 `aria-current` is set by hand from the same `match`, so the tab that looks
 active is the one announced as current.
 
@@ -281,19 +280,28 @@ the body does, and a spinner appears only past 400ms.
 - Images are deliberately not waited on: thumbnails and Clover tiles fill in
   after the page appears, inside fixed-size boxes, so nothing shifts.
 
-`ui/src/lib/api.js` holds the Amplify configuration, the deployed endpoint bases,
-`apiFetch` and `manifestApiUrl`. Importing it is what configures Amplify, so
-every `apiFetch` caller is configured by construction. `AuthGate` imports it for
-that reason alone: it is the first thing on every route to call Amplify, so no
-route depends on a screen having imported `api.js` first.
+`ui/src/lib/api.js` holds the Amplify configuration, the endpoint bases,
+`apiFetch` and `manifestApiUrl`. The bases come from `/config.json`, so they
+are set at run time: `initializeApi()` loads the config, assigns the `let`
+exports (`MANIFEST_API_BASE` and its siblings) and configures Amplify.
+`AuthGate` awaits it before rendering anything, so every screen reads the
+assigned values. An ES module export is a live binding, so this holds for any
+importer that reads a base when it runs, never at its own module scope.
+`getConfig()` (`ui/src/lib/config.js`) serves everything else the same way:
+the buckets, the Image API base, the branding.
 
 ### Next.js specifics
 
-- **Every screen is a client component.** Tokens live in the browser, so
-  `AuthGate` holds each page until it knows the session, and the server renders
-  only its spinner. `/` and `/users` are prerendered at build; the two slug
-  routes render on demand, which is why the app needs a server at all (see
-  **Amplify deployment**).
+- **A static export, with no server** (`output: "export"` in
+  `ui/next.config.mjs`). Every screen is a client component: tokens live in the
+  browser, so `AuthGate` holds each page until it knows the session, and the
+  build prerenders only its spinner. No feature needs a server: there are no
+  `redirects()` (the edge does them) and no dynamic path segments (see the
+  routes above). `npm run build` writes `out/`, which `scripts/build.sh` ships
+  as `UiLayer`.
+- **The page title is the instance's**, rendered by `AuthGate` as a `<title>`
+  (`Understory · <InstitutionName>`). The root layout sets none, because Next
+  re-applies a metadata title on every navigation, over the instance's.
 - **Clover only through `ui/src/components/CloverViewer.jsx`** (the Viewer) and
   `CloverSlider.jsx` (a collection's thumbnail strip), which load it with
   `next/dynamic` and `ssr: false`. The package is `@nulib/clover`, pinned at
@@ -318,16 +326,16 @@ route depends on a screen having imported `api.js` first.
   - Its colours come from `--clover-color-*` custom properties, set from the
     Radix theme in `App.css`'s token block, not from a theme object.
   - The work page passes its Language choice to the Viewer's `language` prop.
-- **A URL change that should not cost a server request goes through
+- **A URL change that should not re-render the route goes through
   `window.history.replaceState`**, which Next keeps in step with `usePathname`
-  and `useSearchParams`. Router navigation fetches the route from the server. Two
-  places rely on it: the `?q=` filter, which would otherwise make a request per
-  keystroke, and a Move, where navigating to the new `[slug]` would remount
-  `WorkPage` and reload Clover. `WorkPage` keeps the moved slug in state,
-  because the route's params still hold the old one.
-- **`prefetch={false}` on list links.** Next prefetches every link on screen, and
-  on Amplify compute each prefetch is a server request: two links on each of 50
-  rows in the works table.
+  and `useSearchParams`. Router navigation fetches the route's payload and
+  remounts the page. Two places rely on it: the `?q=` filter, which would
+  otherwise do that per keystroke, and a Move, where navigating to the new
+  slug would remount `WorkPage` and reload Clover. The slug is read from
+  `useSearchParams`, so it follows the replaced URL by itself.
+- **`prefetch={false}` on list links.** Next prefetches every link on screen:
+  two links on each of 50 rows in the works table, each a request to the CDN
+  for a page nobody may open.
 
 `AssetDropzone` also takes audio and video, which go to the source bucket's
 `av/` prefix instead — see **Audio and video** below.
@@ -646,8 +654,10 @@ the published member is still the hash of the working bytes.
 ```
 app/
   aws/
-    template.yml          # SAM template — all infra (S3, Cognito, API Gateway, Lambdas, Amplify Hosting)
-    deploy-role.yml       # the role the deploy workflow assumes; its own stack, deployed by hand per account
+    template.yml          # SAM template — all infra (S3, Cognito, API Gateway, Lambdas, CloudFront, the admin UI)
+    deploy-role.yml       # the role this repo's workflows assume; its own stack, deployed by hand per account
+    release-bucket.yml    # one region's release bucket; its own stack, deployed by hand (RELEASING.md)
+    branding/             # the product's default branding: none (an instance brings its own)
     lambdas/
       iiif-image/          # Lambda: converts source images to pyramid TIFFs (Level 2)
       manifest/            # Lambda: the whole API — works, collections, users, publish routes
@@ -659,6 +669,7 @@ app/
       publish/             # Lambda: PublishStateMachine's task worker
       import/              # Lambda: ImportStateMachine's task worker
       av-transcode/        # Lambda: submits MediaConvert jobs, records their outcome
+      instance-setup/      # Lambda: the InstanceSetup custom resource (UI, branding, config.json, first admin)
   shared/                  # SDK-free unless noted; see Testing Guidelines
     space.js               # working/published spaces and their key + URL prefixes
     collection.js          # IIIF Collection documents, slugs, partOf, reconciliation
@@ -676,27 +687,37 @@ app/
     manifest.js            # manifest keys/templates/listing — loads the SDK
     opensearch.js          # signed HTTP to the domain — loads the SDK
     assetCopy.js           # copy one canvas's image onto our Image API — loads the SDK
-ui/                        # Next.js frontend — talks to the deployed AWS stack
+    instanceSetup.js       # what InstanceSetup writes to the UI bucket, and how
+ui/                        # Next.js frontend, a static export (out/)
   src/app/                 #   routes: one folder per route, layouts, not-found
   src/screens/             #   the screen each route renders
+  src/lib/config.js        #   /config.json, the instance's settings, read at run time
+  src/lib/branding.js      #   the branding slots
+  src/lib/routes.js        #   every address that names a collection or a work
+  scripts/config.mjs       #   npm run config: point the dev server at a deployed stack
   next.config.mjs
-  .env.local               # Your personal env config (gitignored — copy from .env.local.example)
-  .env.local.example
-amplify.yml                # the one build spec for the hosted UI
+instance-template/         # an instance repo's starting point (to be nulib-ds/understory-instance)
+scripts/
+  build.sh                 # the UI's export into ui/.layer/, then sam build --use-container
+  release.py               # publish a built Understory as a release (RELEASING.md)
 .github/workflows/
-  deploy.yml               # deploys staging/production on push to their branch (see Deploying)
+  deploy.yml               # deploys staging-understory on push to staging (see Deploying)
+  release.yml              # publishes a release on push to main
+RELEASING.md               # what a release is, semver rules, the contract
+CHANGELOG.md               # one section per release, its GitHub Release notes
 samconfig.yaml.example     # copy to samconfig.<you>.yaml for your dev stack (see Deploying)
-samconfig.staging.yaml     # symlinks into the private config repo; these and yours are gitignored
-samconfig.production.yaml
+samconfig.staging.yaml     # staging-understory's config, tracked (no account identifiers in it); yours is gitignored
 ```
 
 > Note: `app/storage/`, if present, is a vestige of an earlier approach and is not used by any current Lambda.
 
 ## Build, Test, and Development Commands
 - `npm install` — install root dependencies; run inside `ui/` and any Lambda subdirectory separately.
-- `npm test` — placeholder; replace with your actual test runner as coverage is added.
-- `cd app/aws && sam build --use-container && sam deploy --config-file ../../samconfig.<you>.yaml` — build and deploy your personal dev stack, or a shared one by its own config (see **Deploying**). Docker must be running; `--use-container` is required so SAM installs native dependencies (e.g. sharp) inside a Linux arm64 container matching the Lambda runtime.
+- `npm test` — every pure test under `app/**/__tests__/`, with Node's runner.
+- `scripts/build.sh` — everything a deploy needs, from source: the admin UI's static export, copied to `ui/.layer/understory-ui/` where `UiLayer` expects it, then `sam build --use-container`. Docker must be running; `--use-container` is required so SAM installs native dependencies (e.g. sharp) inside a Linux arm64 container matching the Lambda runtime.
+- `cd app/aws && sam deploy --config-file ../../samconfig.<you>.yaml` — deploy your personal dev stack after `scripts/build.sh` (see **Deploying**).
 - `cd app/aws && sam sync --watch --config-file ../../samconfig.<you>.yaml` — fast iterative redeploys of Lambda code changes to your personal stack (see Local Development).
+- `scripts/release.py` — publish a built Understory as a release (see `RELEASING.md`).
 
 > **Never run a bare `sam build` as a substitute when Docker is down.** It builds *every*
 > function, and `iiif-image` bundles `sharp`'s platform-specific native binary. Off a Mac
@@ -707,39 +728,39 @@ samconfig.production.yaml
 > appears. Start Docker and rebuild with `--use-container` instead. To confirm a build is
 > sound: `ls app/aws/.aws-sam/build/IIIFImageFunction/node_modules/@img/` should list
 > `sharp-linux-arm64` and no `darwin` entries.
-- `cd ui && npm run dev` — start the Next.js dev server (port 3000) for the frontend, pointed at your personal stack's endpoints via `ui/.env.local`. `npm run build` is the production build Amplify runs.
+- `cd ui && npm run dev` — start the Next.js dev server (port 3000) for the frontend, pointed at a deployed stack by `npm run config -- <stack>` (see Local Development). `npm run build` is the static export `scripts/build.sh` ships.
 
 ## Deploying
 
-Every stack is deployed with `sam deploy`, from one YAML config per stack,
-always named with `--config-file`. A dev stack is deployed by hand. A shared
-stack is deployed by `.github/workflows/deploy.yml` on every push to its branch
-(see **Deploying from GitHub Actions**). The configs are all gitignored:
+There are three kinds of stack, and two ways to deploy one:
 
-| Config | Stack | Kept |
-|---|---|---|
-| `samconfig.<you>.yaml` | `<you>-dev-understory` | on your machine; start from `samconfig.yaml.example` |
-| `samconfig.staging.yaml` | `staging-understory` | `understory/` in the team's private `nulib/tfvars` repo, symlinked in to deploy by hand |
-| `samconfig.production.yaml` | `production-understory` | likewise |
+| Stack | Runs | Deployed by | Config |
+|---|---|---|---|
+| `<you>-dev-understory` | your working tree | you: `scripts/build.sh`, then `sam deploy` | `samconfig.<you>.yaml`, on your machine; start from `samconfig.yaml.example` |
+| `staging-understory` | the `staging` branch | `.github/workflows/deploy.yml`, on every push to `staging` | `samconfig.staging.yaml`, tracked at the repo root |
+| An instance: `production-understory`, or another institution's | a published release | its own instance repo: `scripts/upgrade`, then `sam deploy` | `samconfig.yaml` in that repo |
+
+Branches flow **feature branch → `staging` → `main`**. Pull requests from a
+feature branch target `staging`, and merging one deploys it to staging.
+Merging `staging` into `main` publishes a release (`.github/workflows/release.yml`,
+`RELEASING.md`) and deploys nothing. Only dev and staging stacks run
+unreleased code. Every instance, NU's production included, runs exactly the
+release named by the `understory.yml` in its repo.
+
+A stack's UI and backend always move together: the UI is part of the stack
+(see **The admin UI**), so one `sam deploy` ships both, and a deploy that
+rolls back rolls the UI back too.
+
+### From source: dev and staging
 
 ```
+scripts/build.sh
 cd app/aws
-sam build --use-container
 sam deploy --config-file ../../samconfig.<you>.yaml
 ```
 
-Branches flow **feature branch → `staging` → `main`**, and each shared stack
-follows its own: `staging-understory` builds the `staging` branch,
-`production-understory` builds `main`. Pull requests from a feature branch
-target `staging`, and merging one is what deploys it. Deploy a shared stack by
-hand only to create it the first time, and then from a clean checkout of its
-branch, so that what runs is what is merged.
-
-On a shared stack the workflow deploys the backend first and then builds the
-UI from the same commit. On a dev stack the two do not move together: Amplify
-rebuilds the UI on every push to the branch, but the stack changes only when
-you run `sam deploy`. When a UI change there needs a backend change, deploy the
-stack before pushing.
+Deploy staging by hand only to create it the first time, and then from a clean
+checkout of `staging`, so that what runs is what is merged.
 
 A relative `--config-file` resolves against the template's directory
 (`app/aws`), whatever directory you run from and whether or not a build has run,
@@ -778,12 +799,12 @@ What each kind of config looks like:
         tags:
           - Project=understory
         parameter_overrides:
-          - GitHubBranch=staging
-          - GitHubOAuthToken=<token>
-          - UIAutoBuild=false
+          - AdminEmail=""
+          - InstitutionName="Northwestern University Libraries"
+          - AccentColor=purple
           - BaseDomainName=<base>
-          - CertificateArn=arn:aws:acm:us-east-1:<account>:certificate/<id>
-          - HostedZoneId=<zone id>
+          # CertificateArn and HostedZoneId are left out on purpose: see
+          # "No tracked config names an AWS account" below.
   ```
 
 Things that will bite:
@@ -791,17 +812,26 @@ Things that will bite:
 - **There is no shared base file.** SAM reads exactly one config per command
   and files do not inherit. A template `Default` does not fill that gap after
   the first deploy: it reaches a stack only when the stack is created (see the
-  point about deleted lines below). So changing `ServerlessIiifVersion`'s
-  default upgrades new stacks only. A value every stack must change together
-  is either named in each config or should not be a parameter at all.
+  point about deleted lines below). A value every stack must change together
+  is either named in each config or should not be a parameter at all, which is
+  why serverless-iiif's version is a literal in the template: a release pins it.
 - **Keep no `samconfig.toml` or `samconfig.yaml` in `app/aws`.** Without
   `--config-file`, SAM falls back to those two there, the TOML winning if both exist.
   With neither present, a forgotten flag fails for want of a stack name rather
   than deploying whatever stack the fallback names. Both stay in `.gitignore`,
   because `sam deploy --guided` with no config creates `samconfig.toml` and
-  writes the token into it.
-- **Never `sam deploy --guided` against a symlinked config.** It writes its
-  answers back into the file, which is the config repo's checkout, reformatted.
+  writes its answers into it. (`instance-template/samconfig.yaml` is the one
+  exception: an instance repo commits its config.)
+- **Never `sam deploy --guided` against a tracked config.** It writes its
+  answers back into the file, reformatted.
+- **No tracked config names an AWS account.** Nothing in them is a credential,
+  but account identifiers stay out of this public repo: `samconfig.staging.yaml`
+  leaves out `CertificateArn` (its ARN carries the account id) and
+  `HostedZoneId`, and the stack keeps the values it was created with (see the
+  next point). Changing one means a hand deploy whose `--parameter-overrides`
+  names every parameter, because a command-line override replaces the file's
+  list instead of adding to it. A real secret, if a parameter ever needs one,
+  comes from a GitHub secret, never a file.
 - **Deleting a line from `parameter_overrides` changes nothing on an existing
   stack.** For every parameter the config does not name, `sam deploy` asks
   CloudFormation for `UsePreviousValue`, so the stack keeps whatever it was last
@@ -809,31 +839,133 @@ Things that will bite:
   value, write it empty, which is `Key=""` (SAM refuses a bare `Key=`). So name
   every parameter a stack uses, empty ones included, and the config is the
   whole truth about the stack.
+- **A config may name only parameters the template declares.** CloudFormation
+  refuses an override for any other, so removing a parameter from the template
+  breaks every config that still names it. That is why removing one is a major
+  release (`RELEASING.md`).
+
+### From a release: instances
+
+> **Every instance's code comes from one place: the release buckets,
+> `understory-releases-<region>`, in NU's staging account (stack
+> `understory-releases`, `app/aws/release-bucket.yml`).** Instances read them
+> on every create, update and rollback, so nothing in them is ever deleted or
+> overwritten, and there is no second copy anywhere. Read "The release
+> buckets" in `RELEASING.md` before changing anything about them.
+
+An instance is a stack plus a repo of its own, started from
+`instance-template/` (to become its own template repo,
+`nulib-ds/understory-instance`). The repo holds no source code:
+
+| File | What it is |
+|---|---|
+| `samconfig.yaml` | The stack's name, region and every parameter. Committed: it is the instance. |
+| `understory.yml` | The packaged template of one release, copied in by `scripts/upgrade <version>` and checked against its published checksum by `scripts/verify` before every deploy. Never edited. |
+| `branding/` | The instance's look (see **The admin UI**). |
+| `.github/workflows/deploy.yml`, `github-deploy-role.yml` | Optional: deploy on every push to `main`, through an OIDC role in the instance's account. |
+
+`sam deploy` in that folder is the whole deploy. Nothing is built, so it needs
+the SAM CLI and AWS credentials, and no Docker, Node or GitHub token. Every
+function's code in `understory.yml` is already an S3 object in the release
+bucket, which Lambda copies into each function as CloudFormation creates or
+updates it; a running instance never reads the bucket. The one local path left is `BrandingLayer`'s `ContentUri: branding/`,
+which `sam deploy` zips and uploads itself, so an instance's branding ships
+through CloudFormation like any other change: in the change set, and rolled
+back with it.
+
+An upgrade is a pull request that replaces `understory.yml`, so its diff is
+exactly the infrastructure that will change. A wrapper template nesting the
+release was considered and rejected: a nested stack gets a generated name with
+uppercase letters and a random suffix, and every resource here is named after
+its stack, which S3 and OpenSearch refuse; and the wrapper would have to repeat
+every parameter, so each minor release would mean editing it.
+
+> **Seen working on 2026-11-17**, before the real release bucket existed, with
+> a throwaway bucket and instance in the staging account (both deleted since,
+> so `understory-releases-*` stays the one source): `scripts/release.py`
+> published `1.0.0-rc.1`, and a copy of `instance-template/` took it with
+> `scripts/upgrade` and `scripts/verify`. `verify` refused an edited
+> `understory.yml`. A plain `sam deploy` from that folder, with no build, then
+> created the instance: it reported `1.0.0-rc.1`, served the folder's branding
+> at `/branding/` with the right content types (its README left out), and its
+> sign-in screen showed the instance's palette and `sign-in.html`.
+
+### The admin UI
+
+Every stack hosts its own admin UI: the static export of `ui/` in `UiBucket`,
+served by `AdminDistribution` at the `AdminUrl` output
+(`admin-<project>.<base>` with a custom domain, the distribution's
+`*.cloudfront.net` name otherwise). Amplify Hosting is gone, and with it the
+GitHub token, the hosted-UI branch and the separate UI build.
+
+- **One build serves every instance.** Nothing about a stack is compiled in:
+  the UI reads `/config.json` at run time (see **Environment**), so the same
+  release works for every instance.
+- **`InstanceSetup` does the rest** (`Custom::InstanceSetup`,
+  `app/aws/lambdas/instance-setup/`, decisions in `app/shared/instanceSetup.js`).
+  On every create and update it copies `UiLayer` (the UI, at
+  `/opt/understory-ui`) and `BrandingLayer` (the rest of `/opt`) into
+  `UiBucket`, writes `/config.json`, deletes everything else there,
+  invalidates `/*`, and invites `AdminEmail` if no such user exists. On delete
+  it empties `UiBucket` and never deletes a user.
+- **It re-runs whenever a layer changes.** SAM versions layers by content, so
+  a new UI build or a branding edit is a new layer ARN, which is a property
+  change. Its `PhysicalResourceId` is fixed, so an update is never mistaken for
+  a replacement, whose Delete would empty the bucket.
+- **Content types are set explicitly**, because the distribution sends the
+  managed `SecurityHeadersPolicy`, nosniff included: a `theme.css` served as
+  `application/octet-stream` would never apply. HTML, `config.json` and
+  branding are `no-cache`; `_next/static/*` is immutable.
+- **`AdminRouterFunction`** does the routing a server used to: `/users` is
+  `users.html`, and the old path-shaped links (`/collection/{slug}`,
+  `…/work/{id}`, `…/search`, `/collections`) redirect to their query-string
+  equivalents (see **UI Structure**).
+- **Branding** is the instance's `branding/` folder, published at `/branding/`:
+  `theme.css` (loaded last), `header.html`, `footer.html`, `sign-in.html` and
+  a favicon. Snippets are rendered by `renderSnippetHtml`
+  (`ui/src/lib/iiifHtml.js`) from the IIIF HTML whitelist plus a few layout
+  tags and `class`, never with `innerHTML`, so a snippet cannot run script.
+  The slots and the documented CSS tokens are part of each release's contract
+  (`RELEASING.md`). A stack deployed from source gets `app/aws/branding/`,
+  which is empty: the top bar shows `InstitutionName` in `AccentColor`.
+  Northwestern's palette and wordmark are NU's own branding, in NU's instance
+  repo, not the product's.
+
+> **Seen working on `mat-dev-understory`, 2026-11-17.** The update from the
+> Amplify template replaced no stateful resource (both buckets, the user pool
+> and the search policy were plain Modifies) and deleted the Amplify app.
+> `InstanceSetup` wrote the UI and `config.json`, every route and redirect
+> answered as above, and the sign-in showcase loaded through
+> `IIIFDistribution`.
 
 ### Deploying from GitHub Actions
 
-`.github/workflows/deploy.yml` runs on every push to `staging` or `main`
-(changes to Markdown and `docs/` alone are skipped) and on demand. It follows
-`nulib/dc-api-v2`'s deploy workflow. The job runs in the GitHub environment of
-the same name as the stack, `staging` or `production`, and does five things:
+Two workflows, both following `nulib/dc-api-v2`'s deploy workflow:
 
-1. checks out `nulib/tfvars`;
-2. runs `npm test`;
-3. assumes `understory-github-actions-<env>` in that environment's account;
-4. runs `sam build --use-container` and `sam deploy` with the tfvars config;
-5. starts the Amplify build for the commit it just deployed, and waits for it.
+- **`deploy.yml`**, on every push to `staging` (changes to Markdown and
+  `docs/` alone are skipped) and on demand. In the GitHub environment
+  `staging`, it runs `npm test`, assumes `understory-github-actions-staging`,
+  runs `scripts/build.sh` and then `sam deploy` with the tracked
+  `samconfig.staging.yaml`.
+- **`release.yml`**, on every push to `main`. In the GitHub environment
+  `release`, it checks that `package.json`'s version has no tag yet and has a
+  `CHANGELOG.md` section, runs `npm test`, assumes
+  `understory-github-actions-release` in the account that owns the release
+  buckets, runs `scripts/build.sh` and `scripts/release.py`, then tags the
+  version and creates its GitHub Release. It deploys nothing.
 
-Runs on one branch queue and are never cancelled. Cancelling the runner would
-leave CloudFormation running, and the next run would fail against a stack still
+Runs queue and are never cancelled. Cancelling the runner would leave
+CloudFormation running, and the next run would fail against a stack still
 `UPDATE_IN_PROGRESS`.
 
-What has to exist outside this repo, per environment:
+What has to exist outside this repo:
 
 | Where | What |
 |---|---|
-| GitHub environment (`staging`, `production`) | A deployment-branch rule allowing only its own branch, so no other branch can run with its secrets. Secrets `AWSACCOUNT` (the account id) and `TFVARS_DEPLOY_KEY` (the private half of a read-only deploy key on `nulib/tfvars`). |
-| That environment's AWS account | The role, `understory-github-actions-<env>`: the stack `understory-github-actions-<env>`, deployed by hand from `app/aws/deploy-role.yml` (the command is at its top) |
-| `nulib/tfvars` | `understory/samconfig.<env>.yaml`, everything under `deploy`, including `UIAutoBuild=false` |
+| GitHub environment `staging` | A deployment-branch rule allowing only `staging`. Secret `AWSACCOUNT` (the account id). |
+| GitHub environment `release` | A deployment-branch rule allowing only `main`. Secret `AWSACCOUNT`: NU's staging account, where the release buckets live. Repository variable `RELEASE_REGIONS` (space-separated; default `us-east-1`). |
+| The staging account | Both roles, `understory-github-actions-staging` (an administrator) and `understory-github-actions-release` (the release buckets only): stacks of the same names, deployed by hand from `app/aws/deploy-role.yml` (the command is at its top) |
+| The staging account, per region | The release bucket `understory-releases-<region>`: stack `understory-releases`, from `app/aws/release-bucket.yml` (see `RELEASING.md`) |
 
 Things that will bite:
 
@@ -857,49 +989,74 @@ Things that will bite:
   `role-duration-seconds` in the workflow). A deploy waiting on CloudFront or
   OpenSearch can outlast the default hour, and `sam deploy` then fails while
   CloudFormation carries on.
-- **`nulib`'s org-level `TFVARS_DEPLOY_KEY` is not visible here**, because this
-  repo is in `nulib-ds`. The key this repo uses is its own.
-- **tfvars is checked out at `.tfvars`, at the repo root, never under `app/`.**
-  The container build copies all of `app/` into every function but
-  `iiif-image`, and that checkout holds a secret.
-- **The Actions logs are public, like the repo.** GitHub masks only the secrets
-  it stores, not values read from a file, so the workflow masks every `NoEcho`
-  parameter's value from the config before anything reads it. **A new `NoEcho`
-  parameter must be added to that step's list.** SAM also prints `NoEcho` values
-  as `*****`, and a `sed` hides the rest of the overrides line.
-- **`UIAutoBuild=false` is what puts the UI after the backend.** With Amplify
-  building on push, the UI raced the deploy. It could go live before its API, and
-  a `NEXT_PUBLIC_*` value changed by the deploy missed the build entirely,
-  because updating an app's environment never starts a build. The push that
-  first sets `UIAutoBuild=false` is still built by Amplify on its own, as well as
-  by the workflow. That happens once, and on that run `start-job` may find a job
-  already going. Re-run the workflow if it does.
+- **The Actions logs are public, like the repo.** The deploy prints the
+  config's overrides, which is fine because the config is public too; the
+  account id comes from the `AWSACCOUNT` secret, which GitHub masks. Nothing
+  else that should stay private may ever be read from a file into a log:
+  GitHub masks only the secrets it stores.
+- **No workflow pastes `${{ }}` into a `run` script.** Values reach the shell
+  through `env`. `release.yml` reads the version from `package.json`, a file
+  any merged commit can change, and checks it is semver before using it.
 - **The workflow does not create a shared stack.** Do the first create by hand,
-  so the change set can be reviewed and the domain association watched (see
-  **Hostnames**), and let the workflow deploy every change after that. It
-  could create the stack, but nothing would be watching it. Build the create
-  from a clean checkout of exactly what is about to be merged. For production
-  that is `staging`'s head, not `main`: `main` gets the code only by the merge,
-  and the merge starts the workflow. So create first, then merge.
+  so the change set can be reviewed, and let the workflow deploy every change
+  after that.
 - **The runner is `ubuntu-24.04-arm`**, the Lambdas' own architecture, so the
   container build needs no emulation. It is free for a public repo.
 
 > **First run on `staging`, 2026-10-07**, from the merge that added the
-> workflow. The role's trust, the tfvars deploy key, `sam deploy` and
-> `start-job --commit-id` all worked: Amplify built the commit that had just
-> been deployed. Amplify's own push build of the same commit ran first, and
-> the two did not collide. The public log holds no token and no account id,
-> and the overrides line reads `***** REDACTED *****`.
+> workflow, back when the config came from the private `nulib/tfvars` repo.
+> The role's trust and `sam deploy` worked, and the public log held no token
+> and no account id. The tracked config has not been through a run yet.
 >
-> **Production, the same day.** It was created by hand from `staging`'s head,
-> and then the merge into `main` ran the workflow. Things that run confirmed:
-> - The app was created on the GitHub App (`TOKEN`) through `AccessToken`, with
->   nothing left to migrate.
-> - Auto-build was off from the start, so `main`'s first build was the
->   workflow's alone.
-> - The workflow run after the create was not a no-op. It updated `IiifServer`,
->   the nested serverless-iiif stack, which happens on every deploy, dev stacks
->   included.
+> **`release.yml` has not run.** `understory-releases-us-east-1` and
+> `understory-github-actions-release` exist (2026-11-17), but the `release`
+> GitHub environment does not yet; see **Moving NU's stacks**.
+>
+> **The release role was checked with IAM's policy simulator, 2026-11-17.**
+> Allowed: get and put objects under `v*/`, and list, in this account's
+> `understory-releases-*` buckets. Denied: deleting an object, writing outside
+> `v*/`, a same-named bucket in another account, the staging stack's data
+> bucket, and any CloudFormation, Lambda or IAM action.
+
+### Moving NU's stacks
+
+Not done yet. `production-understory` and `main` are untouched until this is
+laid out and agreed. Production's two buckets were backed up first
+(2026-11-17).
+
+1. **Staging.** Its config is now the tracked `samconfig.staging.yaml`, and
+   `deploy.yml` no longer reads `nulib/tfvars`. Staging has a custom domain,
+   and Amplify's domain holds `admin-understory.<base>`, which CloudFront will
+   not give a second distribution. So first, by hand, deploy staging's
+   current template from a clean checkout of `staging`, with its old config
+   from `nulib/tfvars` and `GitHubBranch=""`; that deletes the Amplify app.
+   Then merge to `staging`. The admin UI is down between the two; the IIIF
+   documents, images and search are not. The `TFVARS_DEPLOY_KEY` secret and
+   the deploy key on `nulib/tfvars` can be removed after that.
+2. **Releases.** The release bucket, `understory-releases-us-east-1`, and the
+   release role, `understory-github-actions-release`, are in the staging
+   account already; the bucket is private. Still to do: create the `release`
+   GitHub environment (its secret `AWSACCOUNT` is the staging account), and
+   add the account NU's instance runs in to the bucket's `ReaderAccountIds`,
+   unless that is the staging account itself. Then merge `staging` into
+   `main` at version `1.0.0`. `Public=true` waits until releases are to be
+   shared beyond NU.
+3. **NU's instance.** NU's own Understory will be a new instance, from its
+   own repo, `nulib-ds/understory-digital-scholarship`, restored from
+   production's backup. `production-understory` keeps running until it is
+   ready. Things a restore has to handle:
+   - **Every IIIF id embeds its host.** Copied documents still name
+     production's hosts, so they need rewriting to the new instance's, unless
+     it takes over production's hostnames, which CloudFront allows only once
+     production's distributions let them go.
+   - **Copying originals into a source bucket re-converts them.** Its
+     `image/` and `av/` prefixes trigger the converters, which do not skip
+     existing output, so a copy re-runs every image and video, MediaConvert
+     included. The derived files are in the IIIF bucket backup.
+   - **Search indexes and users are per stack.** Republish each collection to
+     rebuild its index, and invite everyone again from the Users screen.
+4. Delete the `mat-dev` and `kdid-dev` branches: a dev stack no longer needs a
+   branch, because its UI deploys with the stack.
 
 ### Tags come from the config, not the template
 
@@ -919,60 +1076,15 @@ way a fork drops the line, or names its own.
   could not see them would strip them.
 - **Adding tags to a running stack replaces nothing.** This was checked with an
   unexecuted change set on `kdid-dev-understory` (2026-10-06). Every resource
-  showed as a Modify whose only real change was its tags. The three
-  `Conditional` replacements it lists (`AmplifyBranch` and two
-  `Lambda::Permission`s) happen only if an app id or ARN changes, and adding a
-  tag changes neither. `SearchCollection`'s schema makes its tags create-only,
-  but the change set still treats stack tags there as a plain Modify.
+  showed as a Modify whose only real change was its tags. The `Conditional`
+  replacements it listed (two `Lambda::Permission`s, and an Amplify branch
+  since removed) happen only if an ARN changes, and adding a tag changes none.
+  `SearchCollection`'s schema makes its tags create-only, but the change set
+  still treats stack tags there as a plain Modify.
 - **Not tagged:** anything created at run time rather than by CloudFormation.
-  That covers Lambda's own log groups (the template declares none),
-  MediaConvert jobs and Amplify's compute logs. It also misses SAM's artifact
-  bucket (`resolve_s3`), which belongs to the account-wide
-  `aws-sam-cli-managed-default` stack.
-
-### The hosted UI is opt-in, by `GitHubBranch`
-
-With `GitHubBranch` empty (the default), the stack creates no Amplify app,
-branch, domain or service role, and has no `UIEndpoint` output. Run the UI with
-`npm run dev` instead. Nothing else in the stack depends on Amplify: every CORS
-rule allows `*` and Cognito has no callback URLs.
-
-Set it and Amplify builds and hosts that branch: `staging` and `main` for the
-shared stacks, or the feature branch you are on for a dev stack, at
-`<branch>.<appid>.amplifyapp.com` (`UIEndpoint`). A dev stack never gets the
-`admin-` hostname, because it has no `BaseDomainName`.
-
-A branch needs `GitHubOAuthToken`: a **classic** personal access token with the
-`admin:repo_hook` scope, from an account with admin on the repo. Amplify uses it
-once, when it creates the app, and does not store it. The template passes it as
-`AccessToken`, which connects through the **Amplify GitHub App**
-(`aws-amplify-us-east-1`). That app must already be installed on the repo's org,
-as it is on `nulib-ds`. After the create the app goes through that
-installation, so a token that expires later breaks nothing, as long as its
-value in the config is left alone. A changed value is sent to Amplify again on
-the next deploy. The `HostedUINeedsToken` rule in the template refuses the
-deploy without one, before any resource is touched. Failing later, at
-`AmplifyApp`, would roll back a first create and leave the two retained buckets
-behind to block the next attempt by name. The parameter is `NoEcho`, so
-CloudFormation shows it as `****` and `sam deploy` masks it in its own output.
-
-> **Apps created before 2026-10-06 used `OauthToken`**, Amplify's legacy GitHub
-> connection. Each such app has a webhook and its own read-only SSH deploy key
-> on the repo (`<appId>:amplify@aws`), reports
-> `repositoryCloneMethod: SSH`, and shows "Migrate to our GitHub app" in the
-> console. Changing the template property does not migrate one: AWS supports
-> migration only from the console (**Start migration**, then **Complete
-> installation**). Afterwards `aws amplify get-app --app-id <id> --query
-> app.repositoryCloneMethod` prints `TOKEN`, and the app's deploy key can be
-> deleted under the repo's Settings › Deploy keys.
-
-`UIAutoBuild` says whether Amplify builds on every push. Leave it `true` on a dev
-stack. A shared stack sets it `false`, because the deploy workflow builds the UI
-itself (see **Deploying from GitHub Actions**).
-
-**Setting `GitHubBranch=""` on a stack that had a branch deletes its Amplify
-app.** Removing the line is not enough: the stack keeps its previous branch
-(see above).
+  That covers Lambda's own log groups (the template declares none) and
+  MediaConvert jobs. It also misses SAM's artifact bucket (`resolve_s3`), which
+  belongs to the account-wide `aws-sam-cli-managed-default` stack.
 
 ## Local Development
 
@@ -992,79 +1104,68 @@ aws sts get-caller-identity         # sanity check — should return your accoun
 SSO sessions expire; re-run `aws sso login` whenever `sam`/`aws` commands start failing with `ExpiredToken`/`ExpiredTokenException`.
 
 ### 2. Stand up (or update) your personal stack
-1. Copy `samconfig.yaml.example` at the repo root to `samconfig.<you>.yaml` beside it (gitignored; see **Deploying** for why not in `app/aws`) and set `stack_name` and `s3_prefix` to something unique to you, e.g. `<yourname>-dev-understory` (see Naming). Leave `GitHubBranch` empty unless you want Amplify to host the UI for you (see **Deploying**).
+1. Copy `samconfig.yaml.example` at the repo root to `samconfig.<you>.yaml` beside it (gitignored; see **Deploying** for why not in `app/aws`) and set `stack_name` and `s3_prefix` to something unique to you, e.g. `<yourname>-dev-understory` (see Naming). Set `AdminEmail` to your address to be invited as the stack's first admin.
 2. Build and deploy:
    ```
+   scripts/build.sh
    cd app/aws
-   sam build --use-container
    sam deploy --config-file ../../samconfig.<you>.yaml
    ```
-   `--use-container` is required so SAM installs native dependencies (e.g. sharp) inside a Linux arm64 container matching the Lambda runtime. Every parameter has a default, so there is nothing to answer and no need for `--guided`.
-3. First time only: copy the `ImagesDistributionHost` output into `ImageApiForceHost` in your config and deploy again, or tiles bypass the CDN (see **CDN**).
-4. On later changes, the same two commands. Add `--no-confirm-changeset` to skip the interactive `y/N` prompt if you've already reviewed the changeset shape.
-5. For fast iteration on Lambda code without a full deploy, use `sam sync --watch --config-file ../../samconfig.<you>.yaml` (or `sam sync --code` with the same flag for a one-shot sync) instead.
+   Every parameter has a default, so there is nothing to answer and no need for `--guided`. The stack hosts its own UI at the `AdminUrl` output.
+3. On later changes, the same commands. Add `--no-confirm-changeset` to skip the interactive `y/N` prompt if you've already reviewed the changeset shape.
+4. For fast iteration on Lambda code without a full deploy, use `sam sync --watch --config-file ../../samconfig.<you>.yaml` (or `sam sync --code` with the same flag for a one-shot sync) instead.
    - **Caveat:** `IiifServer`, the nested `AWS::Serverless::Application` wrapping `samvera/serverless-iiif`, does not hot-sync via `sam sync --watch` the way the top-level `ManifestFunction`/`IIIFImageFunction` do. Changes affecting it need a full `sam deploy`. This is a third-party component that rarely changes, so it's a minor caveat in practice.
+   - `sam sync` does not rebuild the UI. For UI work, use the dev server (below); `scripts/build.sh` and a deploy put a new UI on the stack.
 
-### 3. Create `ui/.env.local` from your stack's outputs
-Fetch your stack's outputs:
+### 3. Point the UI at your stack
 ```
-aws cloudformation describe-stacks --stack-name <your-stack-name> --query 'Stacks[0].Outputs'
+cd ui
+npm run config -- <your-stack-name> --profile <your-profile>
 ```
-Copy `ui/.env.local.example` to `ui/.env.local` (gitignored) and fill it in from the output values — the mapping from CloudFormation output key to `NEXT_PUBLIC_*` variable is documented in the example file itself (`ImagesEndpoint` → `NEXT_PUBLIC_IIIF_BASE_URL`, `ManifestApiUrl` → `NEXT_PUBLIC_MANIFEST_API_URL` with `/manifests` appended, `IIIFBucketName` → `NEXT_PUBLIC_STORAGE_BUCKET`, `SourceBucketName` → `NEXT_PUBLIC_SOURCE_BUCKET`, etc).
+This reads the stack's `AdminUrl` output and copies its `/config.json` and branding files into `ui/public/` (both gitignored), where the dev server serves them at the paths the deployed UI reads. Run it again after a deploy that changes either.
 
 ### 4. Run the UI and sign in
 ```
 cd ui
 npm run dev
 ```
-Open `http://localhost:3000`. You'll land on the sign-in screen — this is expected, the whole app is behind auth. If you don't have a user in your stack's Cognito pool yet, create one (the pool uses email as the username):
+Open `http://localhost:3000`. You'll land on the sign-in screen — this is expected, the whole app is behind auth. With `AdminEmail` set, Cognito has emailed you a temporary password. Without it, create a user by hand (the pool uses email as the username):
 ```
 aws cognito-idp admin-create-user \
-  --user-pool-id <NEXT_PUBLIC_COGNITO_USER_POOL_ID> \
+  --user-pool-id <userPoolId from config.json> \
   --username <your-email> \
   --user-attributes Name=email,Value=<your-email> Name=email_verified,Value=true \
   --message-action SUPPRESS
 
 aws cognito-idp admin-set-user-password \
-  --user-pool-id <NEXT_PUBLIC_COGNITO_USER_POOL_ID> \
+  --user-pool-id <userPoolId from config.json> \
   --username <your-email> \
   --password '<a-password-meeting-the-pool-policy>' \
   --permanent
 ```
-(If `admin-create-user` says the user already exists, just run the `admin-set-user-password` step to reset it.) Add yourself to the `admin` group (see **Bootstrapping** under Roles and permissions), then sign in: you land on **Collections**.
+(If `admin-create-user` says the user already exists, just run the `admin-set-user-password` step to reset it.) Add yourself to the `admin` group (see **Bootstrapping** under Roles and permissions), then sign in: you land on **Collections**. Once you are an admin, invite everyone else from the Users screen.
 
-## Environment / Feature Flags
+## Environment
 
-### UI (`ui/`)
-Next.js inlines each `NEXT_PUBLIC_*` into the browser bundle at build time, so a
-change needs a rebuild (or a restart of `npm run dev`). Read each one as a
-literal `process.env.NEXT_PUBLIC_X`: Next replaces only that exact expression.
+### The UI's runtime config (`/config.json`)
+The UI reads every setting at run time from `/config.json`
+(`ui/src/lib/config.js`), so one build serves every instance. `AuthGate` loads
+it, configures Amplify (`initializeApi`, `ui/src/lib/api.js`) and loads the
+branding before anything renders. `InstanceSetup` writes it from the stack;
+`npm run config` copies a deployed one for local work. Nothing in `ui/` reads
+`process.env`.
 
-| Variable | Description |
+| Key | What it is |
 |---|---|
-| `NEXT_PUBLIC_IIIF_BASE_URL` | The **Image API** base, despite the name — e.g. `https://d111111abcdef8.cloudfront.net/iiif/3`. Copy from the `ImagesEndpoint` stack output, not `IiifEndpoint`: the latter is the Lambda Function URL behind the distribution. |
-| `NEXT_PUBLIC_MANIFEST_API_URL` | The `ManifestHttpApi` endpoint from stack outputs. |
-| `NEXT_PUBLIC_COLLECTION_API_URL` | The `ManifestHttpApi` endpoint's `/collections` path. Needed as its own variable because `NEXT_PUBLIC_MANIFEST_API_URL` already ends in `/manifests`; the UI derives a fallback from it, but set this explicitly. |
-| `NEXT_PUBLIC_STORAGE_BUCKET` / `NEXT_PUBLIC_STORAGE_REGION` | The IIIF output S3 bucket and its region. `STORAGE_BUCKET` also configures Amplify's default `Storage.S3` bucket (used for Auth/Storage bootstrap). |
-| `NEXT_PUBLIC_SOURCE_BUCKET` | The source S3 bucket (uploads land here, under `image/` and `av/`, and trigger the converters). Used by `AssetDropzone`. |
-| `NEXT_PUBLIC_STORAGE_IDENTITY_POOL_ID` / `NEXT_PUBLIC_COGNITO_USER_POOL_ID` / `NEXT_PUBLIC_COGNITO_CLIENT_ID` | Cognito identifiers from stack outputs, for `AuthGate` and the sign-in screen. |
-
-### Amplify deployment
-This is Amplify **Hosting** only — auth, storage and the API are all defined in SAM, not the Amplify backend framework. It exists only on a stack with `GitHubBranch` set (see **Deploying**). On a stack with a custom domain, `AmplifyDomain` also attaches `admin-<project>.<base>` to the deploy branch — see **Hostnames** under CDN.
-
-- **It runs a server.** `AmplifyApp` sets `Platform: WEB_COMPUTE`, Amplify Hosting's managed Next.js server, because collection slugs and work ids are created at runtime and a static export can only serve routes it knew at build time. AWS supports Next.js 12–15 there, which is why `ui/` pins 15.5; move to 16 once AWS lists it. The server does the routing, so the app has no rewrite rules.
-- **`amplify.yml` at the repo root is the one build spec**, in monorepo form (`appRoot: ui`, artifacts `.next`). Amplify reads that file in preference to a spec set on the app, so the template sets none, and the build changes with the code it builds. `AMPLIFY_MONOREPO_APP_ROOT=ui` must match `appRoot`; AWS requires it on an app created by CloudFormation.
-- **`AmplifyServiceRole`** lets Amplify write the server's logs to CloudWatch (`/aws/amplify/…`). The server calls no other AWS service.
-- The `NEXT_PUBLIC_*` variables come from the stack's own resources, set on the app as environment variables, which `next build` reads directly.
-
-**Converting a stack built for the old static UI**, two things learned on `mat-dev-understory`:
-
-- **Deploy the template before the Next.js code reaches the branch Amplify builds.** In the other order, Amplify builds Next.js on the old static platform and publishes `.next` as plain files, and the hosted UI returns 404 until the template lands and a fresh build runs (`aws amplify start-job --app-id <id> --branch-name <branch> --job-type RELEASE`).
-- **Clear the old rewrite rule once:** `aws amplify update-app --app-id <id> --custom-rules '[]'`. The static UI sent every path without a file extension to `/index.html`, which the server does not have, and CloudFormation leaves an existing app's rules in place even with `CustomRules: []` in the template.
-
-**Who starts a build.** On a dev stack (`UIAutoBuild=true`), Amplify builds on every push to `GitHubBranch`. On a shared stack (`UIAutoBuild=false`), only the deploy workflow does, once the stack has deployed, by calling `start-job` with the `AmplifyAppId` output and the commit it deployed. A push alone builds nothing there.
-
-**CloudFormation never starts the first build.** The app and branch are created, but on a dev stack builds run only on a push to `GitHubBranch`, so a stack created after the latest push shows Amplify's "Welcome" placeholder at `UIEndpoint` until the next push, or until `aws amplify start-job --app-id <id> --branch-name <branch> --job-type RELEASE`. On a shared stack the workflow's next run starts it. The local dev server is unaffected.
+| `version` | The release, `0.0.0-dev` from source (`UnderstoryVersion`). |
+| `region` | The stack's region. |
+| `apiUrl` | `ManifestHttpApi`'s root; `/manifests`, `/collections` and `/users` hang off it. |
+| `documentsUrl` | `IIIF_BASE_URL`: the IIIF documents host. |
+| `imageApiUrl` | `IMAGE_API_BASE_URL`: the Image API base, ending `/iiif/3`. |
+| `iiifBucket`, `sourceBucket` | The IIIF output bucket (Amplify's default Storage bucket) and the source bucket uploads go to. |
+| `userPoolId`, `userPoolClientId`, `identityPoolId` | Cognito, for `AuthGate` and the sign-in screen. |
+| `institutionName`, `accentColor` | The `InstitutionName` and `AccentColor` parameters. |
+| `brandingFiles` | The paths under `/branding/` the deploy found, which the UI loads from. |
 
 ## Naming
 
@@ -1078,8 +1179,9 @@ The project is **Understory** everywhere: the UI, the repo
 | Packages | `understory`, `understory-<part>` | `understory-ui`, `understory-manifest` |
 
 Every AWS name derives from the stack name — the buckets (`<stack>-iiif`,
-`<stack>-source`), Lambdas, state machines, Cognito pool, Amplify app
-(`<stack>-ui`), search collection and search-index prefix — so `stack_name` in
+`<stack>-source`), Lambdas, state machines, Cognito pool, the UI and branding
+layers (`<stack>-ui`, `<stack>-branding`), search collection and search-index
+prefix — so `stack_name` in
 a stack's SAM config is the whole of a stack's identity, and changing it means a new
 stack. Keep it to 27 characters or fewer: Serverless caps the search
 collection's and its policies' names (see **Search index**). The one
@@ -1102,9 +1204,11 @@ so do it only while the data is disposable.
 
 The sign-in screen renders before anyone is authenticated, and every HttpApi
 route sits behind `DefaultAuthorizer: CognitoAuthorizer` — so it cannot call the
-API at all. It reads `presentation/showcase.json`, a small public object the
-backend writes into the already-public IIIF bucket (which already allows
-cross-origin GET), and picks five of the pool at random per visit.
+API at all. It reads `working/showcase.json`, a small public object the backend
+writes into the IIIF bucket, through `IIIFDistribution` (`documentsUrl` in
+`/config.json`), and picks five of the pool at random per visit. Until
+2026-11 it read the bucket directly, which the bucket has refused since it
+went behind CloudFront, so the sign-in screen showed no images.
 
 Deliberately a static object rather than an unauthenticated `/showcase` route:
 it keeps every API route behind Cognito, and bounds what an anonymous visitor
@@ -1388,8 +1492,8 @@ Lambda writes `processing` *before* it calls CreateJob, so a completion event
 can never be overwritten by a late "processing". The Lambda takes duration,
 size and output paths from the COMPLETE event rather than guessing filenames.
 For a frame capture, `outputFilePaths` names the last frame, which is the
-poster. The UI derives the documents base from `manifest.id` because
-`NEXT_PUBLIC_IIIF_BASE_URL` is the Image API, not the documents host.
+poster. The UI derives the documents base from `manifest.id`, the base the
+work was written under, rather than from `documentsUrl` in `/config.json`.
 
 Canvas shape: a `Video` or `Sound` painting body with
 `format: application/vnd.apple.mpegurl`, `duration` on both canvas and body,
@@ -1914,7 +2018,7 @@ Use CommonJS modules (`require`/`module.exports`) and 2-space indentation in all
 
 ## Design Conventions
 
-The UI is built on Radix Themes (`accentColor="iris"`, `grayColor="mauve"`, `scaling="110%"` in `ui/src/app/layout.jsx`). Reach for a Radix component before hand-rolling one, and use theme tokens (`--gray-N`, `--accent-N`, `--space-N`, `--radius-N`) rather than literal colors or pixel values. Never hardcode a hex — it will not follow the theme.
+The UI is built on Radix Themes (`accentColor="iris"`, `grayColor="mauve"`, `scaling="110%"` in `ui/src/app/layout.jsx`; `AuthGate` nests a `Theme` carrying the instance's `AccentColor`, and an instance's `branding/theme.css` may redefine the scales outright). Reach for a Radix component before hand-rolling one, and use theme tokens (`--gray-N`, `--accent-N`, `--space-N`, `--radius-N`) rather than literal colors or pixel values. Never hardcode a hex — it will not follow the theme.
 
 **Page headings.** Every section gets one centred heading via `PageHeading`
 (`ui/src/components/PageHeading.jsx`), which carries `.page-heading`. That
@@ -2098,8 +2202,9 @@ source order, and must live in `ui/src/App.css` — component stylesheets under
 there would silently lose.
 
 **`ui/src/app/layout.jsx` is the only place that imports global CSS**, in one
-ordered list: Radix, `theme.css`, the fonts, `index.css`, the component sheets,
-and `App.css` last. Next loads a layout's CSS before the CSS of the pages beneath
+ordered list: Radix, the fonts, `index.css`, the component sheets, and
+`App.css` last. An instance's `branding/theme.css` comes after all of them:
+`AuthGate` appends it to `<head>` at run time (`ui/src/lib/branding.js`). Next loads a layout's CSS before the CSS of the pages beneath
 it, so a stylesheet imported from a component would land *after* `App.css` and
 reverse that order. Add a new sheet to that list, never to a component, and do
 not split `App.css`: its fluid-scale and token blocks must load exactly once.
@@ -2180,7 +2285,7 @@ That is the reason for the split in `app/shared/`, and it is worth keeping delib
 
 | SDK-free, unit-tested | Loads the SDK, not testable from the root |
 |---|---|
-| `space.js`, `collection.js`, `publish.js`, `search.js`, `worksList.js`, `access.js`, `language.js`, `sourceFetch.js`, `av.js`, `hls.js`, `avImport.js`, `imageRequest.js` | `manifest.js`, `opensearch.js`, `assetCopy.js`, `avCopy.js` |
+| `space.js`, `collection.js`, `publish.js`, `search.js`, `worksList.js`, `access.js`, `language.js`, `sourceFetch.js`, `av.js`, `hls.js`, `avImport.js`, `imageRequest.js`, `instanceSetup.js` | `manifest.js`, `opensearch.js`, `assetCopy.js`, `avCopy.js` |
 
 Keep `collection.js` free of any `manifest.js` import — `manifest.js` loads the SDK, and the reverse direction would also be a require cycle. `node:crypto` is a core module, so hashing in `publish.js` is fine.
 
@@ -2189,7 +2294,7 @@ There are **no UI tests**. A frontend change's test plan is the manual verificat
 Since the Lambdas cannot be unit-tested, the cheap backend checks worth running before a deploy are:
 
 ```
-npm test                                   # 176 pure tests
+npm test                                   # 235 pure tests
 cd app && npx esbuild aws/lambdas/manifest/index.js --bundle \
   --platform=node --target=node22 '--external:@aws-sdk/*' --outfile=/dev/null
 cd app/aws && sam validate                # the SAM transform; offline

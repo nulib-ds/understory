@@ -30,17 +30,20 @@ Admin UI (Next.js) ──▶ API (API Gateway and Lambda, behind Cognito)
 Canopy IIIF site ◀── published documents, images, streams, and search, through CloudFront
 ```
 
-Understory runs on AWS and deploys as one [SAM](https://aws.amazon.com/serverless/sam/) stack: S3, CloudFront, Lambda, Step Functions, API Gateway, Cognito, MediaConvert, OpenSearch Serverless, and Amplify Hosting for the admin UI. Each stack creates its own search collection, which scales to zero when nobody is publishing or searching.
+Understory runs on AWS and deploys as one [SAM](https://aws.amazon.com/serverless/sam/) stack: S3, CloudFront, Lambda, Step Functions, API Gateway, Cognito, MediaConvert and OpenSearch Serverless. The stack serves its own admin UI. Each stack creates its own search collection, which scales to zero when nobody is publishing or searching.
 
-## Getting started
+## Running an instance
 
-You need an AWS account, the [SAM CLI](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/install-sam-cli.html), Docker, and Node 22.
+An instance runs a published release from a repo of its own, holding only its configuration and branding: start from [`instance-template/`](instance-template/README.md). It needs an AWS account and the SAM CLI, and no build. [RELEASING.md](RELEASING.md) says what a release is and what each version number promises.
 
-1. Copy `samconfig.yaml.example` at the repo root to `samconfig.<you>.yaml` beside it and set a stack name such as `<you>-dev-understory`.
-2. Deploy with `cd app/aws && sam build --use-container && sam deploy --config-file ../../samconfig.<you>.yaml`.
-3. Copy the `ImagesDistributionHost` output into the `ImageApiForceHost` parameter, and deploy again.
-4. Create your user in the stack's Cognito pool and add it to the `admin` group.
-5. Fill in `ui/.env.local` from the stack outputs, following `ui/.env.local.example`, then run `npm install && npm run dev` in `ui/`.
+## Developing
+
+You need an AWS account, the SAM CLI, Docker, and Node 22.
+
+1. Copy `samconfig.yaml.example` at the repo root to `samconfig.<you>.yaml` beside it, set a stack name such as `<you>-dev-understory`, and set `AdminEmail` to your address.
+2. Build with `scripts/build.sh`, then deploy with `cd app/aws && sam deploy --config-file ../../samconfig.<you>.yaml`.
+3. Sign in at the stack's `AdminUrl` output with the temporary password Cognito emails you.
+4. For UI work, run `npm run config -- <your-stack>` and then `npm run dev` in `ui/`.
 
 [AGENTS.md](AGENTS.md) covers each step in detail, along with the design and the reasons behind it.
 
@@ -52,6 +55,8 @@ You need an AWS account, the [SAM CLI](https://docs.aws.amazon.com/serverless-ap
 | `app/aws/lambdas/` | The API, the publish and import workers, and the image and A/V converters |
 | `app/shared/` | Logic the Lambdas share, with its unit tests |
 | `ui/` | The admin app |
+| `instance-template/` | The starting point for an instance's own repo |
+| `scripts/` | The build and the release |
 
 Run the tests with `npm test` at the root. Lint the admin app with `npm run lint` in `ui/`.
 

@@ -2,20 +2,25 @@
 
 import {useCallback, useEffect, useMemo, useState} from "react";
 import {fetchAuthSession, getCurrentUser, signOut as amplifySignOut} from "aws-amplify/auth";
-import {Flex, Spinner} from "@radix-ui/themes";
-// For its side effect: importing api.js is what configures Amplify, and this is
-// the first thing on every route to call it. Relying on a page to import it
-// first would leave any route without one (not-found, a redirect) unconfigured.
-import "./lib/api";
+import {Callout, Flex, Spinner, Theme} from "@radix-ui/themes";
+import {initializeApi} from "./lib/api";
+import {BrandingContext, loadBranding, pageTitle} from "./lib/branding";
 import SignIn from "./components/SignIn";
 import {SessionContext, sessionFromGroups} from "./lib/session";
 
 // Replaces Amplify's <Authenticator>: holds just enough session state to decide
 // between the sign-in screen and the app. Tokens stay in Amplify's own storage —
 // nothing about the credentials is kept here.
+//
+// It is also the first thing on every route, so it is what loads the instance's
+// /config.json (which configures Amplify and the API bases) and its branding.
+// Nothing beneath it renders until both are in.
 export default function AuthGate({children}) {
-  const [status, setStatus] = useState("checking"); // checking | signedOut | signedIn
+  // checking | unconfigured | signedOut | signedIn
+  const [status, setStatus] = useState("checking");
   const [session, setSession] = useState({username: "", role: null, collections: []});
+  const [branding, setBranding] = useState(null);
+  const [configError, setConfigError] = useState(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -43,7 +48,24 @@ export default function AuthGate({children}) {
   }, []);
 
   useEffect(() => {
-    refresh();
+    let cancelled = false;
+    (async () => {
+      try {
+        const config = await initializeApi();
+        const loaded = await loadBranding(config);
+        if (cancelled) return;
+        setBranding(loaded);
+      } catch (error) {
+        if (cancelled) return;
+        setConfigError(error);
+        setStatus("unconfigured");
+        return;
+      }
+      refresh();
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [refresh]);
 
   const signOut = useCallback(async () => {
@@ -59,17 +81,43 @@ export default function AuthGate({children}) {
   // children are elements, not a function it can hand arguments to.
   const value = useMemo(() => ({...session, signOut}), [session, signOut]);
 
+  const title = <title>{pageTitle(branding)}</title>;
+
   if (status === "checking") {
     return (
       <Flex align="center" justify="center" style={{minHeight: "100vh"}}>
+        {title}
         <Spinner size="3" />
       </Flex>
     );
   }
 
-  if (status === "signedOut") {
-    return <SignIn onSignedIn={refresh} />;
+  if (status === "unconfigured") {
+    return (
+      <Flex align="center" justify="center" style={{minHeight: "100vh"}} p="4">
+        {title}
+        <Callout.Root color="red" style={{maxWidth: "40rem"}}>
+          <Callout.Text>
+            This Understory instance could not load its settings from /config.json ({configError?.message}). The
+            deploy writes that file; locally, run npm run config with your stack&apos;s name.
+          </Callout.Text>
+        </Callout.Root>
+      </Flex>
+    );
   }
 
-  return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;
+  // A nested Theme carries the instance's accent colour; the root Theme in
+  // layout.jsx has the product default, which is all the spinner above needs.
+  return (
+    <BrandingContext.Provider value={branding}>
+      <Theme accentColor={branding.accentColor}>
+        {title}
+        {status === "signedOut" ? (
+          <SignIn onSignedIn={refresh} />
+        ) : (
+          <SessionContext.Provider value={value}>{children}</SessionContext.Provider>
+        )}
+      </Theme>
+    </BrandingContext.Provider>
+  );
 }

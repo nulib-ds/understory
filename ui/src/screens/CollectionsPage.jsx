@@ -3,6 +3,7 @@
 import {useEffect, useState} from "react";
 import NextLink from "next/link";
 import {useRouter} from "next/navigation";
+import {collectionPath} from "../lib/routes";
 import {
   AlertDialog,
   Badge,
@@ -58,7 +59,7 @@ function CollectionRow({collection, canDelete = false, onDelete}) {
               fell back to the UA default — browser blue and underlined —
               instead of the accent every other link in the app uses. */}
           <Link asChild size="2" weight="bold">
-            <NextLink href={`/collection/${encodeURIComponent(collection.slug)}`} prefetch={false}>
+            <NextLink href={collectionPath(collection.slug)} prefetch={false}>
               {collection.label}
             </NextLink>
           </Link>
@@ -275,7 +276,7 @@ export default function CollectionsPage() {
       // works appear as they land — mirroring the work import, which goes to the
       // work it just created. The collection already exists and is resolvable;
       // it is simply empty until the run fills it.
-      router.push(`/collection/${encodeURIComponent(data.collection.slug)}`);
+      router.push(collectionPath(data.collection.slug));
     } catch (err) {
       setImportError(err.message);
     } finally {
@@ -318,8 +319,7 @@ export default function CollectionsPage() {
             {!available && (
               <Callout.Root color="red" size="1" mb="3">
                 <Callout.Text>
-                  Collection API URL is not configured. Update NEXT_PUBLIC_COLLECTION_API_URL to point at the
-                  deployed endpoint.
+                  The API URL is not configured: apiUrl is missing from /config.json.
                 </Callout.Text>
               </Callout.Root>
             )}

@@ -7,8 +7,20 @@ samconfig.toml
 samconfig.*.toml
 samconfig.yaml
 samconfig.*.yaml
+# An instance repo commits its config: it is the whole point of one.
+!instance-template/samconfig.yaml
+# staging-understory's config holds no secret, so it is code like the rest.
+!samconfig.staging.yaml
 
 
 # Local AI Agent custom instructions
 CLAUDE.local.md
 AGENTS.override.md
+
+# The admin UI as UiLayer expects it (scripts/build.sh).
+ui/.layer/
+
+# Release output (scripts/release.py).
+dist/
+
+__pycache__/
