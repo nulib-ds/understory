@@ -1017,9 +1017,12 @@ Things that will bite:
 >
 > **The release role was checked with IAM's policy simulator, 2026-11-17.**
 > Allowed: get and put objects under `v*/`, and list, in this account's
-> `understory-releases-*` buckets. Denied: deleting an object, writing outside
-> `v*/`, a same-named bucket in another account, the staging stack's data
-> bucket, and any CloudFormation, Lambda or IAM action.
+> `understory-releases-*` buckets; and reading serverless-iiif's template from
+> the Serverless Application Repository, which `sam build` needs for
+> `IiifServer` (the first release run failed without it). Denied: deleting an
+> object, writing outside `v*/`, a same-named bucket in another account, the
+> staging stack's data bucket, reading any other SAR application, publishing
+> one, and any CloudFormation, Lambda or IAM action.
 
 ### Moving NU's stacks
 

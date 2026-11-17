@@ -68,11 +68,13 @@ Resources:
         - IsRelease
         - !Ref AWS::NoValue
         - [arn:aws:iam::aws:policy/AdministratorAccess]
-      # Publishing a release needs nothing but the release buckets: sam package
+      # Publishing a release needs the release buckets and one read: sam package
       # and release.py read and write objects under v*/, and check whether one
-      # exists. No delete, and nothing else in the account, so a push to main
-      # can never reach a stack. (The buckets refuse deletes from anyone anyway;
-      # see release-bucket.yml.)
+      # exists; and sam build asks the Serverless Application Repository for
+      # serverless-iiif's template (IiifServer), which it cannot build without.
+      # No delete, and nothing else in the account, so a push to main can never
+      # reach a stack. (The buckets refuse deletes from anyone anyway; see
+      # release-bucket.yml.)
       #
       # Bucket ARNs carry no account, so understory-releases-* alone would also
       # match a bucket of that name in another account. s3:ResourceAccount
@@ -99,6 +101,13 @@ Resources:
                   Condition:
                     StringEquals:
                       "s3:ResourceAccount": !Ref AWS::AccountId
+                # Read-only, and only this public application's template.
+                - Effect: Allow
+                  Action:
+                    - serverlessrepo:GetApplication
+                    - serverlessrepo:CreateCloudFormationTemplate
+                    - serverlessrepo:GetCloudFormationTemplate
+                  Resource: arn:aws:serverlessrepo:*:*:applications/serverless-iiif
         - !Ref AWS::NoValue
 
 Outputs:

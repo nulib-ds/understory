@@ -95,7 +95,7 @@ jobs:
         run: |
           # RELEASE_REGIONS is space-separated, so it is split on purpose.
           # shellcheck disable=SC2086
-          scripts/release.py --version "$VERSION" --regions $RELEASE_REGIONS
+          python3 scripts/release.py --version "$VERSION" --regions $RELEASE_REGIONS
 
       - name: Tag and create the GitHub Release
         env:
