@@ -3,7 +3,7 @@
 ## Project Overview
 This project is the admin backend for one or more downstream IIIF sites (Canopy or similar), deployed entirely on AWS. **A collection is the unit of everything**: each downstream site is driven by one curatorial collection, consuming that collection's IIIF documents and its own search index.
 
-A SAM application (`app/aws/template.yml`) provisions a source S3 bucket and an output S3 bucket (`*-iiif`). An S3-triggered Lambda (`app/aws/lambdas/iiif-image/`) converts uploaded source images to pyramid TIFFs (Level 2) for use by `samvera/serverless-iiif` (a nested SAR application). serverless-iiif downloads the whole TIFF for every tile, so the TIFFs are JPEG-compressed (quality under 90; the Lambda's comments say why) and carry `width`/`height`/`pages` S3 metadata so it never has to probe them. `app/aws/lambdas/manifest/` exposes the whole CRUD and query API behind API Gateway + Cognito. `app/aws/lambdas/public-search/` is the one unauthenticated route, the search a consuming site calls, reachable only through `IIIFDistribution` (see **Public search route**). `app/aws/lambdas/publish/` is the task worker for the publish state machine. A Next.js frontend (`ui/`) talks to them: a static export, served by the stack itself through `AdminDistribution` (see **The admin UI**).
+A SAM application (`app/aws/template.yml`) provisions a source S3 bucket and an output S3 bucket (`*-iiif`). An S3-triggered Lambda (`app/aws/lambdas/iiif-image/`) converts uploaded source images to pyramid TIFFs (Level 2) for use by `samvera/serverless-iiif` (a nested SAR application). serverless-iiif downloads the whole TIFF for every tile, so the TIFFs are JPEG-compressed (quality under 90; the Lambda's comments say why) and carry `width`/`height`/`pages` S3 metadata so it never has to probe them. It skips a source whose TIFF already exists, as the A/V transcoder skips an asset whose `media.json` is already `ready`: a source key never gets new content, so an upload event for finished work is the same file arriving again, as when a restore copies a bucket back. To convert again on purpose, delete the output first. `app/aws/lambdas/manifest/` exposes the whole CRUD and query API behind API Gateway + Cognito. `app/aws/lambdas/public-search/` is the one unauthenticated route, the search a consuming site calls, reachable only through `IIIFDistribution` (see **Public search route**). `app/aws/lambdas/publish/` is the task worker for the publish state machine. A Next.js frontend (`ui/`) talks to them: a static export, served by the stack itself through `AdminDistribution` (see **The admin UI**).
 
 Understory is released as versioned, packaged templates, and each instance (NU's production, or another institution's) runs one from an instance repo of configuration and branding (see **Deploying** and `RELEASING.md`).
 
@@ -1049,10 +1049,10 @@ laid out and agreed. Production's two buckets were backed up first
      production's hosts, so they need rewriting to the new instance's, unless
      it takes over production's hostnames, which CloudFront allows only once
      production's distributions let them go.
-   - **Copying originals into a source bucket re-converts them.** Its
-     `image/` and `av/` prefixes trigger the converters, which do not skip
-     existing output, so a copy re-runs every image and video, MediaConvert
-     included. The derived files are in the IIIF bucket backup.
+   - **Copy the IIIF bucket before the source bucket.** The source bucket's
+     `image/` and `av/` prefixes trigger the converters, which skip anything
+     whose TIFF or `ready` `media.json` is already in the IIIF bucket. In
+     that order, restoring both re-converts nothing.
    - **Search indexes and users are per stack.** Republish each collection to
      rebuild its index, and invite everyone again from the Users screen.
 4. Delete the `mat-dev` and `kdid-dev` branches: a dev stack no longer needs a
