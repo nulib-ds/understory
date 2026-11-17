@@ -82,27 +82,37 @@ export function sanitizeIiifHtml(value) {
   return tree && typeof tree === "object" ? tree : null;
 }
 
-function sanitizeNode(node) {
+const IIIF_RULES = {tags: ALLOWED_TAGS, href: HREF_SCHEME, src: SRC_SCHEME, extraAttrs: []};
+
+function sanitizeNode(node, rules = IIIF_RULES) {
   if (node.nodeType === Node.TEXT_NODE) return node.nodeValue;
   // CDATA sections, comments and processing instructions: §4.5 says remove.
   if (node.nodeType !== Node.ELEMENT_NODE) return null;
 
   const tag = node.localName.toLowerCase();
   if (REMOVED_WITH_CONTENT.has(tag)) return null;
-  const children = [...node.childNodes].map(sanitizeNode).filter((child) => child !== null);
-  if (!ALLOWED_TAGS.has(tag)) return {tag: null, attrs: {}, children};
+  const children = [...node.childNodes]
+    .map((child) => sanitizeNode(child, rules))
+    .filter((child) => child !== null);
+  if (!rules.tags.has(tag)) return {tag: null, attrs: {}, children};
 
   // Every attribute is dropped except these three, and those only when safe.
   const attrs = {};
   if (tag === "a") {
     const href = node.getAttribute("href");
-    if (href && HREF_SCHEME.test(href)) attrs.href = href;
+    if (href && rules.href.test(href)) attrs.href = href;
   }
   if (tag === "img") {
     const src = node.getAttribute("src");
-    if (!src || !SRC_SCHEME.test(src)) return null;
+    if (!src || !rules.src.test(src)) return null;
     attrs.src = src;
     attrs.alt = node.getAttribute("alt") ?? "";
+  }
+  // Plain text attributes, for snippets only: none of them can carry a URL or
+  // run anything. `class` becomes React's className.
+  for (const name of rules.extraAttrs) {
+    const value = node.getAttribute(name);
+    if (value) attrs[name === "class" ? "className" : name] = value;
   }
   return {tag, attrs, children: VOID_TAGS.has(tag) ? [] : children};
 }
@@ -128,4 +138,36 @@ function toElement(node, key) {
   return VOID_TAGS.has(node.tag)
     ? createElement(node.tag, props)
     : createElement(node.tag, props, children);
+}
+
+// --- Branding snippets ------------------------------------------------------
+//
+// An instance's branding folder can carry small HTML snippets (header.html,
+// footer.html, sign-in.html). They are the instance owner's own markup, but
+// they get the same treatment as IIIF HTML: React elements from a whitelist,
+// never innerHTML, so a snippet can lay out text, links and images and can
+// never run script.
+//
+// Three differences from IIIF values, all because a snippet is a file someone
+// writes by hand rather than a property value:
+//   - parsed as HTML, not XML, so <img ...> without a closing slash is fine and
+//     a snippet may have several top-level elements;
+//   - a few more layout tags, and class / title / aria-label on any of them;
+//   - links and images may be root-relative ("/branding/assets/logo.svg"), so a
+//     snippet can point at its own folder.
+const SNIPPET_RULES = {
+  tags: new Set([...ALLOWED_TAGS, "div", "strong", "em", "ul", "ol", "li"]),
+  href: /^(https?:|mailto:|\/(?!\/))/i,
+  src: /^(https?:|\/(?!\/))/i,
+  extraAttrs: ["class", "title", "aria-label"],
+};
+
+export function renderSnippetHtml(value) {
+  if (typeof value !== "string" || !value.trim()) return null;
+  if (typeof DOMParser === "undefined") return null;
+  const doc = new DOMParser().parseFromString(value, "text/html");
+  const nodes = [...doc.body.childNodes]
+    .map((node) => sanitizeNode(node, SNIPPET_RULES))
+    .filter((node) => node !== null);
+  return nodes.length ? nodes.map((node, index) => toElement(node, index)) : null;
 }

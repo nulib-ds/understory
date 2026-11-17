@@ -5,18 +5,19 @@ import {fileURLToPath} from "node:url";
 // guesses the root from the nearest lockfile, and there are several above it.
 const appRoot = dirname(fileURLToPath(import.meta.url));
 
-// The admin UI runs on Amplify Hosting's server (WEB_COMPUTE), not as a static
-// export: collection slugs and work ids are created at runtime, so the
-// [slug] and [workId] routes cannot be prerendered. A server also makes
-// redirects an ordinary Next.js feature rather than an Amplify rule.
+// A static export, written to out/. The stack serves it from its UI bucket
+// through AdminDistribution, and every Understory instance runs the same build:
+// nothing about a stack is compiled in, because the UI reads /config.json at
+// run time (src/lib/config.js).
+//
+// So there is no server: no redirects() (AdminRouterFunction in template.yml
+// does those at the edge) and no dynamic path segments (a collection's slug
+// and a work's id are query parameters; src/lib/routes.js).
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  output: "export",
   outputFileTracingRoot: appRoot,
   turbopack: {root: appRoot},
-  async redirects() {
-    // Older links. The collections list is the home page.
-    return [{source: "/collections", destination: "/", permanent: false}];
-  },
 };
 
 export default nextConfig;

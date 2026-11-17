@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Checks that understory.yml is exactly the release it says it is: its checksum
+# must match the one published for that version in the release bucket, not
+# just the copy committed beside it. The deploy workflow runs this first.
+#
+# Edits to understory.yml are not supported. Infrastructure of this instance's
+# own goes in a stack of its own.
+set -euo pipefail
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=release-source.sh
+source "$root/scripts/release-source.sh"
+
+version="$(sed -nE '1s/^# Understory v([^,]+),.*/\1/p' "$root/understory.yml")"
+if [[ -z "$version" ]]; then
+  echo "understory.yml has no release header. Replace it with scripts/upgrade <version>." >&2
+  exit 1
+fi
+
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+fetch_release "$version" understory.yml.sha256 "$tmp/understory.yml.sha256"
+cp "$root/understory.yml" "$tmp/"
+if ! (cd "$tmp" && shasum -a 256 -c understory.yml.sha256 >/dev/null 2>&1); then
+  echo "understory.yml differs from the published Understory v$version. Restore it with scripts/upgrade $version." >&2
+  exit 1
+fi
+echo "understory.yml is Understory v$version, unmodified."

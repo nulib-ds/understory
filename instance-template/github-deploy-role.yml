@@ -1,0 +1,76 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: "The role this instance repo's deploy workflow assumes (.github/workflows/deploy.yml)."
+
+# Deployed once, by hand, in the instance's account, and never by the workflow:
+#
+#   aws cloudformation deploy --template-file github-deploy-role.yml \
+#     --stack-name acme-understory-github-deploy \
+#     --parameter-overrides GitHubRepository=acme/understory-instance \
+#     --capabilities CAPABILITY_IAM
+#
+# Its own stack, so nothing the workflow deploys can change the role it deploys
+# with. Then set the repository variable AWS_DEPLOY_ROLE_ARN to its output.
+
+Parameters:
+  GitHubRepository:
+    Type: String
+    AllowedPattern: "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+    Description: "owner/name of this instance repo."
+  GitHubEnvironment:
+    Type: String
+    Default: production
+    Description: "The GitHub environment the deploy job runs in. Give it a deployment-branch rule allowing only main."
+  OidcSubject:
+    Type: String
+    Default: ""
+    Description: "Leave blank for repo:<GitHubRepository>:environment:<GitHubEnvironment>. Set it if the repo uses GitHub's immutable subject claims, e.g. repo:acme@123/understory-instance@456:environment:production."
+  CreateOidcProvider:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: "An account holds one GitHub OIDC provider. Set false if it already has one (IAM > Identity providers > token.actions.githubusercontent.com)."
+
+Conditions:
+  CreateProvider: !Equals [!Ref CreateOidcProvider, "true"]
+  DefaultSubject: !Equals [!Ref OidcSubject, ""]
+
+Resources:
+  GitHubOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Condition: CreateProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList:
+        - sts.amazonaws.com
+
+  DeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: !Sub "Deploys Understory from ${GitHubRepository}, environment ${GitHubEnvironment} only"
+      MaxSessionDuration: 7200
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Sub "arn:aws:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com"
+            Action: sts:AssumeRoleWithWebIdentity
+            # Exact matches, never a wildcard: only a job in this one
+            # environment of this one repo may assume an administrator role.
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                token.actions.githubusercontent.com:sub: !If
+                  - DefaultSubject
+                  - !Sub "repo:${GitHubRepository}:environment:${GitHubEnvironment}"
+                  - !Ref OidcSubject
+      # An Understory stack touches some fifteen services, and a scoped policy
+      # would need widening with each release that adds one. The trust above is
+      # what limits who holds it.
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AdministratorAccess
+
+Outputs:
+  DeployRoleArn:
+    Description: "Set as the repository variable AWS_DEPLOY_ROLE_ARN."
+    Value: !GetAtt DeployRole.Arn

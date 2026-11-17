@@ -24,3 +24,7 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Written by npm run config from a deployed stack.
+public/config.json
+public/branding/

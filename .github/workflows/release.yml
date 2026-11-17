@@ -1,0 +1,118 @@
+# Publishes an Understory release on every push to main. Merging staging into
+# main IS the release: the version is package.json's, and it must be new.
+#
+# A release is a packaged template per region, with its code, in the release
+# buckets, understory-releases-<region> in NU's staging account
+# (scripts/release.py, app/aws/release-bucket.yml). Those buckets are the one
+# source of truth for releases: the git tag and the GitHub Release carry the
+# version and its CHANGELOG.md section, and no copy of any file. It deploys
+# nothing: every instance, NU's production included, takes a release by
+# running scripts/upgrade in its own instance repo. See RELEASING.md.
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - "docs/**"
+  workflow_dispatch:
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  # contents: write for the tag and the GitHub Release.
+  contents: write
+  id-token: write
+
+jobs:
+  release:
+    if: github.ref == 'refs/heads/main'
+    # Holds AWSACCOUNT, NU's staging account, where the release buckets live,
+    # and allows only main.
+    environment: release
+    runs-on: ubuntu-24.04-arm
+    defaults:
+      run:
+        shell: bash
+    # Values reach the shell through env, never pasted into a run script as
+    # an expression: package.json's version comes from a merged commit, and a
+    # version string that was a command would otherwise run as one.
+    env:
+      RELEASE_REGIONS: ${{ vars.RELEASE_REGIONS || 'us-east-1' }}
+    steps:
+      - uses: actions/checkout@v7
+
+      # Before anything is built: a version that already exists is never
+      # published again, so a merge that forgot to bump it fails here.
+      - name: Check the version is new
+        id: version
+        run: |
+          version=$(node -p "require('./package.json').version")
+          # Semver and nothing else, before the value goes anywhere.
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::package.json's version is not a semantic version."
+            exit 1
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/v$version" >/dev/null; then
+            echo "::error::v$version is already released. Bump package.json's version and add its CHANGELOG.md section."
+            exit 1
+          fi
+          if ! grep -qE "^## $version( |$)" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no section for $version (a line '## $version')."
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Test
+        run: npm test
+
+      - uses: aws-actions/setup-sam@v3
+        with:
+          version: 1.148.0
+          use-installer: true
+
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWSACCOUNT }}:role/understory-github-actions-release
+          role-duration-seconds: 7200
+          aws-region: us-east-1
+
+      - name: Build
+        run: scripts/build.sh
+
+      # RELEASE_REGIONS is a repository variable, space-separated; each region
+      # needs its bucket first (app/aws/release-bucket.yml).
+      - name: Publish to the release buckets
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          # RELEASE_REGIONS is space-separated, so it is split on purpose.
+          # shellcheck disable=SC2086
+          scripts/release.py --version "$VERSION" --regions $RELEASE_REGIONS
+
+      - name: Tag and create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          awk -v v="$VERSION" '
+            $0 ~ "^## " v "( |$)" {found=1; next}
+            found && /^## / {exit}
+            found {print}
+          ' CHANGELOG.md > notes.md
+          # No files attached: the release bucket is the one place a release's
+          # template lives, so there is never a second copy to drift from it.
+          {
+            echo
+            echo "---"
+            echo "Take this release in an instance repo with \`scripts/upgrade $VERSION\`. It is published to \`s3://understory-releases-<region>/v$VERSION/\` for: $RELEASE_REGIONS."
+          } >> notes.md
+          gh release create "v$VERSION" --target "$GITHUB_SHA" \
+            --title "Understory v$VERSION" --notes-file notes.md

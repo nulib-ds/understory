@@ -6,45 +6,52 @@
 // works UI along with it.
 import {Amplify} from "aws-amplify";
 import {fetchAuthSession} from "aws-amplify/auth";
+import {loadConfig} from "./config";
 
-export const MANIFEST_API_BASE = (process.env.NEXT_PUBLIC_MANIFEST_API_URL || "").replace(/\/$/, "");
-// NEXT_PUBLIC_MANIFEST_API_URL already ends in /manifests, so the collections
-// vocabulary is a sibling endpoint rather than a child of it. The fallback
-// derives one so the feature still works against a stack deployed before the
-// variable existed.
-export const COLLECTION_API_BASE = (
-  process.env.NEXT_PUBLIC_COLLECTION_API_URL ||
-  (/\/manifests$/.test(MANIFEST_API_BASE) ? MANIFEST_API_BASE.replace(/\/manifests$/, "/collections") : "")
-).replace(/\/$/, "");
-// /manifests, /collections and /users are siblings, so /users is derived the
-// same way the collections base is.
-export const USER_API_BASE = /\/manifests$/.test(MANIFEST_API_BASE)
-  ? MANIFEST_API_BASE.replace(/\/manifests$/, "/users")
-  : "";
-export const STORAGE_BUCKET = process.env.NEXT_PUBLIC_STORAGE_BUCKET || "";
-export const STORAGE_REGION = process.env.NEXT_PUBLIC_STORAGE_REGION || "";
-export const STORAGE_IDENTITY_POOL_ID = process.env.NEXT_PUBLIC_STORAGE_IDENTITY_POOL_ID || "";
-export const COGNITO_USER_POOL_ID = process.env.NEXT_PUBLIC_COGNITO_USER_POOL_ID || "";
-export const COGNITO_CLIENT_ID = process.env.NEXT_PUBLIC_COGNITO_CLIENT_ID || "";
+// The endpoint bases come from /config.json, which is only known at run time.
+// They are `let` exports, set once by initializeApi() before AuthGate renders
+// anything: an ES module export is a live binding, so every importer reads the
+// assigned value as long as it reads it when it runs, not at its own module
+// scope.
+//
+// /manifests, /collections and /users are siblings under the API's root.
+export let MANIFEST_API_BASE = "";
+export let COLLECTION_API_BASE = "";
+export let USER_API_BASE = "";
 
-// Module-scope side effect, as before: importing this module is what configures
-// Amplify, so every consumer of apiFetch is configured by construction.
-if (STORAGE_BUCKET && STORAGE_REGION) {
-  Amplify.configure({
-    Auth: {
-      Cognito: {
-        userPoolId: COGNITO_USER_POOL_ID,
-        userPoolClientId: COGNITO_CLIENT_ID,
-        identityPoolId: STORAGE_IDENTITY_POOL_ID,
-      },
-    },
-    Storage: {
-      S3: {
-        bucket: STORAGE_BUCKET,
-        region: STORAGE_REGION,
-      },
-    },
-  });
+let initializing = null;
+
+// Loads /config.json, sets the bases above and configures Amplify. AuthGate
+// awaits it, so it is the first thing every route does. Safe to call again:
+// after the first success it resolves at once with the same config.
+export function initializeApi() {
+  if (!initializing) {
+    initializing = loadConfig().then((config) => {
+      MANIFEST_API_BASE = config.apiUrl ? `${config.apiUrl}/manifests` : "";
+      COLLECTION_API_BASE = config.apiUrl ? `${config.apiUrl}/collections` : "";
+      USER_API_BASE = config.apiUrl ? `${config.apiUrl}/users` : "";
+      Amplify.configure({
+        Auth: {
+          Cognito: {
+            userPoolId: config.userPoolId,
+            userPoolClientId: config.userPoolClientId,
+            identityPoolId: config.identityPoolId,
+          },
+        },
+        Storage: {
+          S3: {
+            bucket: config.iiifBucket,
+            region: config.region,
+          },
+        },
+      });
+      return config;
+    });
+    initializing.catch(() => {
+      initializing = null;
+    });
+  }
+  return initializing;
 }
 
 export async function authHeaders() {

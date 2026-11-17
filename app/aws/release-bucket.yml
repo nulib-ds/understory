@@ -1,0 +1,140 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: "understory-releases-<region>: the one source of every Understory release. Every instance deploys and rolls back from it. Read RELEASING.md before changing anything here."
+
+# =============================================================================
+#  THE RELEASE BUCKET. READ "The release buckets" IN RELEASING.md FIRST.
+# =============================================================================
+#
+# This bucket is the single source of truth for Understory releases in its
+# region. scripts/release.py, run by .github/workflows/release.yml on every
+# merge to main, writes each version to v<version>/ here, and nowhere else:
+#
+#   v1.2.0/understory.yml          the packaged template an instance copies in
+#   v1.2.0/understory.yml.sha256   its checksum, checked on every upgrade and deploy
+#   v1.2.0/<content hash>          every function's code and the admin UI layer
+#
+# Every Understory instance, NU's production included, points at these objects
+# for its code. They are read when an instance is created, every time one is
+# updated, and every time CloudFormation rolls a failed update back. So:
+#
+#   - Deleting an object breaks every instance on that version: it can no
+#     longer update or roll back. Nothing is ever deleted here.
+#   - Changing an object's bytes changes what every instance on that version
+#     gets on its next deploy. Nothing is ever overwritten here.
+#   - Deleting this bucket breaks every instance at once, and the name cannot
+#     be got back if someone else takes it. Never delete this stack's bucket.
+#
+# Where it lives: NU's staging AWS account, stack understory-releases, one
+# stack per region. Not the production account: the release workflow's role
+# lives wherever this bucket does, and production stacks should not share an
+# account with anything a push to a public repo can drive.
+#
+# Deploy or update, per region, by hand, never from a workflow:
+#
+#   aws cloudformation deploy --region us-east-1 \
+#     --stack-name understory-releases --template-file app/aws/release-bucket.yml \
+#     --parameter-overrides Public=false ReaderAccountIds="" \
+#     --tags Project=understory
+#
+# Name every parameter on every deploy, as with any stack here: one left out
+# keeps its previous value.
+
+Parameters:
+  Public:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: "true makes every object under v*/ readable by anyone, which is what lets another institution's AWS account deploy from it. Nothing in a release is secret (it is built from the public repo), but making a bucket public is a decision for the account's owner. false keeps it to this account and ReaderAccountIds."
+  ReaderAccountIds:
+    Type: CommaDelimitedList
+    Default: ""
+    Description: "AWS account ids, comma-separated, that may read releases while the bucket is not public: NU's own accounts, such as production's. Empty for none."
+
+Conditions:
+  IsPublic: !Equals [!Ref Public, "true"]
+  HasReaders: !Not [!Equals [!Join ["", !Ref ReaderAccountIds], ""]]
+
+Resources:
+  ReleaseBucket:
+    Type: AWS::S3::Bucket
+    # Retained whatever happens to this stack: instances deploy and roll back
+    # from these objects, so they must outlive any change to the stack.
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      # Fixed, not a parameter: scripts/release.py and every instance's
+      # scripts/upgrade derive exactly this name. There is no other.
+      BucketName: !Sub "understory-releases-${AWS::Region}"
+      # A version is never overwritten (release.py refuses an existing one).
+      # Versioning is the backstop: an accidental overwrite keeps the released
+      # bytes, recoverable, as a previous version.
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        IgnorePublicAcls: true
+        BlockPublicPolicy: !If [IsPublic, false, true]
+        RestrictPublicBuckets: !If [IsPublic, false, true]
+
+  ReleaseBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ReleaseBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          # The seatbelt. An explicit Deny beats any Allow, an administrator's
+          # included, so no release object or version can be deleted, and
+          # nothing can quietly expire them or turn versioning off, without
+          # first editing this policy on purpose. It guards against accidents,
+          # not attackers: the account's root user can always remove a bucket
+          # policy.
+          - Sid: NeverDeleteARelease
+            Effect: Deny
+            Principal: "*"
+            Action:
+              - s3:DeleteObject
+              - s3:DeleteObjectVersion
+            Resource: !Sub "${ReleaseBucket.Arn}/*"
+          - Sid: NeverDeleteTheBucketOrItsHistory
+            Effect: Deny
+            Principal: "*"
+            Action:
+              - s3:DeleteBucket
+              - s3:PutLifecycleConfiguration
+              - s3:PutBucketVersioning
+            Resource: !GetAtt ReleaseBucket.Arn
+          - Sid: TlsOnly
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource:
+              - !GetAtt ReleaseBucket.Arn
+              - !Sub "${ReleaseBucket.Arn}/*"
+            Condition:
+              Bool:
+                "aws:SecureTransport": "false"
+          - !If
+            - IsPublic
+            - Sid: AnyoneMayReadReleases
+              Effect: Allow
+              Principal: "*"
+              Action: s3:GetObject
+              Resource: !Sub "${ReleaseBucket.Arn}/v*"
+            - !Ref AWS::NoValue
+          - !If
+            - HasReaders
+            - Sid: NuAccountsMayReadReleases
+              Effect: Allow
+              Principal:
+                AWS: !Ref ReaderAccountIds
+              Action: s3:GetObject
+              Resource: !Sub "${ReleaseBucket.Arn}/v*"
+            - !Ref AWS::NoValue
+
+Outputs:
+  BucketName:
+    Value: !Ref ReleaseBucket
+  ReleaseBaseUrl:
+    Description: "Where an instance's scripts/upgrade downloads a release from once the bucket is public."
+    Value: !Sub "https://${ReleaseBucket}.s3.${AWS::Region}.amazonaws.com"

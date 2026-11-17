@@ -1,0 +1,11 @@
+/* This instance's theme. Loaded after the app's own CSS.
+
+   Override the documented tokens on both :root and .radix-themes (Radix
+   redeclares its scales on the latter). For example, a brand colour for the
+   top bar:
+
+:root,
+.radix-themes {
+  --brand-bar-bg: var(--accent-11);
+}
+*/

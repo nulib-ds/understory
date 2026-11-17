@@ -5,15 +5,15 @@ import nextPlugin from '@next/eslint-plugin-next'
 import { defineConfig, globalIgnores } from 'eslint/config'
 
 export default defineConfig([
-  globalIgnores(['.next', 'out', 'dist']),
+  globalIgnores(['.next', 'out', 'dist', '.layer', 'public/branding']),
   {
     files: ['**/*.{js,jsx,mjs}'],
     extends: [js.configs.recommended, reactHooks.configs.flat.recommended],
     plugins: { '@next/next': nextPlugin },
     languageOptions: {
       ecmaVersion: 2020,
-      // Next inlines process.env.NEXT_PUBLIC_* at build time, in the browser
-      // bundle too, so `process` is a global everywhere here.
+      // The UI reads no process.env (its settings are /config.json, read at
+      // run time), but Next's own code and config files still may.
       globals: { ...globals.browser, process: 'readonly' },
       parserOptions: {
         ecmaVersion: 'latest',
@@ -25,14 +25,15 @@ export default defineConfig([
       ...nextPlugin.configs.recommended.rules,
       ...nextPlugin.configs['core-web-vitals'].rules,
       // Every image is a IIIF URL on another host, already sized by its Image
-      // API; next/image would route each one through our server to resize it.
+      // API; next/image would resize each one through a server, and a static
+      // export has none.
       '@next/next/no-img-element': 'off',
       'no-unused-vars': ['error', { varsIgnorePattern: '^[A-Z_]' }],
     },
   },
   {
-    // Config files run in Node.
-    files: ['*.config.{js,mjs}'],
+    // Config files and scripts run in Node.
+    files: ['*.config.{js,mjs}', 'scripts/**/*.{js,mjs}'],
     languageOptions: { globals: globals.node },
   },
 ])
