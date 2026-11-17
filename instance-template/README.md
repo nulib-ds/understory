@@ -1,5 +1,11 @@
 # Understory instance
 
+Make your own from this template: **Use this template** on
+[nulib-ds/understory-template](https://github.com/nulib-ds/understory-template),
+or `gh repo create <owner>/<name> --template nulib-ds/understory-template`.
+It is republished on every Understory release, with that release's
+`understory.yml`, so a new repo starts on the latest version.
+
 One Understory instance: its configuration, its branding, and the release it
 runs. There is no source code here. The code is
 [nulib-ds/understory](https://github.com/nulib-ds/understory), and
@@ -42,10 +48,14 @@ its own credentials:
 2. Decide on a custom domain now, if you want one. Every IIIF id embeds its
    host, so a domain added later changes every published URL. Without one,
    the stack uses generated `*.cloudfront.net` names.
-3. Take a release: `scripts/upgrade <version>`.
+3. Take a release: `scripts/upgrade <version>`. A repo made from the template
+   already has the latest one, so this step is for any other version or
+   region.
 4. Deploy: `sam deploy`. It takes 20 to 30 minutes, mostly CloudFront.
 5. `AdminEmail` receives a temporary password. Sign in at the `AdminUrl`
    output and choose your own. Invite everyone else from the Users screen.
+   `AdminEmail` is read only on that first deploy; in a public repo, set it
+   back to `""` rather than leave a person's address committed.
 
 ## Upgrading
 

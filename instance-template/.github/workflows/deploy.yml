@@ -5,9 +5,12 @@
 # `sam deploy` instead. To use this workflow:
 #   1. Deploy github-deploy-role.yml once, by hand, in the instance's account.
 #   2. Create a GitHub environment named production that allows only main.
-#   3. Set the repository variables AWS_DEPLOY_ROLE_ARN (that stack's output)
-#      and AWS_REGION (the region in samconfig.yaml).
-# No secrets are needed: the role is assumed through GitHub's OIDC provider.
+#   3. Set the secret AWS_DEPLOY_ROLE_ARN (that stack's output) and the
+#      variable AWS_REGION (the region in samconfig.yaml).
+# The role is assumed through GitHub's OIDC provider, so there is no AWS key.
+# Its ARN is a secret, not a variable, because a public repo's Actions logs
+# are public too and the ARN carries the account id, which the credentials
+# step also masks everywhere else it appears.
 name: Deploy
 
 on:
@@ -58,9 +61,11 @@ jobs:
       # update can outlast the default hour.
       - uses: aws-actions/configure-aws-credentials@v6
         with:
-          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           role-duration-seconds: 7200
           aws-region: ${{ vars.AWS_REGION }}
+          # sam deploy prints the stack's outputs, and some are ARNs.
+          mask-aws-account-id: true
 
       - name: Check understory.yml is an unmodified release
         run: scripts/verify
