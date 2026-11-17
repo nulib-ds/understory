@@ -35,8 +35,9 @@ its own credentials:
 
 ## First deploy
 
-1. Edit `samconfig.yaml`: `stack_name` (27 characters or fewer, and yours:
-   it names buckets, which S3 needs unique across all of AWS), `s3_prefix`,
+1. Edit `samconfig.yaml`: `stack_name` (yours: it names buckets, which S3
+   needs unique across all of AWS; past 27 characters it also needs
+   `SearchCollectionName`), `s3_prefix`,
    `region`, `AdminEmail` and `InstitutionName`.
 2. Decide on a custom domain now, if you want one. Every IIIF id embeds its
    host, so a domain added later changes every published URL. Without one,

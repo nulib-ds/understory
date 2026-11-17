@@ -27,6 +27,8 @@ branches.
   `/collection/work?slug=…&id=…`. The old paths redirect.
 - The image converter and the A/V transcoder skip work that is already done,
   so copying a backup into a stack converts nothing again.
+- `SearchCollectionName` names the search collection and its policies, so a
+  stack name may be longer than 27 characters.
 
 ### Upgrading
 

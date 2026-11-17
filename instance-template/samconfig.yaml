@@ -8,8 +8,9 @@ version: 1.0
 default:
   deploy:
     parameters:
-      # 27 characters or fewer. It names every bucket, which S3 needs unique
-      # across all of AWS, so make it yours: <institution>-understory.
+      # It names every bucket, which S3 needs unique across all of AWS, so
+      # make it yours: <institution>-understory. Longer than 27 characters,
+      # it also needs SearchCollectionName, below.
       stack_name: acme-understory
       region: us-east-1
       template_file: understory.yml
@@ -29,6 +30,10 @@ default:
         - AccentColor=indigo
         # Search capacity ceiling, in OCUs: the spend cap. 2, 4, 8 or 16.
         - SearchMaxOcu=2
+        # The search collection's name, 3-27 characters. Empty means the stack
+        # name. Set it on the first deploy only: changing it replaces the
+        # collection.
+        - SearchCollectionName=""
         - SearchIndexPrefix=""
         # Optional custom domain: iiif-, images- and admin-<ProjectName>.<BaseDomainName>.
         # Decide before publishing anything: every IIIF id embeds the host.
