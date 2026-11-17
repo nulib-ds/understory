@@ -1045,7 +1045,7 @@ Production's two buckets were backed up first (2026-11-17).
    private, and readable by the production account (`ReaderAccountIds`).
    `Public=true` waits until releases are shared beyond NU.
 3. **NU's instance: laid out, not deployed.** It is
-   `nulib-ds/understory-digital-scholarship` (private), in the production
+   `nulib-ds/understory-digital-scholarship` (public), in the production
    account, on v1.0.0. It replaces `production-understory` and takes over its
    three hostnames, so the documents restored from the backup need no
    rewriting and every Canopy site's links keep working. Its `RUNBOOK.md` is
