@@ -27,6 +27,7 @@ const {
   mediaStatusKey,
   buildJobSettings,
   summarizeCompletedJob,
+  isTranscodeFinished,
 } = require("../../../shared/av");
 
 const s3 = new S3Client({});
@@ -120,6 +121,12 @@ async function handleUpload(record) {
     return;
   }
   const {workId, assetId, kind} = parsed;
+  // Already transcoded: a restore copying the source bucket back, say. To
+  // transcode again on purpose, delete the asset's media.json first.
+  if (isTranscodeFinished(await readStatus(workId, assetId))) {
+    console.log(`Skipping ${key}: already transcoded (av/${workId}/${assetId}/media.json is ready)`);
+    return;
+  }
   const filename = await sourceFilename(sourceBucket, key);
   if (!kind) {
     await writeStatus(workId, assetId, {status: "error", filename, error: `Unsupported file type: .${parsed.ext}`});

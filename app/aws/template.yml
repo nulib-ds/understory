@@ -1489,6 +1489,17 @@ Resources:
               Action:
                 - s3:GetObject
               Resource: !Sub "arn:aws:s3:::${AWS::StackName}-source/*"
+            # To skip a source whose pyramid already exists. HeadObject needs
+            # GetObject, and ListBucket is what makes a missing TIFF a 404
+            # rather than a 403.
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+              Resource: !Sub "arn:aws:s3:::${AWS::StackName}-iiif/image/*"
+            - Effect: Allow
+              Action:
+                - s3:ListBucket
+              Resource: !Sub "arn:aws:s3:::${AWS::StackName}-iiif"
         - S3WritePolicy:
             BucketName: !Sub "${AWS::StackName}-iiif"
 
