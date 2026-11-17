@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: "Understory: the role .github/workflows/deploy.yml assumes to deploy one shared stack"
+Description: "Understory: the role this repo's workflows assume in one environment (deploy.yml for staging, release.yml for release)"
 
 # Deployed by hand, once per account, and never by the workflow:
 #
@@ -22,15 +22,22 @@ Description: "Understory: the role .github/workflows/deploy.yml assumes to deplo
 Parameters:
   GitHubEnvironment:
     Type: String
-    AllowedValues: [staging, production]
-    Description: "The GitHub environment, and the shared stack, this role deploys: staging-understory or production-understory."
+    # production is the role production-understory was deployed with before
+    # it moved to an instance repo of its own, which has its own role
+    # (instance-template/github-deploy-role.yml). Kept so that stack still
+    # updates; nothing in this repo assumes it any more.
+    AllowedValues: [staging, release, production]
+    Description: "staging: deploy.yml deploys staging-understory (administrator). release: release.yml publishes to the understory-releases-* buckets in this account (those buckets only)."
+
+Conditions:
+  IsRelease: !Equals [!Ref GitHubEnvironment, release]
 
 Resources:
   DeployRole:
     Type: AWS::IAM::Role
     Properties:
       RoleName: !Sub "understory-github-actions-${GitHubEnvironment}"
-      Description: !Sub "Assumed by nulib-ds/understory's deploy workflow, in its ${GitHubEnvironment} environment only"
+      Description: !Sub "Assumed by nulib-ds/understory's workflows, in its ${GitHubEnvironment} environment only"
       # The default is an hour. A deploy that waits on CloudFront or OpenSearch
       # can outlast that, and sam deploy then fails while CloudFormation carries
       # on. The workflow asks for the same length (role-duration-seconds).
@@ -42,8 +49,9 @@ Resources:
             Principal:
               Federated: !Sub "arn:aws:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com"
             Action: sts:AssumeRoleWithWebIdentity
-            # Exact matches, never a wildcard. The repo is public and the role
-            # is an administrator, so only a job in this one environment may
+            # Exact matches, never a wildcard. The repo is public, and every
+            # role but release's is an administrator, so only a job in this
+            # one environment may
             # assume it, and the environment admits only its own branch.
             # The subject is GitHub's immutable form, which this repo uses:
             # owner and repo ids beside their names, so a deleted and
@@ -52,11 +60,46 @@ Resources:
               StringEquals:
                 token.actions.githubusercontent.com:aud: sts.amazonaws.com
                 token.actions.githubusercontent.com:sub: !Sub "repo:nulib-ds@79535802/understory@1191898493:environment:${GitHubEnvironment}"
-      # The same grant as nulib's github-actions-role. The stack touches some
-      # fifteen services, and a scoped policy would need widening with each
-      # new one; the trust condition above is what limits who holds it.
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/AdministratorAccess
+      # Deploying a stack: the same grant as nulib's github-actions-role. The
+      # stack touches some fifteen services, and a scoped policy would need
+      # widening with each new one; the trust condition above is what limits
+      # who holds it.
+      ManagedPolicyArns: !If
+        - IsRelease
+        - !Ref AWS::NoValue
+        - [arn:aws:iam::aws:policy/AdministratorAccess]
+      # Publishing a release needs nothing but the release buckets: sam package
+      # and release.py read and write objects under v*/, and check whether one
+      # exists. No delete, and nothing else in the account, so a push to main
+      # can never reach a stack. (The buckets refuse deletes from anyone anyway;
+      # see release-bucket.yml.)
+      #
+      # Bucket ARNs carry no account, so understory-releases-* alone would also
+      # match a bucket of that name in another account. s3:ResourceAccount
+      # pins it to this account's own release buckets.
+      Policies: !If
+        - IsRelease
+        - - PolicyName: PublishReleases
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - s3:ListBucket
+                    - s3:GetBucketLocation
+                  Resource: arn:aws:s3:::understory-releases-*
+                  Condition:
+                    StringEquals:
+                      "s3:ResourceAccount": !Ref AWS::AccountId
+                - Effect: Allow
+                  Action:
+                    - s3:GetObject
+                    - s3:PutObject
+                  Resource: arn:aws:s3:::understory-releases-*/v*
+                  Condition:
+                    StringEquals:
+                      "s3:ResourceAccount": !Ref AWS::AccountId
+        - !Ref AWS::NoValue
 
 Outputs:
   DeployRoleArn:

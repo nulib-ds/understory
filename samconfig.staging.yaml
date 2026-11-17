@@ -1,0 +1,46 @@
+# staging-understory's configuration. Tracked, and public like the rest of
+# this repo, so it holds nothing that identifies NU's AWS account: a change to
+# it is reviewed and merged like any other, and deploy.yml deploys it on the
+# next push to staging.
+#
+# CertificateArn and HostedZoneId are deliberately NOT here. The certificate's
+# ARN carries the account id, and the zone id names a Route53 zone in it;
+# neither is a credential, but this repo keeps account identifiers out of
+# tracked files. Because they are not named, sam deploy asks CloudFormation to
+# keep each one's previous value (UsePreviousValue), so the stack goes on using
+# the certificate and zone it was created with. To change either, deploy once
+# by hand with --parameter-overrides naming EVERY parameter: a command-line
+# override replaces this file's list rather than adding to it.
+#
+#   scripts/build.sh
+#   cd app/aws
+#   sam deploy --config-file ../../samconfig.staging.yaml
+#
+# Everything is under deploy, never global, so that sam sync finds no stack
+# name here and refuses (see "Deploying" in AGENTS.md).
+#
+# Every other parameter is named, empty ones included: one left out keeps
+# whatever value the stack was last given. Write an empty value as Key="".
+version: 1.0
+default:
+  deploy:
+    parameters:
+      stack_name: staging-understory
+      region: us-east-1
+      resolve_s3: true
+      confirm_changeset: true
+      tags:
+        - Project=understory
+      capabilities:
+        - CAPABILITY_IAM
+        - CAPABILITY_AUTO_EXPAND
+      parameter_overrides:
+        # staging's users already exist; invite more from the Users screen.
+        - AdminEmail=""
+        - InstitutionName="Northwestern University Libraries (staging)"
+        - AccentColor=purple
+        - SearchMaxOcu=2
+        - SearchCollectionName=""
+        - SearchIndexPrefix=""
+        - ProjectName=understory
+        - BaseDomainName=rdc-staging.library.northwestern.edu

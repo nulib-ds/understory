@@ -216,3 +216,12 @@ test("isAssetId refuses anything that could escape its prefix", () => {
   assert.equal(isAssetId(""), false);
   assert.equal(isAssetId(undefined), false);
 });
+
+test("only a ready status with a stream counts as a finished transcode", () => {
+  const {isTranscodeFinished} = require("../av");
+  assert.equal(isTranscodeFinished({status: "ready", streamUrl: "https://example.org/av/w/a/index.m3u8"}), true);
+  assert.equal(isTranscodeFinished({status: "processing"}), false);
+  assert.equal(isTranscodeFinished({status: "error", error: "boom"}), false);
+  assert.equal(isTranscodeFinished({status: "ready"}), false);
+  assert.equal(isTranscodeFinished(null), false);
+});

@@ -3,6 +3,7 @@ import {uploadData} from "aws-amplify/storage";
 import {ImageIcon, SpeakerLoudIcon, TrashIcon, UploadIcon, VideoIcon} from "@radix-ui/react-icons";
 import {AlertDialog, Box, Button, Callout, Em, Flex, IconButton, Progress, Text, TextField} from "@radix-ui/themes";
 import {MANIFEST_API_BASE, apiFetch, manifestApiUrl} from "../lib/api";
+import {getConfig} from "../lib/config";
 import {useReportReady} from "../lib/pageReady";
 import {
   assetLabelFromKey,
@@ -16,14 +17,15 @@ import {
 // AssetDropzone.css is imported by the root layout (src/app/layout.jsx), with
 // every other global sheet, in cascade order.
 
-const SOURCE_BUCKET = process.env.NEXT_PUBLIC_SOURCE_BUCKET || "";
-const STORAGE_REGION = process.env.NEXT_PUBLIC_STORAGE_REGION || "";
-
-// Amplify's default configured Storage bucket (NEXT_PUBLIC_STORAGE_BUCKET) is the IIIF
+// Amplify's default configured Storage bucket (iiifBucket in /config.json) is the IIIF
 // *output* bucket — uploads need to go to the separate *source* bucket instead
 // (the one the iiif-image Lambda watches), so every uploadData call must target
-// it explicitly rather than relying on the default.
-const SOURCE_BUCKET_TARGET = {bucketName: SOURCE_BUCKET, region: STORAGE_REGION};
+// it explicitly rather than relying on the default. Built when called, because
+// the bucket comes from /config.json, which loads after this module.
+const sourceBucketTarget = () => {
+  const {sourceBucket, region} = getConfig();
+  return {bucketName: sourceBucket, region};
+};
 
 // A freshly uploaded file still needs the S3-triggered iiif-image Lambda to produce
 // a pyramid TIFF before serverless-iiif can serve its info.json — poll for it as soon
@@ -77,7 +79,7 @@ function extensionFromFilename(name) {
 async function waitForImageInfo(key, isActive) {
   const infoUrl = buildInfoUrlFromKey(key);
   if (!infoUrl) {
-    throw new Error("NEXT_PUBLIC_IIIF_BASE_URL is not configured");
+    throw new Error("The Image API URL is not configured (imageApiUrl in /config.json)");
   }
   const deadline = Date.now() + INFO_POLL_DEADLINE_MS;
   while (Date.now() < deadline) {
@@ -280,7 +282,7 @@ export default function AssetDropzone({workId, manifest, disabled, disabledReaso
           path: key,
           data: file,
           options: {
-            bucket: SOURCE_BUCKET_TARGET,
+            bucket: sourceBucketTarget(),
             // The key is a random id, so this is the only record of what the
             // file was called — the transcode copies it into media.json, which
             // is what a recovered item is labelled from. URI-encoded because

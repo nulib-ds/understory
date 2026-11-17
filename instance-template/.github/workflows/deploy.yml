@@ -1,0 +1,71 @@
+# Deploys this instance on every push to main, after checking that
+# understory.yml is an unmodified Understory release.
+#
+# Optional: an instance can be deployed from anyone's machine with
+# `sam deploy` instead. To use this workflow:
+#   1. Deploy github-deploy-role.yml once, by hand, in the instance's account.
+#   2. Create a GitHub environment named production that allows only main.
+#   3. Set the repository variables AWS_DEPLOY_ROLE_ARN (that stack's output)
+#      and AWS_REGION (the region in samconfig.yaml).
+# No secrets are needed: the role is assumed through GitHub's OIDC provider.
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Queue, never cancel: cancelling the runner does not stop CloudFormation, and
+# the next run would fail against a stack still UPDATE_IN_PROGRESS.
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  # How scripts/upgrade and scripts/verify read the release bucket. Empty means
+  # anonymously over https, once it is public; s3://understory-releases-{region}
+  # means with this job's AWS credentials, for an account it is shared with.
+  UNDERSTORY_RELEASES: ${{ vars.UNDERSTORY_RELEASES }}
+
+jobs:
+  # On a pull request, so an edited or mismatched understory.yml fails before
+  # merge. Reads the release anonymously, so it is skipped for a private
+  # release bucket (an s3:// UNDERSTORY_RELEASES); deploy checks again anyway.
+  verify:
+    if: github.event_name == 'pull_request' && !startsWith(vars.UNDERSTORY_RELEASES, 's3://')
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - run: scripts/verify
+
+  deploy:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    environment: production
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: aws-actions/setup-sam@v3
+        with:
+          use-installer: true
+
+      # Two hours, the role's MaxSessionDuration: a CloudFront or OpenSearch
+      # update can outlast the default hour.
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          role-duration-seconds: 7200
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Check understory.yml is an unmodified release
+        run: scripts/verify
+
+      # Nothing to build: understory.yml points at the release's code, and
+      # sam deploy zips branding/ itself.
+      - name: Deploy
+        run: sam deploy --no-confirm-changeset --no-fail-on-empty-changeset --no-progressbar

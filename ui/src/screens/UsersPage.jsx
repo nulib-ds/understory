@@ -12,6 +12,7 @@ import {
   Flex,
   Table,
   Text,
+  TextField,
 } from "@radix-ui/themes";
 import {COLLECTION_API_BASE, USER_API_BASE, apiFetch} from "../lib/api";
 import {ROLE_ADMIN, ROLE_EDITOR, useSession} from "../lib/session";
@@ -152,6 +153,56 @@ function UserRow({user, collections, saving, isSelf, onToggleRole, onSave}) {
   );
 }
 
+// The pool is admin-create-only, so this is how anyone new gets in: Cognito
+// emails them a temporary password, and the sign-in screen asks them to replace
+// it. They arrive with no role; the matrix below assigns one.
+function InviteUserForm({onInvited, onError}) {
+  const [email, setEmail] = useState("");
+  const [sending, setSending] = useState(false);
+
+  const submit = async (event) => {
+    event.preventDefault();
+    setSending(true);
+    try {
+      const data = await apiFetch(USER_API_BASE, {
+        method: "POST",
+        body: {email},
+        errorMessage: "Unable to invite user",
+      });
+      setEmail("");
+      onInvited(data.user);
+    } catch (err) {
+      onError(err.message);
+    } finally {
+      setSending(false);
+    }
+  };
+
+  return (
+    <form onSubmit={submit}>
+      <Flex gap="2" align="end" mb="4" wrap="wrap">
+        <Box style={{flex: "1 1 20rem", maxWidth: "28rem"}}>
+          <Text as="label" size="2" weight="medium" htmlFor="invite-email">
+            Invite by email
+          </Text>
+          <TextField.Root
+            id="invite-email"
+            type="email"
+            required
+            mt="1"
+            value={email}
+            placeholder="name@example.edu"
+            onChange={(e) => setEmail(e.target.value)}
+          />
+        </Box>
+        <Button type="submit" loading={sending} disabled={!email.trim()}>
+          Invite
+        </Button>
+      </Flex>
+    </form>
+  );
+}
+
 export default function UsersPage() {
   const session = useSession();
   const isAdmin = session.role === ROLE_ADMIN;
@@ -278,6 +329,19 @@ export default function UsersPage() {
               </Text>
             ) : (
               <>
+                <InviteUserForm
+                  onInvited={(user) => {
+                    setError(null);
+                    setUsers((prev) =>
+                      [...prev, user].sort((a, b) => (a.email || "").localeCompare(b.email || "")),
+                    );
+                    setNotice(`Invited ${user.email}. Cognito has emailed them a temporary password.`);
+                  }}
+                  onError={(message) => {
+                    setNotice(null);
+                    setError(message);
+                  }}
+                />
                 {/* Ghost, like the works table on a collection's page. */}
                 <Table.Root variant="ghost" className="manifest-list">
                   <Table.Header>
@@ -303,8 +367,8 @@ export default function UsersPage() {
                   </Table.Body>
                 </Table.Root>
                 <Text as="p" size="1" color="gray" mt="3">
-                  Accounts are created in Cognito, not here — this pool is invite-only. A user with no
-                  role can sign in and browse, but cannot change anything.
+                  This pool is invite-only: nobody can sign up on their own. A user with no role can sign
+                  in and browse, but cannot change anything.
                 </Text>
               </>
             )}

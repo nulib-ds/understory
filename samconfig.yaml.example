@@ -3,8 +3,8 @@
 # file, at the repo root (gitignored), and pass it explicitly from app/aws.
 # SAM resolves the path from the template's directory, hence the ../../:
 #
+#   scripts/build.sh            (the UI, then sam build --use-container)
 #   cd app/aws
-#   sam build --use-container
 #   sam deploy --config-file ../../samconfig.<you>.yaml
 #   sam sync --watch --config-file ../../samconfig.<you>.yaml
 #
@@ -12,9 +12,9 @@
 # of app/, and a container build copies everything under it: a symlink there
 # pointing outside app/ fails the build.
 #
-# Staging and production keep theirs in the private repo, symlinked in
-# here as samconfig.staging.yaml and samconfig.production.yaml. See "Deploying"
-# in AGENTS.md for how those differ from this one.
+# Staging's config is samconfig.staging.yaml, tracked beside this file.
+# Production and every other instance run a release, from an instance repo of
+# their own (instance-template/). See "Deploying" in AGENTS.md.
 #
 # SAM reads exactly ONE config file per command; files do not inherit from one
 # another. A value every stack shares belongs in the template parameter's
@@ -44,19 +44,11 @@ default:
       # parameter left out keeps its PREVIOUS value, not the template default,
       # so deleting a line changes nothing.
       parameter_overrides:
-        # Leave empty on the first deploy, then copy the ImagesDistributionHost
-        # output here and deploy again. See ForceHost in template.yml.
-        - ImageApiForceHost=""
-        # Empty means no hosted UI: run cd ui && npm run dev. A branch, such as
-        # the feature branch you are on, makes the stack build and host the UI
-        # on Amplify, and then the token is required: a classic PAT with the
-        # admin:repo_hook scope, used once to create the app. The Amplify
-        # GitHub App must already be installed on the repo's org.
-        - GitHubBranch=""
-        - GitHubOAuthToken=""
-        # Amplify rebuilds the UI on every push to GitHubBranch. Only a shared
-        # stack, built by the deploy workflow, sets this to false.
-        - UIAutoBuild="true"
+        # Invited as an admin the first time it is set (Cognito emails a
+        # temporary password). Leave empty to add yourself by hand instead.
+        - AdminEmail=""
+        - InstitutionName="<you>'s dev stack"
+        - AccentColor=iris
   deploy:
     parameters:
       confirm_changeset: true

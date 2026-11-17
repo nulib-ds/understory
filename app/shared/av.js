@@ -297,8 +297,18 @@ function isAssetId(value) {
   return typeof value === "string" && ASSET_ID_PATTERN.test(value);
 }
 
+// Whether an asset's media.json says its transcode already finished. An upload
+// event for such an asset is not new work: it is the same file arriving again,
+// most often a restore copying a bucket back. Transcoding it again would bill
+// MediaConvert for a stream that already exists, and briefly mark a playable
+// asset as processing.
+function isTranscodeFinished(status) {
+  return status?.status === "ready" && typeof status.streamUrl === "string" && status.streamUrl.length > 0;
+}
+
 module.exports = {
   AV_PREFIX,
+  isTranscodeFinished,
   HLS_FORMAT,
   mediaKindFromExtension,
   parseSourceKey,

@@ -2,7 +2,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const {pipeline} = require("stream/promises");
-const {S3Client, GetObjectCommand} = require("@aws-sdk/client-s3");
+const {S3Client, GetObjectCommand, HeadObjectCommand} = require("@aws-sdk/client-s3");
 const {Upload} = require("@aws-sdk/lib-storage");
 const sharp = require("sharp");
 
@@ -13,6 +13,22 @@ sharp.cache(false);
 const s3 = new S3Client({});
 const IIIF_BUCKET = process.env.IIIF_BUCKET;
 const SUPPORTED_EXTENSIONS = new Set([".jpg", ".jpeg", ".tif", ".tiff", ".png", ".webp"]);
+
+// A source key never gets new content: an upload's key ends in a random id
+// (AssetDropzone), and an import's is its work and canvas, re-copied only on a
+// resume, from the same source. So a pyramid that exists is this source's,
+// finished, and an upload event for it is the same file arriving again (a
+// restore copying the source bucket back, most often). To convert again on
+// purpose, delete the TIFF first.
+async function alreadyConverted(outputKey) {
+  try {
+    await s3.send(new HeadObjectCommand({Bucket: IIIF_BUCKET, Key: outputKey}));
+    return true;
+  } catch (error) {
+    if (error?.name === "NotFound" || error?.$metadata?.httpStatusCode === 404) return false;
+    throw error;
+  }
+}
 
 exports.handler = async (event) => {
   for (const record of event.Records) {
@@ -31,6 +47,11 @@ exports.handler = async (event) => {
     const filename = parts.pop();
     const identifier = filename.replace(/\.[^.]+$/, "");
     const outputKey = [...parts, `${identifier}.tif`].join("/");
+
+    if (await alreadyConverted(outputKey)) {
+      console.log(`Skipping ${sourceKey}: s3://${IIIF_BUCKET}/${outputKey} already exists`);
+      continue;
+    }
 
     // File to file through /tmp, never buffer to buffer. A buffer holds the
     // decoded image and the whole pyramid at once: a 184-megapixel map peaked

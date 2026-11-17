@@ -8,6 +8,9 @@ import {
 import {Box, Button, Callout, Flex, Heading, Text, TextField} from "@radix-ui/themes";
 import Wordmark from "./Wordmark";
 import {imageRequestUrl} from "../lib/canvasAssets";
+import {getConfig} from "../lib/config";
+import {useBranding} from "../lib/branding";
+import {renderSnippetHtml} from "../lib/iiifHtml";
 // SignIn.css is imported by the root layout (src/app/layout.jsx), with every
 // other global sheet, in cascade order.
 
@@ -22,14 +25,10 @@ const NEW_PASSWORD_STEP = "CONFIRM_SIGN_IN_WITH_NEW_PASSWORD_REQUIRED";
 
 // This screen renders before anyone is authenticated, so it cannot call the API —
 // every route is behind Cognito. It reads a small public sample the backend
-// writes into the IIIF bucket instead. Derived from the storage variables the UI
-// already has rather than adding another one.
+// writes into the working space instead, through IIIFDistribution like every
+// other document (the bucket itself refuses anonymous reads).
 const SHOWCASE_COUNT = 5;
 const SHOWCASE_TILE = 400;
-const PRESENTATION_BASE =
-  process.env.NEXT_PUBLIC_STORAGE_BUCKET && process.env.NEXT_PUBLIC_STORAGE_REGION
-    ? `https://${process.env.NEXT_PUBLIC_STORAGE_BUCKET}.s3.${process.env.NEXT_PUBLIC_STORAGE_REGION}.amazonaws.com`
-    : "";
 
 // A square region at a fixed size, so every tile is identical no matter the
 // original aspect ratio. With `^` (see imageRequestUrl), because the showcase
@@ -52,11 +51,12 @@ function useShowcase() {
   const [thumbnails, setThumbnails] = useState([]);
 
   useEffect(() => {
-    if (!PRESENTATION_BASE) return undefined;
+    const {documentsUrl} = getConfig();
+    if (!documentsUrl) return undefined;
     let cancelled = false;
     (async () => {
       try {
-        const response = await fetch(`${PRESENTATION_BASE}/working/showcase.json`, {
+        const response = await fetch(`${documentsUrl}/working/showcase.json`, {
           cache: "no-store",
         });
         if (!response.ok) return;
@@ -282,6 +282,9 @@ export default function SignIn({onSignedIn}) {
   };
 
   const showcase = useShowcase();
+  // The instance's own words for this card (branding/sign-in.html): who it is
+  // for, who to ask for an account.
+  const intro = renderSnippetHtml(useBranding().signIn);
 
   const form = forms[step];
 
@@ -301,6 +304,7 @@ export default function SignIn({onSignedIn}) {
           </Heading>
           <Text as="p" size="2" color="gray">{form.description || "Sign in to manage your works."}</Text>
         </Flex>
+        {intro && step === "signIn" && <div className="signin-intro">{intro}</div>}
 
         <form onSubmit={form.onSubmit}>
           <Flex direction="column" gap="4">

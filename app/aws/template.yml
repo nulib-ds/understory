@@ -3,44 +3,40 @@ Transform: AWS::Serverless-2016-10-31
 Description: "Understory: admin backend for downstream IIIF sites"
 
 Parameters:
-  ServerlessIiifVersion:
-    Type: String
-    Default: "7.0.1"
-  # --- Hosted admin UI ----------------------------------------------------------
-  # All four matter only when GitHubBranch is set. Without a branch the stack
-  # deploys no Amplify app at all, and the UI runs locally with npm run dev.
-  GitHubRepo:
-    Type: String
-    Default: "https://github.com/nulib-ds/understory"
-    Description: "URL of the GitHub repo Amplify builds the UI from: https://github.com/nulib-ds/understory, or your fork of it. Ignored without GitHubBranch."
-  GitHubBranch:
+  # --- The instance ------------------------------------------------------------
+  AdminEmail:
     Type: String
     Default: ""
-    Description: "Branch Amplify Hosting builds and serves the admin UI from, e.g. staging, main, or a feature branch on a dev stack. Leave blank to deploy no hosted UI."
-  GitHubOAuthToken:
+    Description: "Email of the first administrator. On the first deploy that sets it, this address is invited (Cognito emails a temporary password) and added to the admin group. Ignored while a user with this email exists, so changing it later invites one more admin and removes nobody."
+  InstitutionName:
     Type: String
     Default: ""
-    NoEcho: true
-    Description: "Classic GitHub personal access token with the admin:repo_hook scope, from an account with admin on the repo (https://github.com/settings/tokens). Amplify uses it once, when the app is created, to connect it through the Amplify GitHub App, which must already be installed on the repo's org. Required with GitHubBranch, ignored without it."
-  UIAutoBuild:
+    Description: "Shown in the admin UI's top bar (unless branding/header.html replaces it) and its page title."
+  AccentColor:
     Type: String
-    Default: "true"
-    AllowedValues: ["true", "false"]
-    Description: "Whether Amplify builds the UI on every push to GitHubBranch. Leave true on a dev stack. A shared stack sets false, because the deploy workflow (.github/workflows/deploy.yml) starts the build itself once the stack is deployed."
+    Default: iris
+    AllowedValues: [gray, gold, bronze, brown, yellow, amber, orange, tomato, red, ruby, crimson, pink, plum, purple, violet, iris, indigo, blue, cyan, teal, jade, green, grass, lime, mint, sky]
+    Description: "The admin UI's accent colour, as a Radix Themes colour name. branding/theme.css can override it with a palette of its own."
   SearchMaxOcu:
     Type: Number
     Default: 2
     AllowedValues: [2, 4, 8, 16]
     Description: "Ceiling on the search collection's capacity, in OCUs, applied to indexing and to search separately. This is the spend cap: the collection never scales past it. It scales to zero when idle whatever this says. Serverless accepts 2, 4, 8, 16 or multiples of 16."
+  SearchCollectionName:
+    Type: String
+    Default: ""
+    AllowedPattern: "^([a-z][a-z0-9-]{2,26})?$"
+    Description: "Name for this stack's OpenSearch collection, its group and its three policies (<name>-enc, -net, -data). Empty means the stack name, which then must be 27 characters or fewer; set this for a longer stack name. 3-27 lowercase letters, digits and hyphens, starting with a letter. Changing it on an existing stack replaces the collection, so set it only when creating one."
   SearchIndexPrefix:
     Type: String
     Default: ""
     Description: "Prefix for this stack's OpenSearch index and alias names. Must be lowercase. Defaults to the stack name. Index names are built as <prefix>.<slug>._pub.<runId>, with <prefix>.<slug> as the alias a consuming site points at."
   # --- CDN and custom domains -------------------------------------------------
-  # A dev stack sets none of these: both distributions are still created, and the
-  # base URLs point at their generated *.cloudfront.net domains (see Outputs). Only
-  # the aliases, the certificate and the DNS records are conditional — so a dev
-  # stack exercises the same origins, cache behaviours and CORS headers as staging.
+  # A stack may set none of these: all three distributions are still created, and
+  # the base URLs point at their generated *.cloudfront.net domains (see Outputs).
+  # Only the aliases, the certificate and the DNS records are conditional — so a
+  # dev stack exercises the same origins, cache behaviours and CORS headers as
+  # staging.
   ProjectName:
     Type: String
     Default: understory
@@ -48,19 +44,15 @@ Parameters:
   BaseDomainName:
     Type: String
     Default: ""
-    Description: "e.g. library.northwestern.edu, or rdc-staging.library.northwestern.edu. Leave blank for a dev stack."
+    Description: "e.g. library.example.edu. Leave blank to use the generated *.cloudfront.net names. Choose before publishing: every IIIF id embeds the host, so adding or changing a domain later changes every published URL."
   CertificateArn:
     Type: String
     Default: ""
-    Description: "ACM certificate ARN in us-east-1 covering *.<BaseDomainName>. One certificate serves both distributions and the Amplify domain. Required whenever BaseDomainName is set; ignored otherwise."
+    Description: "ACM certificate ARN in us-east-1 (CloudFront's region, whatever this stack's) covering *.<BaseDomainName>. One certificate serves all three distributions. Required whenever BaseDomainName is set; ignored otherwise."
   HostedZoneId:
     Type: String
     Default: ""
-    Description: "Route53 hosted zone for BaseDomainName. Optional: leave blank to set the domains up but manage the DNS records elsewhere. Covers the two CloudFront aliases only — the admin hostname's record belongs to Amplify, which writes it itself when the zone is in this account and otherwise hands it to you in the console."
-  ImageApiForceHost:
-    Type: String
-    Default: ""
-    Description: "Bare hostname info.json should advertise, overriding the derived one. Only needed on a stack with NO custom domain: deploy once, copy the ImagesDistributionHost output (a bare host - no https://, no /iiif/3), set this, deploy again. Without it a dev stack serves tiles straight from the Lambda and the CDN never sees them."
+    Description: "Route53 hosted zone for BaseDomainName. Optional: leave blank to set the domains up but manage the three DNS records elsewhere."
 
 Globals:
   Function:
@@ -88,40 +80,29 @@ Globals:
 
 Conditions:
   SearchIndexPrefixProvided: !Not [!Equals [!Ref SearchIndexPrefix, ""]]
+  SearchCollectionNameProvided: !Not [!Equals [!Ref SearchCollectionName, ""]]
   HasCustomDomain: !And
     - !Not [!Equals [!Ref BaseDomainName, ""]]
     - !Not [!Equals [!Ref CertificateArn, ""]]
-  HasImageApiForceHost: !Not [!Equals [!Ref ImageApiForceHost, ""]]
   # Domains can be configured without handing this stack the zone.
   ManageDns: !And
     - !Condition HasCustomDomain
     - !Not [!Equals [!Ref HostedZoneId, ""]]
-  # No branch, no Amplify app: a dev stack runs the UI locally instead.
-  HasHostedUI: !Not [!Equals [!Ref GitHubBranch, ""]]
-  HasHostedUIDomain: !And
-    - !Condition HasHostedUI
-    - !Condition HasCustomDomain
-  UIAutoBuilds: !Equals [!Ref UIAutoBuild, "true"]
-  # Always true wherever AmplifyApp exists, which HostedUINeedsToken ensures.
-  # The !If on AccessToken is for cfn-lint, which resolves the token to its ""
-  # default and then reports it shorter than AccessToken allows.
-  HasGitHubToken: !Not [!Equals [!Ref GitHubOAuthToken, ""]]
 
-# Checked before any resource is touched. Without it a missing token fails at
-# AmplifyApp, part-way through a create, and the rollback leaves the two
-# retained buckets behind to block the next attempt by name. Only a create
-# actually uses the token, but the rule cannot tell a create from an update.
-Rules:
-  HostedUINeedsToken:
-    RuleCondition: !Not [!Equals [!Ref GitHubBranch, ""]]
-    Assertions:
-      - Assert: !Not [!Equals [!Ref GitHubOAuthToken, ""]]
-        AssertDescription: "GitHubBranch deploys the hosted UI, which needs GitHubOAuthToken."
+# The release this template is. scripts/release.py writes the version in;
+# a stack deployed from source reports 0.0.0-dev.
+Mappings:
+  Release:
+    Understory:
+      Version: "0.0.0-dev"
 
 Resources:
+  # Both data buckets outlive their stack (a stack delete leaves them), except
+  # when the stack's very first create fails: then RetainExceptOnCreate deletes
+  # them in the rollback, so a retry is not blocked by its own bucket names.
   SourceBucket:
     Type: AWS::S3::Bucket
-    DeletionPolicy: Retain
+    DeletionPolicy: RetainExceptOnCreate
     UpdateReplacePolicy: Retain
     DependsOn:
       - IIIFImageFunctionS3Permission
@@ -176,7 +157,7 @@ Resources:
 
   IIIFBucket:
     Type: AWS::S3::Bucket
-    DeletionPolicy: Retain
+    DeletionPolicy: RetainExceptOnCreate
     UpdateReplacePolicy: Retain
     Properties:
       BucketName: !Sub "${AWS::StackName}-iiif"
@@ -470,6 +451,15 @@ Resources:
           AllowedMethods: [GET, HEAD, OPTIONS]
           CachedMethods: [GET, HEAD, OPTIONS]
           Compress: false
+          # Tells serverless-iiif which host it was asked on (see
+          # ImagesHostFunction). AllViewerExceptHostHeader forwards that header
+          # and every other viewer header to the origin, but not Host itself,
+          # which a Function URL refuses unless it is its own. It changes only
+          # what reaches the origin, not the cache key, which stays the path.
+          OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
+          FunctionAssociations:
+            - EventType: viewer-request
+              FunctionARN: !GetAtt ImagesHostFunction.FunctionMetadata.FunctionARN
           # CachingOptimizedForUncompressedObjects: same minimal key as
           # CachingOptimized, but WITHOUT Accept-Encoding. That distinction is
           # the whole reason this differs from the document distribution — the
@@ -480,6 +470,34 @@ Resources:
           # for nothing.
           CachePolicyId: b2884449-e4de-46a7-ac36-70bc7f1ddd6d
           ResponseHeadersPolicyId: !Ref IiifCorsPolicy
+
+  # info.json advertises its own @id, and OpenSeadragon derives every tile URL
+  # from it. serverless-iiif builds that id from ForceHost, else from the
+  # X-Forwarded-Host header, else from Host — and Host, behind CloudFront, is
+  # the Function URL's own, so without help every viewer would walk straight
+  # past this distribution to the Lambda and the cache would never see a tile.
+  #
+  # ForceHost cannot name this distribution (its origin is the app's
+  # FunctionDomain output, so that is a cycle), which once made a stack with
+  # no custom domain deploy twice to learn its own hostname. This function
+  # sends the host the viewer actually asked on instead, which needs nothing
+  # at deploy time. A custom-domain stack still sets ForceHost, so the
+  # distribution's other, *.cloudfront.net name cannot leak into a cached
+  # info.json.
+  ImagesHostFunction:
+    Type: AWS::CloudFront::Function
+    Properties:
+      Name: !Sub "${AWS::StackName}-images-host"
+      AutoPublish: true
+      FunctionConfig:
+        Comment: "Forward the viewer's Host as X-Forwarded-Host for serverless-iiif"
+        Runtime: cloudfront-js-2.0
+      FunctionCode: |
+        function handler(event) {
+          var request = event.request;
+          request.headers["x-forwarded-host"] = {value: request.headers.host.value};
+          return request;
+        }
 
   # Z2FDTNDATAQYW2 is CloudFront's fixed hosted zone id — the same value in every
   # region and account, not something this stack can look up.
@@ -513,6 +531,18 @@ Resources:
       UserPoolName: !Sub "${AWS::StackName}-users"
       AdminCreateUserConfig:
         AllowAdminCreateUserOnly: true
+        # Sent to everyone invited from the Users screen, and to AdminEmail. It
+        # names the admin UI, which a bare temporary password does not. Cognito
+        # requires both {username} and {####}; with email as the username
+        # attribute, {username} is the address itself.
+        InviteMessageTemplate:
+          EmailSubject: "Your Understory account"
+          EmailMessage: !Sub
+            - "You have an Understory account at ${Url}. Sign in as {username} with the temporary password {####}, and you will be asked to choose your own."
+            - Url: !If
+                - HasCustomDomain
+                - !Sub "https://admin-${ProjectName}.${BaseDomainName}"
+                - !Sub "https://${AdminDistribution.DomainName}"
       AutoVerifiedAttributes:
         - email
       UsernameAttributes:
@@ -632,14 +662,16 @@ Resources:
   # request waits ~10s while it comes back, queued rather than refused. Classic
   # bills a floor of OCUs around the clock. Storage is billed either way.
   #
-  # Every name here is the stack name, alone or with a suffix: collection names
-  # are 3-28 characters, group and policy names at most 32, all lowercase
-  # letters, digits and hyphens starting with a letter. A stack name longer
-  # than 27 characters will not deploy.
+  # Every name here is SearchCollectionName, or the stack name when that is
+  # empty, alone or with a suffix: collection names are 3-28 characters, group
+  # and policy names at most 32, all lowercase letters, digits and hyphens
+  # starting with a letter. So a stack name longer than 27 characters needs
+  # SearchCollectionName, and the default keeps every existing stack's names,
+  # and so its collection, exactly as they were.
   SearchCollectionGroup:
     Type: AWS::OpenSearchServerless::CollectionGroup
     Properties:
-      Name: !Ref AWS::StackName
+      Name: !If [SearchCollectionNameProvided, !Ref SearchCollectionName, !Ref "AWS::StackName"]
       Description: !Sub "Published search indexes for ${AWS::StackName}"
       Generation: NEXTGEN
       # ENABLED is the only value a NEXTGEN group accepts — DISABLED is refused
@@ -658,9 +690,13 @@ Resources:
   SearchEncryptionPolicy:
     Type: AWS::OpenSearchServerless::SecurityPolicy
     Properties:
-      Name: !Sub "${AWS::StackName}-enc"
+      Name: !Sub
+        - "${Name}-enc"
+        - Name: !If [SearchCollectionNameProvided, !Ref SearchCollectionName, !Ref "AWS::StackName"]
       Type: encryption
-      Policy: !Sub '{"Rules":[{"ResourceType":"collection","Resource":["collection/${AWS::StackName}"]}],"AWSOwnedKey":true}'
+      Policy: !Sub
+        - '{"Rules":[{"ResourceType":"collection","Resource":["collection/${Name}"]}],"AWSOwnedKey":true}'
+        - Name: !If [SearchCollectionNameProvided, !Ref SearchCollectionName, !Ref "AWS::StackName"]
 
   # Reachable from the internet, but every request is SigV4-signed and checked
   # against SearchDataAccessPolicy, so "public" here means routable, not open.
@@ -668,9 +704,13 @@ Resources:
   SearchNetworkPolicy:
     Type: AWS::OpenSearchServerless::SecurityPolicy
     Properties:
-      Name: !Sub "${AWS::StackName}-net"
+      Name: !Sub
+        - "${Name}-net"
+        - Name: !If [SearchCollectionNameProvided, !Ref SearchCollectionName, !Ref "AWS::StackName"]
       Type: network
-      Policy: !Sub '[{"Rules":[{"ResourceType":"collection","Resource":["collection/${AWS::StackName}"]}],"AllowFromPublic":true}]'
+      Policy: !Sub
+        - '[{"Rules":[{"ResourceType":"collection","Resource":["collection/${Name}"]}],"AllowFromPublic":true}]'
+        - Name: !If [SearchCollectionNameProvided, !Ref SearchCollectionName, !Ref "AWS::StackName"]
 
   # Serverless checks this AND the role's IAM policy (aoss:APIAccessAll on
   # ManifestFunction). Two principals, both this stack's own roles and no
@@ -686,12 +726,15 @@ Resources:
   SearchDataAccessPolicy:
     Type: AWS::OpenSearchServerless::AccessPolicy
     Properties:
-      Name: !Sub "${AWS::StackName}-data"
+      Name: !Sub
+        - "${Name}-data"
+        - Name: !If [SearchCollectionNameProvided, !Ref SearchCollectionName, !Ref "AWS::StackName"]
       Type: data
       Policy: !Sub
-        - '[{"Rules":[{"ResourceType":"collection","Resource":["collection/${AWS::StackName}"],"Permission":["aoss:CreateCollectionItems","aoss:DeleteCollectionItems","aoss:UpdateCollectionItems","aoss:DescribeCollectionItems"]},{"ResourceType":"index","Resource":["index/${AWS::StackName}/*"],"Permission":["aoss:CreateIndex","aoss:DeleteIndex","aoss:UpdateIndex","aoss:DescribeIndex","aoss:ReadDocument","aoss:WriteDocument"]}],"Principal":["${RoleArn}"]},{"Rules":[{"ResourceType":"collection","Resource":["collection/${AWS::StackName}"],"Permission":["aoss:DescribeCollectionItems"]},{"ResourceType":"index","Resource":["index/${AWS::StackName}/*"],"Permission":["aoss:DescribeIndex","aoss:ReadDocument"]}],"Principal":["${PublicSearchRoleArn}"]}]'
+        - '[{"Rules":[{"ResourceType":"collection","Resource":["collection/${Name}"],"Permission":["aoss:CreateCollectionItems","aoss:DeleteCollectionItems","aoss:UpdateCollectionItems","aoss:DescribeCollectionItems"]},{"ResourceType":"index","Resource":["index/${Name}/*"],"Permission":["aoss:CreateIndex","aoss:DeleteIndex","aoss:UpdateIndex","aoss:DescribeIndex","aoss:ReadDocument","aoss:WriteDocument"]}],"Principal":["${RoleArn}"]},{"Rules":[{"ResourceType":"collection","Resource":["collection/${Name}"],"Permission":["aoss:DescribeCollectionItems"]},{"ResourceType":"index","Resource":["index/${Name}/*"],"Permission":["aoss:DescribeIndex","aoss:ReadDocument"]}],"Principal":["${PublicSearchRoleArn}"]}]'
         - RoleArn: !GetAtt ManifestFunctionRole.Arn
           PublicSearchRoleArn: !GetAtt PublicSearchFunctionRole.Arn
+          Name: !If [SearchCollectionNameProvided, !Ref SearchCollectionName, !Ref "AWS::StackName"]
 
   SearchCollection:
     Type: AWS::OpenSearchServerless::Collection
@@ -699,9 +742,9 @@ Resources:
     # name, and the group's Ref is its id), so the ordering is explicit.
     DependsOn: [SearchEncryptionPolicy, SearchNetworkPolicy, SearchCollectionGroup]
     Properties:
-      Name: !Ref AWS::StackName
+      Name: !If [SearchCollectionNameProvided, !Ref SearchCollectionName, !Ref "AWS::StackName"]
       Type: SEARCH
-      CollectionGroupName: !Ref AWS::StackName
+      CollectionGroupName: !If [SearchCollectionNameProvided, !Ref SearchCollectionName, !Ref "AWS::StackName"]
       Description: !Sub "Published search indexes for ${AWS::StackName}"
 
   ManifestHttpApi:
@@ -849,6 +892,7 @@ Resources:
                 - cognito-idp:CreateGroup
                 - cognito-idp:AdminAddUserToGroup
                 - cognito-idp:AdminRemoveUserFromGroup
+                - cognito-idp:AdminCreateUser
               Resource: !GetAtt CognitoUserPool.Arn
       Events:
         CreateManifest:
@@ -1038,6 +1082,12 @@ Resources:
             ApiId: !Ref ManifestHttpApi
             Path: /users
             Method: GET
+        InviteUser:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ManifestHttpApi
+            Path: /users
+            Method: POST
         UpdateUser:
           Type: HttpApi
           Properties:
@@ -1458,6 +1508,17 @@ Resources:
               Action:
                 - s3:GetObject
               Resource: !Sub "arn:aws:s3:::${AWS::StackName}-source/*"
+            # To skip a source whose pyramid already exists. HeadObject needs
+            # GetObject, and ListBucket is what makes a missing TIFF a 404
+            # rather than a 403.
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+              Resource: !Sub "arn:aws:s3:::${AWS::StackName}-iiif/image/*"
+            - Effect: Allow
+              Action:
+                - s3:ListBucket
+              Resource: !Sub "arn:aws:s3:::${AWS::StackName}-iiif"
         - S3WritePolicy:
             BucketName: !Sub "${AWS::StackName}-iiif"
 
@@ -1582,166 +1643,278 @@ Resources:
                 Action: s3:PutObject
                 Resource: !Sub "arn:aws:s3:::${AWS::StackName}-iiif/av/*"
 
-  # Assumed by Amplify Hosting compute to write the Next.js server's logs to
-  # CloudWatch, and for nothing else: the server calls no AWS service. Pages
-  # render in the browser and call the API with the user's own token.
-  AmplifyServiceRole:
-    Type: AWS::IAM::Role
-    Condition: HasHostedUI
+  # --- Admin UI ---------------------------------------------------------------
+  # The UI is a static export (ui/, `next build`), served from this stack's own
+  # bucket through AdminDistribution. It ships inside the release as UiLayer,
+  # and InstanceSetup copies it into UiBucket on every deploy, so the UI and the
+  # API it calls are always the same release: a deploy that rolls back rolls
+  # the UI back with it. Nothing about the stack is compiled into the build;
+  # InstanceSetup writes /config.json beside it.
+  #
+  # Not retained: everything in it is rebuilt from the layers on every deploy,
+  # and InstanceSetup empties it when the stack is deleted.
+  UiBucket:
+    Type: AWS::S3::Bucket
     Properties:
-      AssumeRolePolicyDocument:
-        Version: "2012-10-17"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  UiBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref UiBucket
+      PolicyDocument:
         Statement:
           - Effect: Allow
             Principal:
-              Service: amplify.amazonaws.com
-            Action: sts:AssumeRole
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub "${UiBucket.Arn}/*"
+            Condition:
+              StringEquals:
+                "AWS:SourceArn": !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${AdminDistribution}"
+
+  AdminOriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub "${AWS::StackName}-ui-oac"
+        Description: "Signed reads from the admin UI bucket"
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  # The routing a server used to do. A page is an .html file in the export, so
+  # /users is served from users.html. And the path-shaped links of the old
+  # Next.js server (/collection/{slug}, …/work/{id}, …/search, /collections)
+  # redirect to their query-string equivalents (ui/src/lib/routes.js), so
+  # bookmarks and links in old messages keep working. /collection/work and
+  # /collection/search are the new pages themselves, so a collection whose
+  # slug is "work" or "search" is reached the new way only.
+  AdminRouterFunction:
+    Type: AWS::CloudFront::Function
+    Properties:
+      Name: !Sub "${AWS::StackName}-admin-router"
+      AutoPublish: true
+      FunctionConfig:
+        Comment: "Admin UI: pretty paths to .html files, and redirects for older links"
+        Runtime: cloudfront-js-2.0
+      FunctionCode: |
+        function redirect(location) {
+          return {statusCode: 301, statusDescription: "Moved Permanently", headers: {location: {value: location}}};
+        }
+        function handler(event) {
+          var request = event.request;
+          var uri = request.uri;
+          var match;
+          if (uri === "/collections" || uri === "/collections/") return redirect("/");
+          match = uri.match(/^\/collection\/([^\/]+)\/work\/([^\/]+)\/?$/);
+          if (match) return redirect("/collection/work?slug=" + match[1] + "&id=" + match[2]);
+          match = uri.match(/^\/collection\/([^\/]+)\/search\/?$/);
+          if (match && match[1] !== "work") return redirect("/collection/search?slug=" + match[1]);
+          match = uri.match(/^\/collection\/([^\/]+)\/?$/);
+          if (match && match[1] !== "work" && match[1] !== "search") return redirect("/collection?slug=" + match[1]);
+          if (uri.length > 1 && uri.charAt(uri.length - 1) === "/") uri = uri.slice(0, -1);
+          if (uri !== "/" && !/\.[A-Za-z0-9]+$/.test(uri)) request.uri = uri + ".html";
+          return request;
+        }
+
+  AdminDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: !Sub "${AWS::StackName} admin UI"
+        HttpVersion: http2and3
+        IPV6Enabled: true
+        DefaultRootObject: index.html
+        Aliases: !If
+          - HasCustomDomain
+          - [!Sub "admin-${ProjectName}.${BaseDomainName}"]
+          - !Ref "AWS::NoValue"
+        ViewerCertificate: !If
+          - HasCustomDomain
+          - AcmCertificateArn: !Ref CertificateArn
+            SslSupportMethod: sni-only
+            MinimumProtocolVersion: TLSv1.2_2021
+          - CloudFrontDefaultCertificate: true
+        Origins:
+          - Id: ui-bucket
+            DomainName: !GetAtt UiBucket.RegionalDomainName
+            OriginAccessControlId: !GetAtt AdminOriginAccessControl.Id
+            S3OriginConfig:
+              OriginAccessIdentity: ""
+        DefaultCacheBehavior:
+          TargetOriginId: ui-bucket
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [GET, HEAD]
+          CachedMethods: [GET, HEAD]
+          Compress: true
+          # CachingOptimized, as for the IIIF documents. HTML, config.json and
+          # branding are written Cache-Control: no-cache, so the edge
+          # revalidates them; _next/static/* is content-hashed and immutable.
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+          # The managed SecurityHeadersPolicy: HSTS, nosniff, frame-ancestors
+          # same-origin, a strict referrer. Managed, so it uses none of the
+          # account's response-headers-policy quota.
+          ResponseHeadersPolicyId: 67f7725c-6f97-4210-82d7-5512b31e9d03
+          FunctionAssociations:
+            - EventType: viewer-request
+              FunctionARN: !GetAtt AdminRouterFunction.FunctionMetadata.FunctionARN
+        # OAC without s3:ListBucket answers a missing object with 403, not 404.
+        CustomErrorResponses:
+          - ErrorCode: 403
+            ResponseCode: 404
+            ResponsePagePath: /404.html
+            ErrorCachingMinTTL: 10
+          - ErrorCode: 404
+            ResponseCode: 404
+            ResponsePagePath: /404.html
+            ErrorCachingMinTTL: 10
+
+  AdminDnsRecord:
+    Type: AWS::Route53::RecordSet
+    Condition: ManageDns
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Sub "admin-${ProjectName}.${BaseDomainName}"
+      Type: A
+      AliasTarget:
+        DNSName: !GetAtt AdminDistribution.DomainName
+        HostedZoneId: Z2FDTNDATAQYW2
+        EvaluateTargetHealth: false
+
+  # The admin UI's static export, under understory-ui/. scripts/build.sh puts
+  # it at ui/.layer/ before `sam build`; a release ships it as a zip in the
+  # release bucket like any function's code.
+  UiLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: !Sub "${AWS::StackName}-ui"
+      Description: "Understory admin UI (static export)"
+      ContentUri: ../../ui/.layer/
+      RetentionPolicy: Delete
+
+  # The instance's own branding folder (see ui/src/lib/branding.js for the
+  # slots). The one local path left in a release template: `sam deploy` zips
+  # the branding/ folder beside the template and uploads it with the deploy,
+  # so an instance's branding goes through CloudFormation like any other
+  # change. From source, that folder is app/aws/branding/, the product's
+  # neutral default.
+  BrandingLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: !Sub "${AWS::StackName}-branding"
+      Description: "This instance's branding/ folder"
+      ContentUri: branding/
+      RetentionPolicy: Delete
+
+  # Runs on every create and update (InstanceSetup, below): copies the UI and
+  # the branding into UiBucket, writes /config.json, invalidates the admin
+  # distribution, and invites AdminEmail. See its index.js.
+  InstanceSetupFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Minify: false
+        Target: "node22"
+        Sourcemap: false
+        EntryPoints:
+          - aws/lambdas/instance-setup/index.js
+        External:
+          - "@aws-sdk/*"
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-instance-setup"
+      CodeUri: ../
+      Handler: index.handler
+      Timeout: 600
+      Layers:
+        - !Ref UiLayer
+        - !Ref BrandingLayer
       Policies:
-        - PolicyName: AmplifyComputeLogs
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-              - Effect: Allow
-                Action:
-                  - logs:CreateLogGroup
-                  - logs:CreateLogStream
-                  - logs:PutLogEvents
-                Resource:
-                  - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/amplify/*"
-                  - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/amplify/*:log-stream:*"
-              - Effect: Allow
-                Action: logs:DescribeLogGroups
-                Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:*"
+        - Statement:
+            - Effect: Allow
+              Action: s3:ListBucket
+              Resource: !GetAtt UiBucket.Arn
+            - Effect: Allow
+              Action:
+                - s3:PutObject
+                - s3:DeleteObject
+              Resource: !Sub "${UiBucket.Arn}/*"
+            - Effect: Allow
+              Action: cloudfront:CreateInvalidation
+              Resource: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${AdminDistribution}"
+            - Effect: Allow
+              Action:
+                - cognito-idp:AdminGetUser
+                - cognito-idp:AdminCreateUser
+                - cognito-idp:AdminAddUserToGroup
+              Resource: !GetAtt CognitoUserPool.Arn
 
-  AmplifyApp:
-    Type: AWS::Amplify::App
-    Condition: HasHostedUI
+  # Every property is something whose change should re-run the setup. The two
+  # layers are versioned by content, so a new UI build or a branding edit is a
+  # new ARN, and so an update.
+  InstanceSetup:
+    Type: Custom::InstanceSetup
+    DependsOn: [UiBucketPolicy, AdminGroup]
     Properties:
-      Name: !Sub "${AWS::StackName}-ui"
-      Repository: !Ref GitHubRepo
-      # AccessToken connects through the Amplify GitHub App. OauthToken was the
-      # legacy connection: a webhook plus an SSH deploy key per app on the repo,
-      # and the console's "Migrate to our GitHub app" banner. Amplify uses the
-      # token once, at create, and does not store it. An app created with
-      # OauthToken is migrated in the console, not by this property.
-      AccessToken: !If [HasGitHubToken, !Ref GitHubOAuthToken, !Ref AWS::NoValue]
-      # Next.js on Amplify Hosting's managed server, not a static site:
-      # collection slugs and work ids are created at runtime, so their routes
-      # cannot be prerendered. AWS supports Next.js 12-15 here; move to 16 once
-      # it is listed. The server does the routing, so there is no rewrite rule.
-      Platform: WEB_COMPUTE
-      IAMServiceRole: !GetAtt AmplifyServiceRole.Arn
-      # Must stay empty: the old static site's rewrite of every path to
-      # /index.html sends the server's routes to a page it does not have.
-      # CloudFormation does not clear rules an existing app already has, even
-      # set to [] here, so converting an older stack also needs, once:
-      #   aws amplify update-app --app-id <id> --custom-rules '[]'
-      CustomRules: []
-      # The build is amplify.yml at the repo root, versioned with the code it
-      # builds. Amplify gives that file precedence over a spec set here, so
-      # there is none.
-      EnvironmentVariables:
-        # The app's folder in this repo, matching appRoot in amplify.yml. AWS
-        # requires it to be set explicitly on an app created by CloudFormation.
-        - Name: AMPLIFY_MONOREPO_APP_ROOT
-          Value: ui
-        # Next.js inlines NEXT_PUBLIC_* into the browser bundle at build time.
-        # The Image API base, despite the name. Must be the distribution, not
-        # the Function URL behind it, or the admin UI fetches every tile past
-        # the cache.
-        - Name: NEXT_PUBLIC_IIIF_BASE_URL
-          Value: !If
-            - HasCustomDomain
-            - !Sub "https://images-${ProjectName}.${BaseDomainName}/iiif/3"
-            - !Sub "https://${ImagesDistribution.DomainName}/iiif/3"
-        - Name: NEXT_PUBLIC_MANIFEST_API_URL
-          Value: !Sub "https://${ManifestHttpApi}.execute-api.${AWS::Region}.amazonaws.com/manifests"
-        - Name: NEXT_PUBLIC_COLLECTION_API_URL
-          Value: !Sub "https://${ManifestHttpApi}.execute-api.${AWS::Region}.amazonaws.com/collections"
-        - Name: NEXT_PUBLIC_STORAGE_BUCKET
-          Value: !Sub "${AWS::StackName}-iiif"
-        - Name: NEXT_PUBLIC_SOURCE_BUCKET
-          Value: !Sub "${AWS::StackName}-source"
-        - Name: NEXT_PUBLIC_STORAGE_REGION
-          Value: !Ref AWS::Region
-        - Name: NEXT_PUBLIC_STORAGE_IDENTITY_POOL_ID
-          Value: !Ref CognitoIdentityPool
-        - Name: NEXT_PUBLIC_COGNITO_USER_POOL_ID
-          Value: !Ref CognitoUserPool
-        - Name: NEXT_PUBLIC_COGNITO_CLIENT_ID
-          Value: !Ref CognitoUserPoolClient
-
-  AmplifyBranch:
-    Type: AWS::Amplify::Branch
-    Condition: HasHostedUI
-    Properties:
-      AppId: !GetAtt AmplifyApp.AppId
-      BranchName: !Ref GitHubBranch
-      Framework: "Next.js - SSR"
-      # Off on a shared stack, where the deploy workflow starts the build after
-      # the stack has deployed. Building on push races that deploy: the UI can
-      # go live before its API, and a NEXT_PUBLIC_* value the deploy changes
-      # misses the build, since updating an env var never triggers one.
-      EnableAutoBuild: !If [UIAutoBuilds, true, false]
-
-  # The admin UI's hostname, alongside iiif-<project> and images-<project>.
-  # Unlike those two there is no Route53 RecordSet here. Amplify owns the CNAME
-  # for a domain attached to it and writes that record itself whenever the
-  # hosted zone is in this account, and nothing in CloudFormation exposes the
-  # target it points at — so a record written here would be a guess that
-  # Amplify then fights over. With the zone managed elsewhere, copy the record
-  # Amplify shows under Hosting > Custom domains and add it there by hand.
-  # HostedZoneId is not consulted either way, so ManageDns does not gate this.
-  AmplifyDomain:
-    Type: AWS::Amplify::Domain
-    Condition: HasHostedUIDomain
-    Properties:
-      AppId: !GetAtt AmplifyApp.AppId
-      DomainName: !Sub "admin-${ProjectName}.${BaseDomainName}"
-      # CUSTOM reuses the same wildcard certificate as the two distributions
-      # instead of having Amplify provision one of its own. An AMPLIFY_MANAGED
-      # certificate would sit in PENDING_VERIFICATION waiting for a validation
-      # record, which is a DNS round trip this stack has already paid for once.
-      CertificateSettings:
-        CertificateType: CUSTOM
-        CustomCertificateArn: !Ref CertificateArn
-      # The whole hostname is in DomainName, so the branch maps to its root
-      # (Prefix: "") rather than admin- being a prefix under BaseDomainName.
-      # Auto-subdomain is deliberately off: a per-branch name would be
-      # <branch>.admin-<project>.<base>, two labels below the base, and
-      # *.<base> does not cover that.
-      SubDomainSettings:
-        - Prefix: ""
-          BranchName: !GetAtt AmplifyBranch.BranchName
+      ServiceToken: !GetAtt InstanceSetupFunction.Arn
+      # CloudFormation's own wait, were the function never to answer: 15
+      # minutes, not the default hour.
+      ServiceTimeout: 900
+      UiBucket: !Ref UiBucket
+      DistributionId: !Ref AdminDistribution
+      UserPoolId: !Ref CognitoUserPool
+      AdminEmail: !Ref AdminEmail
+      UiLayer: !Ref UiLayer
+      BrandingLayer: !Ref BrandingLayer
+      # Written as /config.json (ui/src/lib/config.js reads it), with
+      # brandingFiles added from what the branding folder holds.
+      Config:
+        version: !FindInMap [Release, Understory, Version]
+        region: !Ref AWS::Region
+        apiUrl: !Sub "https://${ManifestHttpApi}.execute-api.${AWS::Region}.amazonaws.com"
+        documentsUrl: !If
+          - HasCustomDomain
+          - !Sub "https://iiif-${ProjectName}.${BaseDomainName}"
+          - !Sub "https://${IIIFDistribution.DomainName}"
+        imageApiUrl: !If
+          - HasCustomDomain
+          - !Sub "https://images-${ProjectName}.${BaseDomainName}/iiif/3"
+          - !Sub "https://${ImagesDistribution.DomainName}/iiif/3"
+        iiifBucket: !Ref IIIFBucket
+        sourceBucket: !Ref SourceBucket
+        userPoolId: !Ref CognitoUserPool
+        userPoolClientId: !Ref CognitoUserPoolClient
+        identityPoolId: !Ref CognitoIdentityPool
+        institutionName: !Ref InstitutionName
+        accentColor: !Ref AccentColor
 
   IiifServer:
     Type: AWS::Serverless::Application
     Properties:
       Location:
         ApplicationId: arn:aws:serverlessrepo:us-east-1:625046682746:applications/serverless-iiif
-        SemanticVersion: !Ref ServerlessIiifVersion
+        # A literal, not a parameter: the version is part of the Understory
+        # release that ships it, so every stack on a release runs the same one.
+        SemanticVersion: "7.0.1"
       Parameters:
         SourceBucket: !Ref IIIFBucket
-        # info.json advertises its own @id, and OpenSeadragon derives every tile
-        # URL from it. Without ForceHost that @id is the Lambda Function URL, so
-        # viewers walk straight past ImagesDistribution and the cache never sees
-        # a tile.
-        #
-        # This deliberately cannot be !GetAtt ImagesDistribution.DomainName:
+        # With a custom domain, info.json always names it, whichever of the
+        # distribution's two hostnames was asked. Without one, the
+        # distribution's only hostname reaches the function as
+        # X-Forwarded-Host (ImagesHostFunction), which serverless-iiif uses when
+        # ForceHost is unset. It cannot be !GetAtt ImagesDistribution.DomainName:
         # that distribution takes this app's FunctionDomain as its origin, so
-        # pointing back at it is a CloudFormation cycle. Using the custom
-        # hostname — a parameter, not an attribute — is what breaks it.
-        #
-        # The cost is that a stack with no custom domain has nothing to derive
-        # from, so ImageApiForceHost exists to be handed the distribution host
-        # explicitly on a second deploy. Still a parameter, so still no cycle.
+        # pointing back at it is a cycle.
         ForceHost: !If
-          - HasImageApiForceHost
-          - !Ref ImageApiForceHost
-          - !If
-            - HasCustomDomain
-            - !Sub "images-${ProjectName}.${BaseDomainName}"
-            - !Ref "AWS::NoValue"
+          - HasCustomDomain
+          - !Sub "images-${ProjectName}.${BaseDomainName}"
+          - !Ref "AWS::NoValue"
         # The default is 10s, and every request downloads the whole source
         # TIFF, so a big image's first tiles could miss it. 30s is also
         # ImagesDistribution's origin read timeout (the CloudFront default),
@@ -1767,33 +1940,25 @@ Outputs:
       - !Sub "https://iiif-${ProjectName}.${BaseDomainName}"
       - !Sub "https://${IIIFDistribution.DomainName}"
   ImagesEndpoint:
-    Description: "Base URL for the IIIF Image API. On a dev stack, info.json will still advertise IiifEndpoint — see ForceHost on IiifServer."
+    Description: "Base URL for the IIIF Image API."
     Value: !If
       - HasCustomDomain
       - !Sub "https://images-${ProjectName}.${BaseDomainName}/iiif/3"
       - !Sub "https://${ImagesDistribution.DomainName}/iiif/3"
-  ImagesDistributionHost:
-    Description: "Bare hostname of the images distribution - paste into the ImageApiForceHost parameter on a stack with no custom domain."
-    Value: !GetAtt ImagesDistribution.DomainName
   IIIFDistributionId:
     Description: "Invalidated by the publish run."
     Value: !Ref IIIFDistribution
-  # Neither UI output exists without GitHubBranch: there is no hosted UI to name.
-  UIEndpoint:
-    Description: "Admin UI. The custom hostname once one is configured; the generated Amplify domain otherwise."
-    Condition: HasHostedUI
+  AdminUrl:
+    Description: "The admin UI."
     Value: !If
       - HasCustomDomain
       - !Sub "https://admin-${ProjectName}.${BaseDomainName}"
-      - !Sub "https://${GitHubBranch}.${AmplifyApp.AppId}.amplifyapp.com"
-  AmplifyDefaultDomain:
-    Description: "The branch's generated Amplify domain, which keeps working alongside the custom one. Attaching a domain takes several minutes and the DNS record may not be this stack's to write, so this stays the way in until the custom hostname resolves."
-    Condition: HasHostedUI
-    Value: !Sub "https://${GitHubBranch}.${AmplifyApp.AppId}.amplifyapp.com"
-  AmplifyAppId:
-    Description: "The deploy workflow starts the UI build for this app once the stack has deployed."
-    Condition: HasHostedUI
-    Value: !GetAtt AmplifyApp.AppId
+      - !Sub "https://${AdminDistribution.DomainName}"
+  AdminDistributionId:
+    Value: !Ref AdminDistribution
+  UnderstoryVersion:
+    Description: "The Understory release this stack runs. 0.0.0-dev when deployed from source."
+    Value: !FindInMap [Release, Understory, Version]
   ManifestApiUrl:
     Value: !Sub "https://${ManifestHttpApi}.execute-api.${AWS::Region}.amazonaws.com"
   PublicSearchUrl:

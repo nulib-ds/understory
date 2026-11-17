@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# Replaces understory.yml with another Understory release, after checking it
+# against the checksum published beside it.
+#
+#   scripts/upgrade 1.2.0
+#
+# Then read that release's notes (an "Upgrading" section means a step of your
+# own), commit understory.yml and understory.yml.sha256, and deploy. The diff
+# of understory.yml is exactly the infrastructure that will change.
+#
+# Releases come from one place: understory-releases-<region>, the region being
+# this instance's (samconfig.yaml), read over https. That bucket is the single
+# source of truth for Understory releases (RELEASING.md in nulib-ds/understory).
+#
+# Until a bucket is public, an account it was shared with reads it with the AWS
+# CLI and its own credentials instead:
+#
+#   UNDERSTORY_RELEASES='s3://understory-releases-{region}' scripts/upgrade 1.2.0
+#
+# The same bucket either way; {region} stands for the region.
+set -euo pipefail
+
+version="${1:?usage: scripts/upgrade <version>, e.g. 1.2.0}"
+version="${version#v}"
+root="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=release-source.sh
+source "$root/scripts/release-source.sh"
+
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+fetch_release "$version" understory.yml "$tmp/understory.yml"
+fetch_release "$version" understory.yml.sha256 "$tmp/understory.yml.sha256"
+(cd "$tmp" && shasum -a 256 -c understory.yml.sha256 >/dev/null 2>&1) || {
+  echo "The downloaded understory.yml does not match its published checksum. Nothing was changed." >&2
+  exit 1
+}
+
+cp "$tmp/understory.yml" "$tmp/understory.yml.sha256" "$root/"
+echo "understory.yml is now Understory v$version for $(instance_region)."
+echo "Read its release notes, then commit understory.yml and understory.yml.sha256, and deploy."

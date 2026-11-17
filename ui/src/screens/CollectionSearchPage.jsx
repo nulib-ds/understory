@@ -2,7 +2,7 @@
 
 import {useCallback, useEffect, useState} from "react";
 import NextLink from "next/link";
-import {useParams} from "next/navigation";
+import {useRouteParams, workPath} from "../lib/routes";
 import {Button, Callout, Code, Flex, Link, Table, Text, TextField} from "@radix-ui/themes";
 import {InfoCircledIcon, MagnifyingGlassIcon} from "@radix-ui/react-icons";
 import {apiFetch, collectionSearchUrl} from "../lib/api";
@@ -18,8 +18,7 @@ import PageReady from "../components/PageReady";
 // Searches on submit, never per keystroke: each one is a request to the
 // search collection, which wakes it if idle (~10s for the first).
 export default function CollectionSearchPage() {
-  const {slug: rawSlug} = useParams();
-  const slug = rawSlug ? decodeURIComponent(rawSlug) : null;
+  const {slug} = useRouteParams();
   const [query, setQuery] = useState("");
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
@@ -140,7 +139,7 @@ export default function CollectionSearchPage() {
                       <Link asChild>
                         <NextLink
                           prefetch={false}
-                          href={`/collection/${encodeURIComponent(slug)}/work/${encodeURIComponent(hit.workId)}`}
+                          href={workPath(slug, hit.workId)}
                         >
                           {hit.title || hit.workId}
                         </NextLink>
