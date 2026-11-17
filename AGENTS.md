@@ -1060,6 +1060,44 @@ Production's two buckets were backed up first (2026-11-17).
 4. **Branches.** `mat-dev` is deleted. `kdid-dev` stays until kdid's dev stack
    has dropped Amplify, which still builds its UI from that branch.
 
+#### What's left, and who picks it up
+
+As of 2026-11-17. Tick items off here as they land, so this stays the one list.
+
+- [ ] **kdid: the production cutover.** Follow `RUNBOOK.md` in
+  `nulib-ds/understory-digital-scholarship`. It needs AWSAdministratorAccess in
+  the production account, because the stack creates IAM roles, which the
+  PowerUser role cannot. Ask Mat for the backup's location, which is
+  deliberately not in any repo. In short:
+  1. Create the stack without a domain.
+  2. Restore the backup, the IIIF bucket before the source bucket.
+  3. In an agreed window, about 30 minutes of public downtime: clear
+     production's domain in place, then deploy the new stack with it.
+  4. Republish each collection to rebuild search, and invite every user again.
+  5. Later, delete `production-understory`'s stack; its buckets are kept.
+- [ ] **kdid: move `kdid-dev-understory` off Amplify.** In
+  `samconfig.kdid.yaml`, remove `GitHubRepo`, `GitHubBranch`,
+  `GitHubOAuthToken`, `UIAutoBuild`, `ImageApiForceHost` and
+  `ServerlessIiifVersion`, and add `AdminEmail`, `InstitutionName` and
+  `AccentColor` (see `samconfig.yaml.example`). Then `scripts/build.sh` and
+  `sam deploy`. The stack has no custom domain, so it updates in one deploy.
+  Then delete the `kdid-dev` branch.
+- [ ] **Mat: check staging signed in.** A work page, an upload and Invite, at
+  `admin-understory.rdc-staging.library.northwestern.edu`. Everything else on
+  staging is checked.
+- [ ] **After the cutover: remove what nothing uses.**
+  - `TFVARS_DEPLOY_KEY` on the `staging` and `production` environments, and
+    its deploy key on `nulib/tfvars`;
+  - the `production` environment itself;
+  - the `understory-github-actions-production` role stack;
+  - `understory/` in `nulib/tfvars`.
+- [ ] **The next release, 1.1.0.** Rename `CHANGELOG.md`'s "Unreleased" section
+  to `## 1.1.0`, bump `package.json`, and merge `staging` into `main`. It is
+  the first release whose template job runs on its own: check that
+  `nulib-ds/understory-template` then reads "Understory v1.1.0."
+- [ ] **Later: share releases beyond NU.** Add a LICENSE, then deploy the
+  `understory-releases` stack with `Public=true`.
+
 ### Tags come from the config, not the template
 
 `tags` in a stack's config (`Project=understory` in the example and the shared
