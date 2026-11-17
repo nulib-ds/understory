@@ -77,9 +77,10 @@ instance's own buckets.
    bump the version and run again, never reuse it.
 3. **Only `release.yml` writes to it.** Its role, `understory-github-actions-release`
    (`app/aws/deploy-role.yml`, stack of the same name), may read and write
-   objects under `v*/` in this account's `understory-releases-*` buckets and do
-   nothing else, which IAM's policy simulator confirmed on 2026-11-17. Only a
-   job in the `release` environment of `nulib-ds/understory` can assume it. Administrators of the staging
+   objects under `v*/` in this account's `understory-releases-*` buckets, and
+   read serverless-iiif's template, which `sam build` needs. It can do nothing
+   else, which IAM's policy simulator confirmed on 2026-11-17. Only a job in
+   the `release` environment of `nulib-ds/understory` can assume it. Administrators of the staging
    account can still write here, so don't, except to publish a pre-release by
    hand (see **Testing a release**).
 4. **Pre-releases go here too.** A release candidate is published as its own
