@@ -522,7 +522,10 @@ manages both.
 
 **Names are capped.** The collection is named after the stack (3–28
 characters), and the group and policies after the stack plus a suffix (at most
-32). Keep stack names to 27 characters or fewer.
+32), unless `SearchCollectionName` names them instead. A stack name longer
+than 27 characters therefore needs `SearchCollectionName`, set on the first
+deploy: changing it later replaces the collection. Left empty, it keeps the
+names every stack had before it existed.
 
 > **Not yet verified against a live collection** (`CollectionEndpoint` returning the
 > `on.aws` hostname is: checked on `kdid-dev-understory`, 2026-10-02):
@@ -1183,8 +1186,9 @@ Every AWS name derives from the stack name — the buckets (`<stack>-iiif`,
 layers (`<stack>-ui`, `<stack>-branding`), search collection and search-index
 prefix — so `stack_name` in
 a stack's SAM config is the whole of a stack's identity, and changing it means a new
-stack. Keep it to 27 characters or fewer: Serverless caps the search
-collection's and its policies' names (see **Search index**). The one
+stack. A name longer than 27 characters also needs `SearchCollectionName`,
+because Serverless caps the search collection's and its policies' names (see
+**Search index**). The one
 exception is the custom-domain hostnames, built from `ProjectName`
 (`understory`) and `BaseDomainName`: only one stack per base domain can hold
 them, which is why a dev stack leaves `BaseDomainName` empty. Staging shares an

@@ -22,6 +22,11 @@ Parameters:
     Default: 2
     AllowedValues: [2, 4, 8, 16]
     Description: "Ceiling on the search collection's capacity, in OCUs, applied to indexing and to search separately. This is the spend cap: the collection never scales past it. It scales to zero when idle whatever this says. Serverless accepts 2, 4, 8, 16 or multiples of 16."
+  SearchCollectionName:
+    Type: String
+    Default: ""
+    AllowedPattern: "^([a-z][a-z0-9-]{2,26})?$"
+    Description: "Name for this stack's OpenSearch collection, its group and its three policies (<name>-enc, -net, -data). Empty means the stack name, which then must be 27 characters or fewer; set this for a longer stack name. 3-27 lowercase letters, digits and hyphens, starting with a letter. Changing it on an existing stack replaces the collection, so set it only when creating one."
   SearchIndexPrefix:
     Type: String
     Default: ""
@@ -75,6 +80,7 @@ Globals:
 
 Conditions:
   SearchIndexPrefixProvided: !Not [!Equals [!Ref SearchIndexPrefix, ""]]
+  SearchCollectionNameProvided: !Not [!Equals [!Ref SearchCollectionName, ""]]
   HasCustomDomain: !And
     - !Not [!Equals [!Ref BaseDomainName, ""]]
     - !Not [!Equals [!Ref CertificateArn, ""]]
@@ -656,14 +662,16 @@ Resources:
   # request waits ~10s while it comes back, queued rather than refused. Classic
   # bills a floor of OCUs around the clock. Storage is billed either way.
   #
-  # Every name here is the stack name, alone or with a suffix: collection names
-  # are 3-28 characters, group and policy names at most 32, all lowercase
-  # letters, digits and hyphens starting with a letter. A stack name longer
-  # than 27 characters will not deploy.
+  # Every name here is SearchCollectionName, or the stack name when that is
+  # empty, alone or with a suffix: collection names are 3-28 characters, group
+  # and policy names at most 32, all lowercase letters, digits and hyphens
+  # starting with a letter. So a stack name longer than 27 characters needs
+  # SearchCollectionName, and the default keeps every existing stack's names,
+  # and so its collection, exactly as they were.
   SearchCollectionGroup:
     Type: AWS::OpenSearchServerless::CollectionGroup
     Properties:
-      Name: !Ref AWS::StackName
+      Name: !If [SearchCollectionNameProvided, !Ref SearchCollectionName, !Ref "AWS::StackName"]
       Description: !Sub "Published search indexes for ${AWS::StackName}"
       Generation: NEXTGEN
       # ENABLED is the only value a NEXTGEN group accepts — DISABLED is refused
@@ -682,9 +690,13 @@ Resources:
   SearchEncryptionPolicy:
     Type: AWS::OpenSearchServerless::SecurityPolicy
     Properties:
-      Name: !Sub "${AWS::StackName}-enc"
+      Name: !Sub
+        - "${Name}-enc"
+        - Name: !If [SearchCollectionNameProvided, !Ref SearchCollectionName, !Ref "AWS::StackName"]
       Type: encryption
-      Policy: !Sub '{"Rules":[{"ResourceType":"collection","Resource":["collection/${AWS::StackName}"]}],"AWSOwnedKey":true}'
+      Policy: !Sub
+        - '{"Rules":[{"ResourceType":"collection","Resource":["collection/${Name}"]}],"AWSOwnedKey":true}'
+        - Name: !If [SearchCollectionNameProvided, !Ref SearchCollectionName, !Ref "AWS::StackName"]
 
   # Reachable from the internet, but every request is SigV4-signed and checked
   # against SearchDataAccessPolicy, so "public" here means routable, not open.
@@ -692,9 +704,13 @@ Resources:
   SearchNetworkPolicy:
     Type: AWS::OpenSearchServerless::SecurityPolicy
     Properties:
-      Name: !Sub "${AWS::StackName}-net"
+      Name: !Sub
+        - "${Name}-net"
+        - Name: !If [SearchCollectionNameProvided, !Ref SearchCollectionName, !Ref "AWS::StackName"]
       Type: network
-      Policy: !Sub '[{"Rules":[{"ResourceType":"collection","Resource":["collection/${AWS::StackName}"]}],"AllowFromPublic":true}]'
+      Policy: !Sub
+        - '[{"Rules":[{"ResourceType":"collection","Resource":["collection/${Name}"]}],"AllowFromPublic":true}]'
+        - Name: !If [SearchCollectionNameProvided, !Ref SearchCollectionName, !Ref "AWS::StackName"]
 
   # Serverless checks this AND the role's IAM policy (aoss:APIAccessAll on
   # ManifestFunction). Two principals, both this stack's own roles and no
@@ -710,12 +726,15 @@ Resources:
   SearchDataAccessPolicy:
     Type: AWS::OpenSearchServerless::AccessPolicy
     Properties:
-      Name: !Sub "${AWS::StackName}-data"
+      Name: !Sub
+        - "${Name}-data"
+        - Name: !If [SearchCollectionNameProvided, !Ref SearchCollectionName, !Ref "AWS::StackName"]
       Type: data
       Policy: !Sub
-        - '[{"Rules":[{"ResourceType":"collection","Resource":["collection/${AWS::StackName}"],"Permission":["aoss:CreateCollectionItems","aoss:DeleteCollectionItems","aoss:UpdateCollectionItems","aoss:DescribeCollectionItems"]},{"ResourceType":"index","Resource":["index/${AWS::StackName}/*"],"Permission":["aoss:CreateIndex","aoss:DeleteIndex","aoss:UpdateIndex","aoss:DescribeIndex","aoss:ReadDocument","aoss:WriteDocument"]}],"Principal":["${RoleArn}"]},{"Rules":[{"ResourceType":"collection","Resource":["collection/${AWS::StackName}"],"Permission":["aoss:DescribeCollectionItems"]},{"ResourceType":"index","Resource":["index/${AWS::StackName}/*"],"Permission":["aoss:DescribeIndex","aoss:ReadDocument"]}],"Principal":["${PublicSearchRoleArn}"]}]'
+        - '[{"Rules":[{"ResourceType":"collection","Resource":["collection/${Name}"],"Permission":["aoss:CreateCollectionItems","aoss:DeleteCollectionItems","aoss:UpdateCollectionItems","aoss:DescribeCollectionItems"]},{"ResourceType":"index","Resource":["index/${Name}/*"],"Permission":["aoss:CreateIndex","aoss:DeleteIndex","aoss:UpdateIndex","aoss:DescribeIndex","aoss:ReadDocument","aoss:WriteDocument"]}],"Principal":["${RoleArn}"]},{"Rules":[{"ResourceType":"collection","Resource":["collection/${Name}"],"Permission":["aoss:DescribeCollectionItems"]},{"ResourceType":"index","Resource":["index/${Name}/*"],"Permission":["aoss:DescribeIndex","aoss:ReadDocument"]}],"Principal":["${PublicSearchRoleArn}"]}]'
         - RoleArn: !GetAtt ManifestFunctionRole.Arn
           PublicSearchRoleArn: !GetAtt PublicSearchFunctionRole.Arn
+          Name: !If [SearchCollectionNameProvided, !Ref SearchCollectionName, !Ref "AWS::StackName"]
 
   SearchCollection:
     Type: AWS::OpenSearchServerless::Collection
@@ -723,9 +742,9 @@ Resources:
     # name, and the group's Ref is its id), so the ordering is explicit.
     DependsOn: [SearchEncryptionPolicy, SearchNetworkPolicy, SearchCollectionGroup]
     Properties:
-      Name: !Ref AWS::StackName
+      Name: !If [SearchCollectionNameProvided, !Ref SearchCollectionName, !Ref "AWS::StackName"]
       Type: SEARCH
-      CollectionGroupName: !Ref AWS::StackName
+      CollectionGroupName: !If [SearchCollectionNameProvided, !Ref SearchCollectionName, !Ref "AWS::StackName"]
       Description: !Sub "Published search indexes for ${AWS::StackName}"
 
   ManifestHttpApi:

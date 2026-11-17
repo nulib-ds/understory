@@ -40,6 +40,7 @@ default:
         - InstitutionName="Northwestern University Libraries (staging)"
         - AccentColor=purple
         - SearchMaxOcu=2
+        - SearchCollectionName=""
         - SearchIndexPrefix=""
         - ProjectName=understory
         - BaseDomainName=rdc-staging.library.northwestern.edu
