@@ -35,7 +35,7 @@ Understory runs on AWS and deploys as one [SAM](https://aws.amazon.com/serverles
 
 ## Running an instance
 
-An instance is one Understory stack, run from a repo of its own that holds no source code: its configuration, its branding, and the release it runs. Start from [`instance-template/`](instance-template/README.md).
+An instance is one Understory stack, run from a repo of its own that holds no source code: its configuration, its branding, and the release it runs. Make one from the template repo, [nulib-ds/understory-template](https://github.com/nulib-ds/understory-template): **Use this template**. It is republished on every release from [`instance-template/`](instance-template/README.md), with that release's `understory.yml`.
 
 | In the instance repo | What it is |
 |---|---|
@@ -75,7 +75,7 @@ Developing Understory itself needs an AWS account, the SAM CLI, Docker, and Node
 | `app/shared/` | Logic the Lambdas share, with its unit tests |
 | `ui/` | The admin app |
 | `instance-template/` | The starting point for an instance's own repo |
-| `scripts/` | The build (`build.sh`) and the release (`release.py`) |
+| `scripts/` | The build (`build.sh`), the release (`release.py`) and the template (`publish-template.sh`) |
 | `app/aws/release-bucket.yml` | The release bucket, one per region |
 | `samconfig.staging.yaml` | Staging's configuration |
 | `.github/workflows/` | Staging's deploy, and the release |

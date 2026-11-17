@@ -4,6 +4,18 @@ Every release has a section, headed `## <version>`, which becomes its GitHub
 Release notes. A major version's section says what an instance must do under
 **Upgrading**. See RELEASING.md.
 
+## Unreleased
+
+Rename this section to the next version in the PR that releases it.
+
+- A new instance starts from `nulib-ds/understory-template`, which every
+  release republishes with its own `understory.yml`.
+- The template's deploy workflow masks the AWS account id in its logs, and
+  reads its role's ARN from a secret, `AWS_DEPLOY_ROLE_ARN`. An existing
+  instance repo keeps its own copy of the workflow (`scripts/upgrade` replaces
+  only `understory.yml`); to adopt this one, copy it in and move the ARN from
+  a variable to a secret.
+
 ## 1.0.0
 
 The first release. Understory is now deployed as a versioned release, from an

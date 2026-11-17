@@ -23,7 +23,9 @@ default:
       tags:
         - Project=understory
       parameter_overrides:
-        # Invited as the first administrator on the first deploy.
+        # Invited as the first administrator on the first deploy, and read on no
+        # other. In a public repo, don't commit a person's address: fill it in
+        # locally for the first deploy, then set it back to "".
         - AdminEmail=curator@acme.example
         - InstitutionName="Acme University Libraries"
         # A Radix Themes colour name; branding/theme.css can go further.

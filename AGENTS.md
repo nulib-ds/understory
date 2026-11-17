@@ -856,9 +856,11 @@ Things that will bite:
 > overwritten, and there is no second copy anywhere. Read "The release
 > buckets" in `RELEASING.md` before changing anything about them.
 
-An instance is a stack plus a repo of its own, started from
-`instance-template/` (to become its own template repo,
-`nulib-ds/understory-instance`). The repo holds no source code:
+An instance is a stack plus a repo of its own, made from the template repo
+`nulib-ds/understory-template` (**Use this template**). That repo is
+`instance-template/` as of the latest release, with its `understory.yml`,
+republished by `release.yml` on every release and never edited by hand (see
+"The template repo" in `RELEASING.md`). The instance repo holds no source code:
 
 | File | What it is |
 |---|---|
