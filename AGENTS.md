@@ -1011,9 +1011,11 @@ Things that will bite:
 > The role's trust and `sam deploy` worked, and the public log held no token
 > and no account id. The tracked config has not been through a run yet.
 >
-> **`release.yml` has not run.** `understory-releases-us-east-1` and
-> `understory-github-actions-release` exist (2026-11-17), but the `release`
-> GitHub environment does not yet; see **Moving NU's stacks**.
+> **`release.yml` published 1.0.0 on 2026-11-17**, on its third run. The
+> first stopped at `sam build`, because the release role could not read
+> serverless-iiif's template (#29), and the second at publishing, because
+> `scripts/release.py` was not executable (#30). Neither published anything,
+> so 1.0.0 was still unused. The GitHub Release carries no files.
 >
 > **The release role was checked with IAM's policy simulator, 2026-11-17.**
 > Allowed: get and put objects under `v*/`, and list, in this account's
@@ -1026,43 +1028,35 @@ Things that will bite:
 
 ### Moving NU's stacks
 
-Not done yet. `production-understory` and `main` are untouched until this is
-laid out and agreed. Production's two buckets were backed up first
-(2026-11-17).
+Production's two buckets were backed up first (2026-11-17).
 
-1. **Staging.** Its config is now the tracked `samconfig.staging.yaml`, and
-   `deploy.yml` no longer reads `nulib/tfvars`. Staging has a custom domain,
-   and Amplify's domain holds `admin-understory.<base>`, which CloudFront will
-   not give a second distribution. So first, by hand, deploy staging's
-   current template from a clean checkout of `staging`, with its old config
-   from `nulib/tfvars` and `GitHubBranch=""`; that deletes the Amplify app.
-   Then merge to `staging`. The admin UI is down between the two; the IIIF
-   documents, images and search are not. The `TFVARS_DEPLOY_KEY` secret and
-   the deploy key on `nulib/tfvars` can be removed after that.
-2. **Releases.** The release bucket, `understory-releases-us-east-1`, and the
-   release role, `understory-github-actions-release`, are in the staging
-   account already; the bucket is private. Still to do: create the `release`
-   GitHub environment (its secret `AWSACCOUNT` is the staging account), and
-   add the account NU's instance runs in to the bucket's `ReaderAccountIds`,
-   unless that is the staging account itself. Then merge `staging` into
-   `main` at version `1.0.0`. `Public=true` waits until releases are to be
-   shared beyond NU.
-3. **NU's instance.** NU's own Understory will be a new instance, from its
-   own repo, `nulib-ds/understory-digital-scholarship`, restored from
-   production's backup. `production-understory` keeps running until it is
-   ready. Things a restore has to handle:
-   - **Every IIIF id embeds its host.** Copied documents still name
-     production's hosts, so they need rewriting to the new instance's, unless
-     it takes over production's hostnames, which CloudFront allows only once
-     production's distributions let them go.
-   - **Copy the IIIF bucket before the source bucket.** The source bucket's
-     `image/` and `av/` prefixes trigger the converters, which skip anything
-     whose TIFF or `ready` `media.json` is already in the IIIF bucket. In
-     that order, restoring both re-converts nothing.
-   - **Search indexes and users are per stack.** Republish each collection to
-     rebuild its index, and invite everyone again from the Users screen.
-4. Delete the `mat-dev` and `kdid-dev` branches: a dev stack no longer needs a
-   branch, because its UI deploys with the stack.
+1. **Staging: done, 2026-11-17.** Its config is the tracked
+   `samconfig.staging.yaml`, and `deploy.yml` no longer reads `nulib/tfvars`.
+   Amplify's domain held `admin-understory.<base>`, which CloudFront will not
+   give a second distribution, so staging's old template was deployed first
+   with `GitHubBranch=""`. That deleted the Amplify app, and Amplify removed
+   its own DNS record with it. The admin UI was down until the new version
+   deployed; the IIIF documents, images and search stayed up. The
+   `TFVARS_DEPLOY_KEY` secret on the `staging` environment, and its deploy key
+   on `nulib/tfvars`, are no longer used.
+2. **Releases: done, 2026-11-17.** 1.0.0 is in `understory-releases-us-east-1`,
+   private, and readable by the production account (`ReaderAccountIds`).
+   `Public=true` waits until releases are shared beyond NU.
+3. **NU's instance: laid out, not deployed.** It is
+   `nulib-ds/understory-digital-scholarship` (private), in the production
+   account, on v1.0.0. It replaces `production-understory` and takes over its
+   three hostnames, so the documents restored from the backup need no
+   rewriting and every Canopy site's links keep working. Its `RUNBOOK.md` is
+   the procedure; it needs an administrator in the production account. In
+   short:
+   - create the stack without a domain;
+   - restore the backup, the IIIF bucket before the source bucket, so the
+     converters skip everything;
+   - clear production's domain in place, so its distributions let the names
+     go, and deploy the new stack with them;
+   - republish each collection to rebuild search, and invite every user again.
+4. **Branches.** `mat-dev` is deleted. `kdid-dev` stays until kdid's dev stack
+   has dropped Amplify, which still builds its UI from that branch.
 
 ### Tags come from the config, not the template
 
