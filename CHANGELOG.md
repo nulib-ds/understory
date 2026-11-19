@@ -19,7 +19,11 @@ Rename this section to the next version in the PR that releases it.
   UI works again. 1.0.0's edge router redirected the page's data file,
   `/collection/work.txt`, as if `work.txt` were an old collection link, and the
   UI then said "No collection called "work.txt"". Loading the page directly
-  always worked.
+  always worked. A browser that hit this keeps the wrong redirect, for each
+  work it tried, until its cache is cleared.
+- The admin UI's redirects for older links tell browsers to keep them for a
+  day. Without that, browsers keep a 301 indefinitely, so a wrong one could
+  not be fixed from the server.
 
 ## 1.0.0
 

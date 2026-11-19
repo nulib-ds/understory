@@ -1701,6 +1701,12 @@ Resources:
   # in-app move to that page, and redirecting it to /collection?slug=work.txt
   # sends the browser to a collection that does not exist. Tested in
   # app/aws/__tests__/adminRouter.test.js.
+  #
+  # Every redirect says how long a browser may keep it: a day. A 301 without
+  # Cache-Control is kept indefinitely, so a wrong one, like 1.0.0's for
+  # work.txt, outlives its fix in every browser that saw it, and only clearing
+  # the browser's cache recovers. A day still spares an old bookmark a round
+  # trip on every visit.
   AdminRouterFunction:
     Type: AWS::CloudFront::Function
     Properties:
@@ -1711,7 +1717,11 @@ Resources:
         Runtime: cloudfront-js-2.0
       FunctionCode: |
         function redirect(location) {
-          return {statusCode: 301, statusDescription: "Moved Permanently", headers: {location: {value: location}}};
+          return {
+            statusCode: 301,
+            statusDescription: "Moved Permanently",
+            headers: {location: {value: location}, "cache-control": {value: "max-age=86400"}},
+          };
         }
         function handler(event) {
           var request = event.request;

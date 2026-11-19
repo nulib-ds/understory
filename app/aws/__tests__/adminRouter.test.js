@@ -58,3 +58,13 @@ test("a collection named work or search is reached the new way only", () => {
   assert.deepEqual(route("/collection/work/search"), {uri: "/collection/work/search.html"});
   assert.deepEqual(route("/collection/search/work/abc"), {redirect: "/collection/work?slug=search&id=abc"});
 });
+
+test("a redirect is kept by browsers for a day, not indefinitely", () => {
+  // A 301 without Cache-Control is kept indefinitely, so a wrong one would
+  // outlive its fix in every browser that saw it.
+  for (const uri of ["/collections", "/collection/maps-2024", "/collection/maps-2024/search", "/collection/maps-2024/work/abc-123"]) {
+    const result = handler({request: {uri}});
+    assert.equal(result.statusCode, 301, uri);
+    assert.equal(result.headers["cache-control"]?.value, "max-age=86400", uri);
+  }
+});
