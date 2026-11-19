@@ -7,6 +7,9 @@
 #   2. Create a GitHub environment named production that allows only main.
 #   3. Set the secret AWS_DEPLOY_ROLE_ARN (that stack's output) and the
 #      variable AWS_REGION (the region in samconfig.yaml).
+# Until AWS_REGION is set, the deploy job is skipped, not failed, so the
+# template repo itself, and an instance deployed by hand, push to main
+# without a failed run.
 # The role is assumed through GitHub's OIDC provider, so there is no AWS key.
 # Its ARN is a secret, not a variable, because a public repo's Actions logs
 # are public too and the ARN carries the account id, which the credentials
@@ -47,7 +50,7 @@ jobs:
       - run: scripts/verify
 
   deploy:
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && vars.AWS_REGION != ''
     environment: production
     runs-on: ubuntu-24.04
     steps:
