@@ -927,8 +927,11 @@ GitHub token, the hosted-UI branch and the separate UI build.
   equivalents (see **UI Structure**). A slug there matches only the slug
   pattern, so the export's own files pass through: Next.js fetches
   `/collection/work.txt` on every in-app move to a work, and 1.0.0, which
-  matched any segment, redirected it to `/collection?slug=work.txt`. Its
-  cases are in `app/aws/__tests__/adminRouter.test.js`.
+  matched any segment, redirected it to `/collection?slug=work.txt`. Every
+  redirect carries `cache-control: max-age=86400`: a 301 without it is kept
+  by the browser indefinitely, and 1.0.0's wrong ones stayed in each browser
+  that saw them until its cache was cleared. Its cases are in
+  `app/aws/__tests__/adminRouter.test.js`.
 - **Branding** is the instance's `branding/` folder, published at `/branding/`:
   `theme.css` (loaded last), `header.html`, `footer.html`, `sign-in.html` and
   a favicon. Snippets are rendered by `renderSnippetHtml`
