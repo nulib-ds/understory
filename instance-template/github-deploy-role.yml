@@ -9,7 +9,7 @@ Description: "The role this instance repo's deploy workflow assumes (.github/wor
 #     --capabilities CAPABILITY_IAM
 #
 # Its own stack, so nothing the workflow deploys can change the role it deploys
-# with. Then set the repository variable AWS_DEPLOY_ROLE_ARN to its output.
+# with. Then set the repository secret AWS_DEPLOY_ROLE_ARN to its output.
 
 Parameters:
   GitHubRepository:
@@ -72,5 +72,5 @@ Resources:
 
 Outputs:
   DeployRoleArn:
-    Description: "Set as the repository variable AWS_DEPLOY_ROLE_ARN."
+    Description: "Set as the repository secret AWS_DEPLOY_ROLE_ARN."
     Value: !GetAtt DeployRole.Arn

@@ -8,6 +8,11 @@
 # version and its CHANGELOG.md section, and no copy of any file. It deploys
 # nothing: every instance, NU's production included, takes a release by
 # running scripts/upgrade in its own instance repo. See RELEASING.md.
+#
+# Last, the template job replaces nulib-ds/understory-template, the repo a new
+# instance is made from, with instance-template/ and this release's template.
+# It is its own job so that, if it fails, re-running the failed jobs retries
+# only it: the release itself is never published twice.
 name: Release
 
 on:
@@ -31,9 +36,11 @@ jobs:
   release:
     if: github.ref == 'refs/heads/main'
     # Holds AWSACCOUNT, NU's staging account, where the release buckets live,
-    # and allows only main.
+    # and TEMPLATE_DEPLOY_KEY, and allows only main.
     environment: release
     runs-on: ubuntu-24.04-arm
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     defaults:
       run:
         shell: bash
@@ -97,6 +104,17 @@ jobs:
           # shellcheck disable=SC2086
           python3 scripts/release.py --version "$VERSION" --regions $RELEASE_REGIONS
 
+      # For the template job: the template region's copy. instance-template/
+      # names us-east-1, and scripts/publish-template.sh checks they agree.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: template-release
+          path: |
+            dist/v${{ steps.version.outputs.version }}/us-east-1/understory.yml
+            dist/v${{ steps.version.outputs.version }}/us-east-1/understory.yml.sha256
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Tag and create the GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -116,3 +134,34 @@ jobs:
           } >> notes.md
           gh release create "v$VERSION" --target "$GITHUB_SHA" \
             --title "Understory v$VERSION" --notes-file notes.md
+
+  template:
+    needs: release
+    environment: release
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        shell: bash
+    env:
+      VERSION: ${{ needs.release.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: template-release
+          path: .release
+
+      # TEMPLATE_DEPLOY_KEY is a deploy key with write access to
+      # understory-template and nothing else.
+      - uses: actions/checkout@v7
+        with:
+          repository: nulib-ds/understory-template
+          path: .template
+          ssh-key: ${{ secrets.TEMPLATE_DEPLOY_KEY }}
+
+      - name: Publish the instance template
+        run: |
+          git -C .template config user.name "github-actions[bot]"
+          git -C .template config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          scripts/publish-template.sh "$VERSION" .release .template

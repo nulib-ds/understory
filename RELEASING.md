@@ -139,8 +139,32 @@ back: an instance in the new region starts at the next release.
 2. Merge. `release.yml` tests, builds, publishes to the release buckets, tags
    `v<version>` and creates a GitHub Release with that version's notes. It
    attaches no files, because the buckets hold the release, and it deploys
-   nothing.
+   nothing. Its last job republishes the template repo (below).
 3. Each instance takes it with `scripts/upgrade <version>` in its own repo.
+
+## The template repo
+
+A new instance starts from
+[nulib-ds/understory-template](https://github.com/nulib-ds/understory-template),
+a GitHub template repository: **Use this template**, or
+`gh repo create <owner>/<name> --template nulib-ds/understory-template`. The
+new repo gets the files, with no history and no link back.
+
+- **It is a published copy, never edited by hand.** The source is
+  `instance-template/` in this repo. On every release, `release.yml`'s
+  template job runs `scripts/publish-template.sh`, which replaces the template
+  repo's contents with `instance-template/` plus that release's `us-east-1`
+  `understory.yml` and checksum, as one commit tagged `v<version>`, force-pushed.
+  Anything committed there directly is lost at the next release.
+- **It carries the release itself**, so a repo made from it is ready to deploy
+  once its config is filled in. The release's template still names the release
+  bucket for its code, so it deploys only where that bucket can be read.
+- **The push uses `TEMPLATE_DEPLOY_KEY`**, a secret in the `release`
+  environment: the private half of a deploy key with write access to
+  `understory-template` and nothing else. GitHub's own token cannot push to
+  another repository.
+- **If the template job fails**, re-run the failed jobs. The release job is
+  not re-run, so nothing is published twice.
 
 ## Versions
 
@@ -173,8 +197,9 @@ What instances and consuming sites rely on, and so what semver covers:
 - **What consuming sites read:** the IIIF documents' shapes and URLs, the
   public search response (see "Public search route" in AGENTS.md), and the
   extension terms under `https://nulib-ds.github.io/understory/ns#`.
-- **The instance repo's shape** (`instance-template/`): `samconfig.yaml`,
-  `understory.yml`, `branding/`, and the two scripts.
+- **The instance repo's shape** (`instance-template/`, published as
+  `nulib-ds/understory-template`): `samconfig.yaml`, `understory.yml`,
+  `branding/`, and the two scripts.
 - **The release buckets' names and layout**: `understory-releases-<region>`,
   `v<version>/understory.yml` and its `.sha256`.
 

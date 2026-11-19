@@ -4,6 +4,28 @@ Every release has a section, headed `## <version>`, which becomes its GitHub
 Release notes. A major version's section says what an instance must do under
 **Upgrading**. See RELEASING.md.
 
+## 1.0.1
+
+Fixes moving between pages in the admin UI, and publishes the template repo
+on every release.
+
+- A new instance starts from `nulib-ds/understory-template`, which every
+  release republishes with its own `understory.yml`.
+- The template's deploy workflow masks the AWS account id in its logs, and
+  reads its role's ARN from a secret, `AWS_DEPLOY_ROLE_ARN`. An existing
+  instance repo keeps its own copy of the workflow (`scripts/upgrade` replaces
+  only `understory.yml`); to adopt this one, copy it in and move the ARN from
+  a variable to a secret.
+- Moving to a work's page or a collection's search page from within the admin
+  UI works again. 1.0.0's edge router redirected the page's data file,
+  `/collection/work.txt`, as if `work.txt` were an old collection link, and the
+  UI then said "No collection called "work.txt"". Loading the page directly
+  always worked. A browser that hit this keeps the wrong redirect, for each
+  work it tried, until its cache is cleared.
+- The admin UI's redirects for older links tell browsers to keep them for a
+  day. Without that, browsers keep a 301 indefinitely, so a wrong one could
+  not be fixed from the server.
+
 ## 1.0.0
 
 The first release. Understory is now deployed as a versioned release, from an
