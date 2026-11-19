@@ -1694,6 +1694,13 @@ Resources:
   # bookmarks and links in old messages keep working. /collection/work and
   # /collection/search are the new pages themselves, so a collection whose
   # slug is "work" or "search" is reached the new way only.
+  #
+  # A slug matches only the slug pattern (collectionSlugPattern in
+  # app/shared/collection.js), never [^/]+. The export's own files must pass
+  # through: Next.js fetches a page's data, /collection/work.txt, on every
+  # in-app move to that page, and redirecting it to /collection?slug=work.txt
+  # sends the browser to a collection that does not exist. Tested in
+  # app/aws/__tests__/adminRouter.test.js.
   AdminRouterFunction:
     Type: AWS::CloudFront::Function
     Properties:
@@ -1711,11 +1718,11 @@ Resources:
           var uri = request.uri;
           var match;
           if (uri === "/collections" || uri === "/collections/") return redirect("/");
-          match = uri.match(/^\/collection\/([^\/]+)\/work\/([^\/]+)\/?$/);
+          match = uri.match(/^\/collection\/([a-z0-9]+(?:-[a-z0-9]+)*)\/work\/([^\/]+)\/?$/);
           if (match) return redirect("/collection/work?slug=" + match[1] + "&id=" + match[2]);
-          match = uri.match(/^\/collection\/([^\/]+)\/search\/?$/);
+          match = uri.match(/^\/collection\/([a-z0-9]+(?:-[a-z0-9]+)*)\/search\/?$/);
           if (match && match[1] !== "work") return redirect("/collection/search?slug=" + match[1]);
-          match = uri.match(/^\/collection\/([^\/]+)\/?$/);
+          match = uri.match(/^\/collection\/([a-z0-9]+(?:-[a-z0-9]+)*)\/?$/);
           if (match && match[1] !== "work" && match[1] !== "search") return redirect("/collection?slug=" + match[1]);
           if (uri.length > 1 && uri.charAt(uri.length - 1) === "/") uri = uri.slice(0, -1);
           if (uri !== "/" && !/\.[A-Za-z0-9]+$/.test(uri)) request.uri = uri + ".html";

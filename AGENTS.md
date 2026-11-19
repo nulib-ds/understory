@@ -924,7 +924,11 @@ GitHub token, the hosted-UI branch and the separate UI build.
 - **`AdminRouterFunction`** does the routing a server used to: `/users` is
   `users.html`, and the old path-shaped links (`/collection/{slug}`,
   `…/work/{id}`, `…/search`, `/collections`) redirect to their query-string
-  equivalents (see **UI Structure**).
+  equivalents (see **UI Structure**). A slug there matches only the slug
+  pattern, so the export's own files pass through: Next.js fetches
+  `/collection/work.txt` on every in-app move to a work, and 1.0.0, which
+  matched any segment, redirected it to `/collection?slug=work.txt`. Its
+  cases are in `app/aws/__tests__/adminRouter.test.js`.
 - **Branding** is the instance's `branding/` folder, published at `/branding/`:
   `theme.css` (loaded last), `header.html`, `footer.html`, `sign-in.html` and
   a favicon. Snippets are rendered by `renderSnippetHtml`

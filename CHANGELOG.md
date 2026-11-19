@@ -15,6 +15,11 @@ Rename this section to the next version in the PR that releases it.
   instance repo keeps its own copy of the workflow (`scripts/upgrade` replaces
   only `understory.yml`); to adopt this one, copy it in and move the ARN from
   a variable to a secret.
+- Moving to a work's page or a collection's search page from within the admin
+  UI works again. 1.0.0's edge router redirected the page's data file,
+  `/collection/work.txt`, as if `work.txt` were an old collection link, and the
+  UI then said "No collection called "work.txt"". Loading the page directly
+  always worked.
 
 ## 1.0.0
 
