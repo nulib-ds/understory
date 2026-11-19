@@ -741,7 +741,7 @@ There are three kinds of stack, and two ways to deploy one:
 |---|---|---|---|
 | `<you>-dev-understory` | your working tree | you: `scripts/build.sh`, then `sam deploy` | `samconfig.<you>.yaml`, on your machine; start from `samconfig.yaml.example` |
 | `staging-understory` | the `staging` branch | `.github/workflows/deploy.yml`, on every push to `staging` | `samconfig.staging.yaml`, tracked at the repo root |
-| An instance: `production-understory`, or another institution's | a published release | its own instance repo: `scripts/upgrade`, then `sam deploy` | `samconfig.yaml` in that repo |
+| An instance: NU's `understory-digital-scholarship`, or another institution's | a published release | its own instance repo: `scripts/upgrade`, then `sam deploy` | `samconfig.yaml` in that repo |
 
 Branches flow **feature branch → `staging` → `main`**. Pull requests from a
 feature branch target `staging`, and merging one deploys it to staging.
@@ -1051,19 +1051,21 @@ Production's two buckets were backed up first (2026-11-17).
 2. **Releases: done, 2026-11-17.** 1.0.0 is in `understory-releases-us-east-1`,
    private, and readable by the production account (`ReaderAccountIds`).
    `Public=true` waits until releases are shared beyond NU.
-3. **NU's instance: laid out, not deployed.** It is
-   `nulib-ds/understory-digital-scholarship` (public), in the production
-   account, on v1.0.0 until it takes 1.0.1, before its first deploy. It
-   replaces `production-understory` and takes over its three hostnames, so the documents restored from the backup need no
-   rewriting and every Canopy site's links keep working. Its `RUNBOOK.md` is
-   the procedure; it needs an administrator in the production account. In
-   short:
-   - create the stack without a domain;
-   - restore the backup, the IIIF bucket before the source bucket, so the
-     converters skip everything;
-   - clear production's domain in place, so its distributions let the names
-     go, and deploy the new stack with them;
-   - republish each collection to rebuild search, and invite every user again.
+3. **NU's instance: live, 2026-11-19.** `understory-digital-scholarship`,
+   from the public repo `nulib-ds/understory-digital-scholarship`, runs v1.0.1
+   in the production account, and has taken over production's three hostnames,
+   so the restored documents needed no rewriting and every Canopy site's links
+   still work. Its `RUNBOOK.md` records the procedure as run. In short:
+   - the stack was created without a domain;
+   - the backup's IIIF bucket was restored into it, and its source bucket was
+     not: the originals are not kept (see the lifecycle item below);
+   - production's domain was cleared in place, through a reviewed change set,
+     and the new stack deployed with it;
+   - each collection was republished to rebuild search, and its users invited
+     again.
+
+   `production-understory` still exists, with no hostnames and no editors,
+   until it is retired.
 4. **Branches.** `mat-dev` is deleted, and `kdid-dev` too (2026-11-19), once
    kdid's dev stack had dropped Amplify.
 
@@ -1071,19 +1073,17 @@ Production's two buckets were backed up first (2026-11-17).
 
 As of 2026-11-19. Tick items off here as they land, so this stays the one list.
 
-- [ ] **kdid: the production cutover.** Follow `RUNBOOK.md` in
-  `nulib-ds/understory-digital-scholarship`. It needs AWSAdministratorAccess in
-  the production account, because the stack creates IAM roles, which the
-  PowerUser role cannot. Ask Mat for the backup's location, which is
-  deliberately not in any repo. In short:
-  0. Take 1.0.1 (`scripts/upgrade 1.0.1`): 1.0.0's admin router breaks moving
-     to a work's page from within the UI.
-  1. Create the stack without a domain.
-  2. Restore the backup, the IIIF bucket before the source bucket.
-  3. In an agreed window, about 30 minutes of public downtime: clear
-     production's domain in place, then deploy the new stack with it.
-  4. Republish each collection to rebuild search, and invite every user again.
-  5. Later, delete `production-understory`'s stack; its buckets are kept.
+- [x] **kdid: the production cutover.** Done 2026-11-19, following
+  `RUNBOOK.md` in `nulib-ds/understory-digital-scholarship`, on v1.0.1. All
+  three untried pieces worked: Lambda in the production account read its code
+  from the release bucket in the staging account; serverless-iiif's nested
+  stack deployed under the 30-character stack name; and clearing production's
+  domain in place freed the names for the new stack.
+- [ ] **kdid: retire `production-understory`.** When the new instance has run
+  for a while: `aws cloudformation delete-stack --stack-name
+  production-understory`, in the production account (runbook, step 8). Its two
+  data buckets are kept. Its source bucket and the backup are then the only
+  copies of the originals, so delete those deliberately, if ever.
 - [x] **kdid: move `kdid-dev-understory` off Amplify.** Done 2026-11-19. In
   `samconfig.kdid.yaml`, remove `GitHubRepo`, `GitHubBranch`,
   `GitHubOAuthToken`, `UIAutoBuild`, `ImageApiForceHost` and
@@ -1105,6 +1105,12 @@ As of 2026-11-19. Tick items off here as they land, so this stays the one list.
   reads "Understory v1.0.1."
 - [ ] **Later: share releases beyond NU.** Add a LICENSE, then deploy the
   `understory-releases` stack with `Public=true`.
+- [ ] **Later: expire originals in the source bucket.** NU keeps no originals
+  (a presentation system, not a preservation one), so a lifecycle rule on
+  `SourceBucket` belongs in the template, in a release. Decide how long an
+  original lives: past its conversion, and past an A/V transcode. And decide
+  what an unattached A/V upload's expiry means: the work's recovery list reads
+  the source bucket, so it drops off.
 
 ### Tags come from the config, not the template
 
@@ -1223,7 +1229,8 @@ The project is **Understory** everywhere: the UI, the repo
 | | Shape | Example |
 |---|---|---|
 | Personal dev stack | `<owner>-dev-understory` | `mat-dev-understory` |
-| Shared environment | `<env>-understory` | `staging-understory`, `production-understory` |
+| Shared environment | `<env>-understory` | `staging-understory` |
+| Instance | its instance repo's name | `understory-digital-scholarship` (`SearchCollectionName=understory-ds`) |
 | Packages | `understory`, `understory-<part>` | `understory-ui`, `understory-manifest` |
 
 Every AWS name derives from the stack name — the buckets (`<stack>-iiif`,
