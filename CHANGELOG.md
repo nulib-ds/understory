@@ -4,9 +4,10 @@ Every release has a section, headed `## <version>`, which becomes its GitHub
 Release notes. A major version's section says what an instance must do under
 **Upgrading**. See RELEASING.md.
 
-## Unreleased
+## 1.0.1
 
-Rename this section to the next version in the PR that releases it.
+Fixes moving between pages in the admin UI, and publishes the template repo
+on every release.
 
 - A new instance starts from `nulib-ds/understory-template`, which every
   release republishes with its own `understory.yml`.

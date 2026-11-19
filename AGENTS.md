@@ -1053,8 +1053,8 @@ Production's two buckets were backed up first (2026-11-17).
    `Public=true` waits until releases are shared beyond NU.
 3. **NU's instance: laid out, not deployed.** It is
    `nulib-ds/understory-digital-scholarship` (public), in the production
-   account, on v1.0.0. It replaces `production-understory` and takes over its
-   three hostnames, so the documents restored from the backup need no
+   account, on v1.0.0 until it takes 1.0.1, before its first deploy. It
+   replaces `production-understory` and takes over its three hostnames, so the documents restored from the backup need no
    rewriting and every Canopy site's links keep working. Its `RUNBOOK.md` is
    the procedure; it needs an administrator in the production account. In
    short:
@@ -1064,25 +1064,27 @@ Production's two buckets were backed up first (2026-11-17).
    - clear production's domain in place, so its distributions let the names
      go, and deploy the new stack with them;
    - republish each collection to rebuild search, and invite every user again.
-4. **Branches.** `mat-dev` is deleted. `kdid-dev` stays until kdid's dev stack
-   has dropped Amplify, which still builds its UI from that branch.
+4. **Branches.** `mat-dev` is deleted, and `kdid-dev` too (2026-11-19), once
+   kdid's dev stack had dropped Amplify.
 
 #### What's left, and who picks it up
 
-As of 2026-11-17. Tick items off here as they land, so this stays the one list.
+As of 2026-11-19. Tick items off here as they land, so this stays the one list.
 
 - [ ] **kdid: the production cutover.** Follow `RUNBOOK.md` in
   `nulib-ds/understory-digital-scholarship`. It needs AWSAdministratorAccess in
   the production account, because the stack creates IAM roles, which the
   PowerUser role cannot. Ask Mat for the backup's location, which is
   deliberately not in any repo. In short:
+  0. Take 1.0.1 (`scripts/upgrade 1.0.1`): 1.0.0's admin router breaks moving
+     to a work's page from within the UI.
   1. Create the stack without a domain.
   2. Restore the backup, the IIIF bucket before the source bucket.
   3. In an agreed window, about 30 minutes of public downtime: clear
      production's domain in place, then deploy the new stack with it.
   4. Republish each collection to rebuild search, and invite every user again.
   5. Later, delete `production-understory`'s stack; its buckets are kept.
-- [ ] **kdid: move `kdid-dev-understory` off Amplify.** In
+- [x] **kdid: move `kdid-dev-understory` off Amplify.** Done 2026-11-19. In
   `samconfig.kdid.yaml`, remove `GitHubRepo`, `GitHubBranch`,
   `GitHubOAuthToken`, `UIAutoBuild`, `ImageApiForceHost` and
   `ServerlessIiifVersion`, and add `AdminEmail`, `InstitutionName` and
@@ -1098,10 +1100,10 @@ As of 2026-11-17. Tick items off here as they land, so this stays the one list.
   - the `production` environment itself;
   - the `understory-github-actions-production` role stack;
   - `understory/` in `nulib/tfvars`.
-- [ ] **The next release, 1.1.0.** Rename `CHANGELOG.md`'s "Unreleased" section
-  to `## 1.1.0`, bump `package.json`, and merge `staging` into `main`. It is
-  the first release whose template job runs on its own: check that
-  `nulib-ds/understory-template` then reads "Understory v1.1.0."
+- [ ] **The next release, 1.0.1.** `CHANGELOG.md`'s section renamed to
+  `## 1.0.1` and `package.json` bumped; merge `staging` into `main` with a
+  merge commit. It is the first release whose template job runs on its own:
+  check that `nulib-ds/understory-template` then reads "Understory v1.0.1."
 - [ ] **Later: share releases beyond NU.** Add a LICENSE, then deploy the
   `understory-releases` stack with `Public=true`.
 
