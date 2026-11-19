@@ -4,6 +4,16 @@ Every release has a section, headed `## <version>`, which becomes its GitHub
 Release notes. A major version's section says what an instance must do under
 **Upgrading**. See RELEASING.md.
 
+## Unreleased
+
+- The instance template's deploy workflow skips its deploy job until the
+  repo sets `AWS_REGION`, instead of failing on every push to `main`. That
+  covers the template repo itself and any instance deployed by hand. Before,
+  each failed run also made GitHub create an empty `production` environment
+  with no branch rule; delete it, or add the `main`-only rule before using
+  the workflow. An existing instance repo keeps its own copy of the
+  workflow: copy this one in to adopt it.
+
 ## 1.0.1
 
 Fixes moving between pages in the admin UI, and publishes the template repo

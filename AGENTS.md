@@ -1100,10 +1100,9 @@ As of 2026-11-19. Tick items off here as they land, so this stays the one list.
   - the `production` environment itself;
   - the `understory-github-actions-production` role stack;
   - `understory/` in `nulib/tfvars`.
-- [ ] **The next release, 1.0.1.** `CHANGELOG.md`'s section renamed to
-  `## 1.0.1` and `package.json` bumped; merge `staging` into `main` with a
-  merge commit. It is the first release whose template job runs on its own:
-  check that `nulib-ds/understory-template` then reads "Understory v1.0.1."
+- [x] **The next release, 1.0.1.** Done 2026-11-19, merged with a merge
+  commit. The template job ran on its own, and `nulib-ds/understory-template`
+  reads "Understory v1.0.1."
 - [ ] **Later: share releases beyond NU.** Add a LICENSE, then deploy the
   `understory-releases` stack with `Public=true`.
 
